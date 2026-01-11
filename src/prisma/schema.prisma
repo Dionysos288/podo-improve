@@ -1,0 +1,299 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================
+// Better Auth Tables
+// ============================================
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model Account {
+  id                    String    @id @default(uuid())
+  userId                String    @map("user_id")
+  accountId             String    @map("account_id")
+  providerId            String    @map("provider_id")
+  accessToken           String?   @map("access_token") @db.Text
+  refreshToken          String?   @map("refresh_token") @db.Text
+  accessTokenExpiresAt  DateTime? @map("access_token_expires_at")
+  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
+  scope                 String?
+  idToken               String?   @map("id_token") @db.Text
+  password              String?
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("accounts")
+}
+
+model Verification {
+  id         String   @id @default(uuid())
+  identifier String
+  value      String
+  expiresAt  DateTime @map("expires_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("verifications")
+}
+
+// ============================================
+// Organizations
+// ============================================
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users       User[]
+  patients    Patient[]
+  printers    Printer[]
+  backups     Backup[]
+  invitations Invitation[]
+
+  @@map("organizations")
+}
+
+// ============================================
+// Users (integrated with Better Auth)
+// ============================================
+
+model User {
+  id            String   @id @default(uuid())
+  orgId         String?  @map("org_id")
+  email         String   @unique
+  emailVerified Boolean  @default(false) @map("email_verified")
+  name          String
+  image         String?
+  role          UserRole @default(DOCTOR)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  organization        Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  projects            Project[]
+  scans               Scan[]
+  auditLogs           AuditLog[]
+  sessions            Session[]
+  accounts            Account[]
+  invitationsSent     Invitation[]  @relation("InvitedBy")
+  invitationsAccepted Invitation[]  @relation("AcceptedBy")
+
+  @@map("users")
+}
+
+enum UserRole {
+  ADMIN
+  DOCTOR
+}
+
+// ============================================
+// Invitations
+// ============================================
+
+model Invitation {
+  id           String    @id @default(uuid())
+  orgId        String    @map("org_id")
+  email        String?
+  code         String?   @unique
+  role         UserRole  @default(DOCTOR)
+  expiresAt    DateTime  @map("expires_at")
+  acceptedAt   DateTime? @map("accepted_at")
+  invitedById  String    @map("invited_by_id")
+  acceptedById String?   @map("accepted_by_id")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  invitedBy    User         @relation("InvitedBy", fields: [invitedById], references: [id])
+  acceptedBy   User?        @relation("AcceptedBy", fields: [acceptedById], references: [id])
+
+  @@index([orgId])
+  @@index([email])
+  @@index([code])
+  @@map("invitations")
+}
+
+// ============================================
+// Patients
+// ============================================
+
+model Patient {
+  id        String    @id @default(uuid())
+  orgId     String    @map("org_id")
+  firstName String    @map("first_name")
+  lastName  String    @map("last_name")
+  birthDate DateTime? @map("birth_date") @db.Date
+  notes     String?   @db.Text
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  projects     Project[]
+
+  @@index([orgId])
+  @@map("patients")
+}
+
+// ============================================
+// Projects
+// ============================================
+
+model Project {
+  id        String        @id @default(uuid())
+  patientId String        @map("patient_id")
+  doctorId  String?       @map("doctor_id")
+  name      String
+  date      DateTime      @db.Date
+  status    ProjectStatus @default(DRAFT)
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+  deletedAt DateTime?     @map("deleted_at")
+
+  patient Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctor  User?    @relation(fields: [doctorId], references: [id])
+  scans   Scan[]
+  designs Design[]
+
+  @@index([patientId])
+  @@map("projects")
+}
+
+enum ProjectStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETED
+  ARCHIVED
+}
+
+// ============================================
+// Scans
+// ============================================
+
+model Scan {
+  id         String   @id @default(uuid())
+  projectId  String   @map("project_id")
+  footSide   FootSide
+  stlUrl     String   @map("stl_url")
+  uploadedBy String?  @map("uploaded_by")
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  project  Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  uploader User?   @relation(fields: [uploadedBy], references: [id])
+
+  @@index([projectId])
+  @@map("scans")
+}
+
+enum FootSide {
+  LEFT
+  RIGHT
+}
+
+// ============================================
+// Designs
+// ============================================
+
+model Design {
+  id             String    @id @default(uuid())
+  projectId      String    @map("project_id")
+  parameters     Json      @default("{}")
+  elements       Json      @default("[]")
+  matchTransform Json?     @map("match_transform")
+  stlUrl         String?   @map("stl_url")
+  gcodeUrl       String?   @map("gcode_url")
+  version        Int       @default(1)
+  parentDesignId String?   @map("parent_design_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
+
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parentDesign Design?  @relation("DesignVersions", fields: [parentDesignId], references: [id])
+  childDesigns Design[] @relation("DesignVersions")
+
+  @@index([projectId])
+  @@map("designs")
+}
+
+// ============================================
+// Printers
+// ============================================
+
+model Printer {
+  id        String   @id @default(uuid())
+  orgId     String   @map("org_id")
+  name      String
+  brand     String?
+  model     String?
+  settings  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("printers")
+}
+
+// ============================================
+// Backups
+// ============================================
+
+model Backup {
+  id        String   @id @default(uuid())
+  orgId     String   @map("org_id")
+  type      String?
+  url       String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("backups")
+}
+
+// ============================================
+// Audit Logs
+// ============================================
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String?  @map("user_id")
+  action      String
+  targetTable String?  @map("target_table")
+  targetId    String?  @map("target_id")
+  diff        Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

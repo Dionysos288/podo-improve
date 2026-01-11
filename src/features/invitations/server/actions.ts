@@ -1,0 +1,192 @@
+'use server';
+
+import { prisma } from '@/src/shared/core/db/prisma';
+import { requireSession, requireOrganization } from '@/src/shared/core/auth/get-session';
+import { randomBytes } from 'crypto';
+
+function generateInviteCode(): string {
+	return randomBytes(4).toString('hex').toUpperCase();
+}
+
+export async function createInvitation(data: {
+	email?: string;
+	role?: 'ADMIN' | 'DOCTOR';
+	type: 'email' | 'code';
+	expiresInDays?: number;
+}) {
+	const session = await requireSession();
+	const { orgId } = await requireOrganization();
+
+	// Only admins can create invitations
+	const user = await prisma.user.findUnique({
+		where: { id: session.user.id },
+	});
+
+	if (user?.role !== 'ADMIN') {
+		throw new Error('Alleen beheerders kunnen uitnodigingen versturen');
+	}
+
+	const expiresAt = new Date();
+	expiresAt.setDate(expiresAt.getDate() + (data.expiresInDays || 7));
+
+	const invitation = await prisma.invitation.create({
+		data: {
+			orgId,
+			email: data.type === 'email' ? data.email : null,
+			code: generateInviteCode(),
+			role: data.role || 'DOCTOR',
+			expiresAt,
+			invitedById: session.user.id,
+		},
+		include: {
+			organization: true,
+		},
+	});
+
+	// TODO: If email type, send email with invitation link
+	// This would integrate with an email service like Resend, SendGrid, etc.
+
+	return {
+		id: invitation.id,
+		code: invitation.code,
+		email: invitation.email,
+		role: invitation.role,
+		expiresAt: invitation.expiresAt,
+		orgName: invitation.organization.name,
+	};
+}
+
+export async function getInvitations() {
+	const { orgId } = await requireOrganization();
+
+	const invitations = await prisma.invitation.findMany({
+		where: {
+			orgId,
+			acceptedAt: null,
+		},
+		include: {
+			invitedBy: {
+				select: { name: true },
+			},
+		},
+		orderBy: { createdAt: 'desc' },
+	});
+
+	return invitations.map((inv) => ({
+		id: inv.id,
+		code: inv.code,
+		email: inv.email,
+		role: inv.role,
+		expiresAt: inv.expiresAt,
+		createdAt: inv.createdAt,
+		invitedByName: inv.invitedBy.name,
+		isExpired: new Date() > inv.expiresAt,
+	}));
+}
+
+export async function revokeInvitation(invitationId: string) {
+	const session = await requireSession();
+	const { orgId } = await requireOrganization();
+
+	// Only admins can revoke invitations
+	const user = await prisma.user.findUnique({
+		where: { id: session.user.id },
+	});
+
+	if (user?.role !== 'ADMIN') {
+		throw new Error('Alleen beheerders kunnen uitnodigingen intrekken');
+	}
+
+	// Verify invitation belongs to this org
+	const invitation = await prisma.invitation.findUnique({
+		where: { id: invitationId },
+	});
+
+	if (!invitation || invitation.orgId !== orgId) {
+		throw new Error('Uitnodiging niet gevonden');
+	}
+
+	await prisma.invitation.delete({
+		where: { id: invitationId },
+	});
+
+	return { success: true };
+}
+
+export async function validateInvitation(code: string) {
+	const invitation = await prisma.invitation.findUnique({
+		where: { code },
+		include: {
+			organization: true,
+		},
+	});
+
+	if (!invitation) {
+		throw new Error('Ongeldige uitnodigingscode');
+	}
+
+	if (invitation.acceptedAt) {
+		throw new Error('Deze uitnodiging is al gebruikt');
+	}
+
+	if (new Date() > invitation.expiresAt) {
+		throw new Error('Deze uitnodiging is verlopen');
+	}
+
+	return {
+		orgName: invitation.organization.name,
+		email: invitation.email,
+		role: invitation.role,
+	};
+}
+
+export async function acceptInvitation(code: string) {
+	const session = await requireSession();
+
+	const invitation = await prisma.invitation.findUnique({
+		where: { code },
+		include: {
+			organization: true,
+		},
+	});
+
+	if (!invitation) {
+		throw new Error('Ongeldige uitnodigingscode');
+	}
+
+	if (invitation.acceptedAt) {
+		throw new Error('Deze uitnodiging is al gebruikt');
+	}
+
+	if (new Date() > invitation.expiresAt) {
+		throw new Error('Deze uitnodiging is verlopen');
+	}
+
+	// If invitation has an email, verify it matches the user's email
+	if (invitation.email && invitation.email !== session.user.email) {
+		throw new Error('Deze uitnodiging is voor een ander e-mailadres');
+	}
+
+	// Update invitation as accepted
+	await prisma.invitation.update({
+		where: { id: invitation.id },
+		data: {
+			acceptedAt: new Date(),
+			acceptedById: session.user.id,
+		},
+	});
+
+	// Add user to organization
+	await prisma.user.update({
+		where: { id: session.user.id },
+		data: {
+			orgId: invitation.orgId,
+			role: invitation.role,
+		},
+	});
+
+	return {
+		orgSlug: invitation.organization.slug,
+		orgName: invitation.organization.name,
+	};
+}

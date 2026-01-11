@@ -1,0 +1,62 @@
+@import 'tailwindcss';
+
+:root {
+	--background: #0c1626;
+	--foreground: #e9f3ff;
+	--ui-panel: #0e2137;
+	--ui-card: #10263d;
+	--ui-overlay: #0f2438;
+	--ui-border: #1f3650;
+	--ui-accent: #63f7d6;
+	--ui-muted: #9fb7cf;
+	--ui-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
+}
+
+@theme inline {
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-ui-panel: var(--ui-panel);
+	--color-ui-card: var(--ui-card);
+	--color-ui-overlay: var(--ui-overlay);
+	--color-ui-border: var(--ui-border);
+	--color-ui-accent: var(--ui-accent);
+	--color-ui-muted: var(--ui-muted);
+	--font-sans: var(--font-geist-sans);
+	--font-mono: var(--font-geist-mono);
+}
+
+body {
+	background: var(--background);
+	color: var(--foreground);
+	font-family: var(--font-geist-sans), system-ui, -apple-system,
+		BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+@layer components {
+	.ui-panel {
+		background: var(--ui-panel);
+		border: 1px solid var(--ui-border);
+		color: var(--foreground);
+		box-shadow: var(--ui-shadow);
+	}
+
+	.ui-card {
+		background: var(--ui-card);
+		border: 1px solid var(--ui-border);
+		color: var(--foreground);
+		box-shadow: var(--ui-shadow);
+	}
+
+	.ui-overlay-card {
+		background: var(--ui-overlay);
+		border: 1px solid var(--ui-border);
+		color: var(--foreground);
+		box-shadow: var(--ui-shadow);
+	}
+
+	.ui-chip {
+		background: rgba(255, 255, 255, 0.06);
+		border: 1px solid var(--ui-border);
+		color: var(--foreground);
+	}
+}
