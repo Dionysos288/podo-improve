@@ -1,7 +1,10 @@
 'use server';
 
 import { prisma } from '@/src/shared/core/db/prisma';
-import { requireSession, requireOrganization } from '@/src/shared/core/auth/get-session';
+import {
+	requireSession,
+	requireOrganization,
+} from '@/src/shared/core/auth/get-session';
 import { revalidatePath } from 'next/cache';
 
 export interface CreateProjectData {
@@ -121,7 +124,7 @@ export async function createProject(data: CreateProjectData) {
 	}
 
 	// Verify doctor belongs to this org if provided
-	let doctorId = data.doctorId || session.user.id;
+	const doctorId = data.doctorId || session.user.id;
 	if (data.doctorId) {
 		const doctor = await prisma.user.findFirst({
 			where: {
@@ -167,7 +170,7 @@ export async function updateProject(id: string, data: UpdateProjectData) {
 	}
 
 	// Verify doctor belongs to this org if provided
-	let updateData: any = {
+	const updateData: any = {
 		name: data.name,
 		status: data.status,
 		date: data.date ? new Date(data.date as string) : undefined,
