@@ -6,6 +6,7 @@ import {
 	requireOrganization,
 } from '@/src/shared/core/auth/get-session';
 import { revalidatePath } from 'next/cache';
+import { ProjectStatus } from '@prisma/client';
 
 export interface CreateProjectData {
 	patientId: string;
@@ -16,13 +17,13 @@ export interface CreateProjectData {
 
 export interface UpdateProjectData {
 	name?: string;
-	status?: 'DRAFT' | 'IN_PROGRESS' | 'COMPLETED' | 'ARCHIVED';
+	status?: ProjectStatus;
 	date?: Date | string;
 	doctorId?: string;
 }
 
 export async function getProjects(filters?: {
-	status?: string;
+	status?: ProjectStatus;
 	patientId?: string;
 }) {
 	const { orgId } = await requireOrganization();
@@ -31,7 +32,7 @@ export async function getProjects(filters?: {
 		where: {
 			patient: { orgId },
 			deletedAt: null,
-			...(filters?.status && { status: filters.status as any }),
+			...(filters?.status && { status: filters.status as ProjectStatus }),
 			...(filters?.patientId && { patientId: filters.patientId }),
 		},
 		include: {
