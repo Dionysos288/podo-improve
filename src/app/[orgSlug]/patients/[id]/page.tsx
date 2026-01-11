@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { getPatient } from '@/src/features/patients/server/actions';
 import { ArrowLeft, FolderOpen } from 'lucide-react';
-import { PatientActions } from './_components/PatientActions';
+import { PatientActions } from '@/src/features/patients/components/PatientActions';
 import { notFound } from 'next/navigation';
 
 interface PatientDetailPageProps {

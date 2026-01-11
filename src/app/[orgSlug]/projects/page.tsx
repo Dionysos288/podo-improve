@@ -1,5 +1,5 @@
 import { getProjects } from '@/src/features/projects/server/actions';
-import { ProjectsClient } from './_components/ProjectsClient';
+import { ProjectsClient } from '@/src/features/projects/components/ProjectsClient';
 
 interface ProjectsPageProps {
 	params: Promise<{ orgSlug: string }>;

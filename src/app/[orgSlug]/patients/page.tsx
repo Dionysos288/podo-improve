@@ -1,5 +1,5 @@
 import { getPatients } from '@/src/features/patients/server/actions';
-import { PatientsClient } from './_components/PatientsClient';
+import { PatientsClient } from '@/src/features/patients/components/PatientsClient';
 
 interface PatientsPageProps {
 	params: Promise<{ orgSlug: string }>;

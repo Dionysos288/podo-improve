@@ -13,6 +13,8 @@ interface CreateProjectModalProps {
 	open: boolean;
 	onClose: () => void;
 	orgSlug: string;
+	patientId?: string;
+	patientName?: string;
 }
 
 interface Patient {
@@ -31,6 +33,8 @@ export function CreateProjectModal({
 	open,
 	onClose,
 	orgSlug,
+	patientId: initialPatientId,
+	patientName: initialPatientName,
 }: CreateProjectModalProps) {
 	const router = useRouter();
 	const { data: session } = useSession();
@@ -38,10 +42,12 @@ export function CreateProjectModal({
 		useOrganizationMembers();
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [projectName, setProjectName] = useState('');
-	const [selectedPatientId, setSelectedPatientId] = useState('');
+	const [selectedPatientId, setSelectedPatientId] = useState(initialPatientId || '');
 	const [selectedDoctorId, setSelectedDoctorId] = useState('');
 	const [patients, setPatients] = useState<Patient[]>([]);
 	const [isLoadingPatients, setIsLoadingPatients] = useState(false);
+	
+	const isPatientPreselected = !!initialPatientId;
 
 	// Set default doctor to current user when members load
 	useEffect(() => {
@@ -58,7 +64,7 @@ export function CreateProjectModal({
 	}, [members, session, selectedDoctorId]);
 
 	useEffect(() => {
-		if (open) {
+		if (open && !isPatientPreselected) {
 			setIsLoadingPatients(true);
 			getPatients()
 				.then((data) => {
@@ -74,28 +80,35 @@ export function CreateProjectModal({
 					setIsLoadingPatients(false);
 				});
 		}
-	}, [open]);
+	}, [open, isPatientPreselected]);
 
 	if (!open) return null;
 
-	const selectedPatient = patients.find((p) => p.id === selectedPatientId);
+	const selectedPatient = isPatientPreselected
+		? { id: initialPatientId!, firstName: initialPatientName?.split(' ')[0] || '', lastName: initialPatientName?.split(' ').slice(1).join(' ') || '' }
+		: patients.find((p) => p.id === selectedPatientId);
 
 	const handleSubmit = async (e: React.FormEvent) => {
 		e.preventDefault();
-		if (!selectedPatientId) return;
+		const finalPatientId = isPatientPreselected ? initialPatientId! : selectedPatientId;
+		if (!finalPatientId) return;
 
 		setIsSubmitting(true);
 
 		try {
+			const projectNameFallback = isPatientPreselected
+				? `Project voor ${initialPatientName}`
+				: `Project voor ${selectedPatient?.firstName} ${selectedPatient?.lastName}`;
+			
 			const project = await createProject({
-				patientId: selectedPatientId,
-				name:
-					projectName ||
-					`Project voor ${selectedPatient?.firstName} ${selectedPatient?.lastName}`,
+				patientId: finalPatientId,
+				name: projectName || projectNameFallback,
 				doctorId: selectedDoctorId || undefined,
 			});
 			setProjectName('');
-			setSelectedPatientId('');
+			if (!isPatientPreselected) {
+				setSelectedPatientId('');
+			}
 			setSelectedDoctorId(session?.user?.id || '');
 			onClose();
 			router.push(`/${orgSlug}/projects/${project.id}`);
@@ -113,30 +126,32 @@ export function CreateProjectModal({
 					Nieuw project
 				</h2>
 				<form onSubmit={handleSubmit} className="space-y-6">
-					<div className="space-y-2">
-						<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
-							Patiënt
-						</label>
-						{isLoadingPatients ? (
-							<div className="rounded-xl border border-ui-border bg-ui-card px-4 py-3 text-sm text-ui-muted">
-								Laden...
-							</div>
-						) : (
-							<select
-								value={selectedPatientId}
-								onChange={(e) => setSelectedPatientId(e.target.value)}
-								className="w-full rounded-xl border border-ui-border bg-ui-card px-4 py-3 pr-12 text-sm font-medium text-foreground transition-colors focus:border-ui-accent focus:outline-none focus:ring-2 focus:ring-ui-accent/20"
-								required
-							>
-								<option value="">Selecteer een patiënt</option>
-								{patients.map((patient) => (
-									<option key={patient.id} value={patient.id}>
-										{patient.firstName} {patient.lastName}
-									</option>
-								))}
-							</select>
-						)}
-					</div>
+					{!isPatientPreselected && (
+						<div className="space-y-2">
+							<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
+								Patiënt
+							</label>
+							{isLoadingPatients ? (
+								<div className="rounded-xl border border-ui-border bg-ui-card px-4 py-3 text-sm text-ui-muted">
+									Laden...
+								</div>
+							) : (
+								<select
+									value={selectedPatientId}
+									onChange={(e) => setSelectedPatientId(e.target.value)}
+									className="w-full rounded-xl border border-ui-border bg-ui-card px-4 py-3 pr-12 text-sm font-medium text-foreground transition-colors focus:border-ui-accent focus:outline-none focus:ring-2 focus:ring-ui-accent/20"
+									required
+								>
+									<option value="">Selecteer een patiënt</option>
+									{patients.map((patient) => (
+										<option key={patient.id} value={patient.id}>
+											{patient.firstName} {patient.lastName}
+										</option>
+									))}
+								</select>
+							)}
+						</div>
+					)}
 					<div className="space-y-2">
 						<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
 							Behandelaar
@@ -170,7 +185,9 @@ export function CreateProjectModal({
 							value={projectName}
 							onChange={(e) => setProjectName(e.target.value)}
 							placeholder={
-								selectedPatient
+								isPatientPreselected
+									? `Project voor ${initialPatientName}`
+									: selectedPatient
 									? `Project voor ${selectedPatient.firstName} ${selectedPatient.lastName}`
 									: 'Projectnaam'
 							}
@@ -190,9 +207,9 @@ export function CreateProjectModal({
 							type="submit"
 							disabled={
 								isSubmitting ||
-								!selectedPatientId ||
+								(!isPatientPreselected && !selectedPatientId) ||
 								!selectedDoctorId ||
-								isLoadingPatients ||
+								(!isPatientPreselected && isLoadingPatients) ||
 								isLoadingMembers
 							}
 							className="flex-1 rounded-xl bg-ui-accent py-3 font-semibold text-slate-900 transition-colors disabled:opacity-50"

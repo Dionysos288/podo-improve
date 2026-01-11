@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { Button } from '@/src/shared/components/ui/button';
 import { getProject } from '@/src/features/projects/server/actions';
 import { ArrowLeft, FileBox, Box, Upload } from 'lucide-react';
-import { ProjectActions } from './_components/ProjectActions';
+import { ProjectActions } from '@/src/features/projects/hooks/ProjectActions';
 import { notFound } from 'next/navigation';
 
 interface ProjectDetailPageProps {

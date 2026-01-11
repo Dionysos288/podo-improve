@@ -8,7 +8,7 @@ import {
 	deletePatient,
 	updatePatient,
 } from '@/src/features/patients/server/actions';
-import { CreateProjectModal } from './CreateProjectModal';
+import { CreateProjectModal } from '@/src/features/projects/components/CreateProjectModal';
 import { Input } from '@/src/shared/components/ui/input';
 
 interface PatientActionsProps {
