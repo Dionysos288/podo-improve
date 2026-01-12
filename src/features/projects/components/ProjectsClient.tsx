@@ -2,36 +2,12 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Card, CardContent } from '@/src/shared/components/ui/card';
 import { Button } from '@/src/shared/components/ui/button';
 import { Input } from '@/src/shared/components/ui/input';
 import { Search, FolderOpen, Plus } from 'lucide-react';
 import { CreateProjectModal } from './CreateProjectModal';
-
-interface Project {
-	id: string;
-	name: string;
-	date: Date;
-	status: string;
-	createdAt: Date;
-	patient: {
-		id: string;
-		firstName: string;
-		lastName: string;
-	};
-	doctor: {
-		id: string;
-		name: string;
-	} | null;
-	scansCount: number;
-	designsCount: number;
-}
-
-interface ProjectsClientProps {
-	projects: Project[];
-	orgSlug: string;
-	initialStatus?: string;
-}
+import type { ProjectStatus } from '@prisma/client';
+import type { ProjectsClientProps } from '@/src/features/projects/types/types';
 
 const statusFilters = [
 	{ value: '', label: 'Alle' },
@@ -47,7 +23,9 @@ export function ProjectsClient({
 	initialStatus = '',
 }: ProjectsClientProps) {
 	const [searchQuery, setSearchQuery] = useState('');
-	const [statusFilter, setStatusFilter] = useState(initialStatus);
+	const [statusFilter, setStatusFilter] = useState<ProjectStatus | ''>(
+		initialStatus
+	);
 	const [showCreateModal, setShowCreateModal] = useState(false);
 
 	const filteredProjects = projects.filter((project) => {
@@ -90,7 +68,9 @@ export function ProjectsClient({
 					{statusFilters.map((filter) => (
 						<button
 							key={filter.value}
-							onClick={() => setStatusFilter(filter.value)}
+							onClick={() =>
+								setStatusFilter(filter.value as ProjectStatus | '')
+							}
 							className={`rounded-xl px-4 py-2.5 text-sm font-medium transition-all ${
 								statusFilter === filter.value
 									? 'bg-ui-accent text-slate-900 shadow-lg shadow-ui-accent/20'
@@ -118,7 +98,11 @@ export function ProjectsClient({
 			) : (
 				<div className="space-y-6">
 					{filteredProjects.map((project) => (
-						<Link key={project.id} href={`/${orgSlug}/projects/${project.id}`}>
+						<Link
+							key={project.id}
+							href={`/${orgSlug}/projects/${project.id}`}
+							className="block"
+						>
 							<div className="group rounded-2xl border border-ui-border bg-linear-to-br from-ui-card to-ui-panel p-6 transition-all hover:border-ui-accent/50 hover:shadow-lg hover:shadow-ui-accent/5">
 								<div className="flex items-center justify-between">
 									<div className="flex items-center gap-4">
@@ -150,19 +134,19 @@ export function ProjectsClient({
 												project.status === 'COMPLETED'
 													? 'bg-green-500/10 text-green-400'
 													: project.status === 'IN_PROGRESS'
-													? 'bg-blue-500/10 text-blue-400'
-													: project.status === 'DRAFT'
-													? 'bg-ui-overlay text-ui-muted'
-													: 'bg-orange-500/10 text-orange-400'
+														? 'bg-blue-500/10 text-blue-400'
+														: project.status === 'DRAFT'
+															? 'bg-ui-overlay text-ui-muted'
+															: 'bg-orange-500/10 text-orange-400'
 											}`}
 										>
 											{project.status === 'COMPLETED'
 												? 'Voltooid'
 												: project.status === 'IN_PROGRESS'
-												? 'In behandeling'
-												: project.status === 'DRAFT'
-												? 'Concept'
-												: 'Gearchiveerd'}
+													? 'In behandeling'
+													: project.status === 'DRAFT'
+														? 'Concept'
+														: 'Gearchiveerd'}
 										</span>
 									</div>
 								</div>

@@ -6,26 +6,17 @@ import {
 	requireOrganization,
 } from '@/src/shared/core/auth/get-session';
 import { revalidatePath } from 'next/cache';
-import { ProjectStatus } from '@prisma/client';
-
-export interface CreateProjectData {
-	patientId: string;
-	name: string;
-	date?: Date | string;
-	doctorId?: string;
-}
-
-export interface UpdateProjectData {
-	name?: string;
-	status?: ProjectStatus;
-	date?: Date | string;
-	doctorId?: string;
-}
+import { ProjectStatus, type Prisma } from '@prisma/client';
+import type {
+	CreateProjectData,
+	UpdateProjectData,
+	ProjectListItem,
+} from '../types/types';
 
 export async function getProjects(filters?: {
 	status?: ProjectStatus;
 	patientId?: string;
-}) {
+}): Promise<ProjectListItem[]> {
 	const { orgId } = await requireOrganization();
 
 	const projects = await prisma.project.findMany({
@@ -171,7 +162,7 @@ export async function updateProject(id: string, data: UpdateProjectData) {
 	}
 
 	// Verify doctor belongs to this org if provided
-	const updateData: any = {
+	const updateData: Prisma.ProjectUncheckedUpdateInput = {
 		name: data.name,
 		status: data.status,
 		date: data.date ? new Date(data.date as string) : undefined,

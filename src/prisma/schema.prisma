@@ -71,6 +71,7 @@ model Organization {
   slug      String   @unique
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+  settings  Json     @default("{}")
 
   users       User[]
   patients    Patient[]
@@ -95,6 +96,7 @@ model User {
   role          UserRole @default(DOCTOR)
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
+  settings      Json     @default("{}")
 
   organization        Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
   projects            Project[]

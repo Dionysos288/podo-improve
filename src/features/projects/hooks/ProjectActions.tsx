@@ -11,20 +11,11 @@ import {
 	updateProject,
 } from '@/src/features/projects/server/actions';
 import { useOrganizationMembers } from '@/src/features/organizations/hooks/use-organization';
-
-interface ProjectActionsProps {
-	projectId: string;
-	projectStatus: string;
-	orgSlug: string;
-	currentName: string;
-	currentDoctorId: string | null;
-}
-
-interface Member {
-	id: string;
-	name: string;
-	email: string;
-}
+import type { ProjectStatus } from '@prisma/client';
+import type {
+	ProjectActionsProps,
+	Member,
+} from '@/src/features/projects/types/types';
 
 export function ProjectActions({
 	projectId,
@@ -59,9 +50,7 @@ export function ProjectActions({
 		}
 	};
 
-	const handleStatusChange = async (
-		status: 'DRAFT' | 'IN_PROGRESS' | 'COMPLETED' | 'ARCHIVED'
-	) => {
+	const handleStatusChange = async (status: ProjectStatus) => {
 		try {
 			await updateProject(projectId, { status });
 			router.refresh();

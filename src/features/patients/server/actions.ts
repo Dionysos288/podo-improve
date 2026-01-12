@@ -3,22 +3,13 @@
 import { prisma } from '@/src/shared/core/db/prisma';
 import { requireOrganization } from '@/src/shared/core/auth/get-session';
 import { revalidatePath } from 'next/cache';
+import type {
+	CreatePatientData,
+	UpdatePatientData,
+	PatientListItem,
+} from '../types/types';
 
-export interface CreatePatientData {
-	firstName: string;
-	lastName: string;
-	birthDate?: Date | string;
-	notes?: string;
-}
-
-export interface UpdatePatientData {
-	firstName?: string;
-	lastName?: string;
-	birthDate?: Date | string | null;
-	notes?: string | null;
-}
-
-export async function getPatients() {
+export async function getPatients(): Promise<PatientListItem[]> {
 	const { orgId } = await requireOrganization();
 
 	const patients = await prisma.patient.findMany({
@@ -34,7 +25,7 @@ export async function getPatients() {
 		orderBy: { createdAt: 'desc' },
 	});
 
-	return patients.map((patient: (typeof patients)[number]) => ({
+	return patients.map((patient) => ({
 		id: patient.id,
 		firstName: patient.firstName,
 		lastName: patient.lastName,
@@ -112,8 +103,8 @@ export async function updatePatient(id: string, data: UpdatePatientData) {
 			birthDate: data.birthDate
 				? new Date(data.birthDate as string)
 				: data.birthDate === null
-				? null
-				: undefined,
+					? null
+					: undefined,
 			notes: data.notes,
 		},
 	});

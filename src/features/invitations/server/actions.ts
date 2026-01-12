@@ -1,19 +1,20 @@
 'use server';
 
 import { prisma } from '@/src/shared/core/db/prisma';
-import { requireSession, requireOrganization } from '@/src/shared/core/auth/get-session';
+import {
+	requireSession,
+	requireOrganization,
+} from '@/src/shared/core/auth/get-session';
 import { randomBytes } from 'crypto';
+import { sendInvitationEmail } from '@/src/shared/core/email/send-invitation';
 
 function generateInviteCode(): string {
 	return randomBytes(4).toString('hex').toUpperCase();
 }
 
-export async function createInvitation(data: {
-	email?: string;
-	role?: 'ADMIN' | 'DOCTOR';
-	type: 'email' | 'code';
-	expiresInDays?: number;
-}) {
+import type { CreateInvitationData } from '../types/types';
+
+export async function createInvitation(data: CreateInvitationData) {
 	const session = await requireSession();
 	const { orgId } = await requireOrganization();
 
@@ -40,11 +41,26 @@ export async function createInvitation(data: {
 		},
 		include: {
 			organization: true,
+			invitedBy: {
+				select: { name: true },
+			},
 		},
 	});
 
-	// TODO: If email type, send email with invitation link
-	// This would integrate with an email service like Resend, SendGrid, etc.
+	if (data.type === 'email' && data.email) {
+		const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+		const inviteUrl = `${appUrl}/join/${invitation.code}`;
+		const expiresInDays = data.expiresInDays || 7;
+
+		await sendInvitationEmail({
+			to: data.email,
+			inviteUrl,
+			orgName: invitation.organization.name,
+			inviterName: invitation.invitedBy.name,
+			role: invitation.role,
+			expiresInDays,
+		});
+	}
 
 	return {
 		id: invitation.id,

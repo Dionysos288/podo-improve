@@ -148,17 +148,17 @@ export default async function PatientDetailPage({
 												project.status === 'COMPLETED'
 													? 'bg-green-500/10 text-green-400'
 													: project.status === 'IN_PROGRESS'
-													? 'bg-blue-500/10 text-blue-400'
-													: 'bg-ui-overlay text-ui-muted'
+														? 'bg-blue-500/10 text-blue-400'
+														: 'bg-ui-overlay text-ui-muted'
 											}`}
 										>
 											{project.status === 'COMPLETED'
 												? 'Voltooid'
 												: project.status === 'IN_PROGRESS'
-												? 'In behandeling'
-												: project.status === 'DRAFT'
-												? 'Concept'
-												: 'Gearchiveerd'}
+													? 'In behandeling'
+													: project.status === 'DRAFT'
+														? 'Concept'
+														: 'Gearchiveerd'}
 										</span>
 									</Link>
 								))}

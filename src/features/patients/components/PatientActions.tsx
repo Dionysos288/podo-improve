@@ -10,15 +10,16 @@ import {
 } from '@/src/features/patients/server/actions';
 import { CreateProjectModal } from '@/src/features/projects/components/CreateProjectModal';
 import { Input } from '@/src/shared/components/ui/input';
+import type { Patient } from '@prisma/client';
 
 interface PatientActionsProps {
 	patientId: string;
 	patientName: string;
 	orgSlug: string;
-	currentFirstName: string;
-	currentLastName: string;
-	currentBirthDate: Date | null;
-	currentNotes: string | null;
+	currentFirstName: Patient['firstName'];
+	currentLastName: Patient['lastName'];
+	currentBirthDate: Patient['birthDate'];
+	currentNotes: Patient['notes'];
 }
 
 export function PatientActions({

@@ -1,5 +1,6 @@
 import { getProjects } from '@/src/features/projects/server/actions';
 import { ProjectsClient } from '@/src/features/projects/components/ProjectsClient';
+import type { ProjectStatus } from '@prisma/client';
 
 interface ProjectsPageProps {
 	params: Promise<{ orgSlug: string }>;
@@ -12,6 +13,7 @@ export default async function ProjectsPage({
 }: ProjectsPageProps) {
 	const { orgSlug } = await params;
 	const { status } = await searchParams;
+	const typedStatus = (status as ProjectStatus | undefined) ?? '';
 	const projects = await getProjects();
 
 	return (
@@ -20,7 +22,7 @@ export default async function ProjectsPage({
 				<ProjectsClient
 					projects={projects}
 					orgSlug={orgSlug}
-					initialStatus={status}
+					initialStatus={typedStatus}
 				/>
 			</div>
 		</div>

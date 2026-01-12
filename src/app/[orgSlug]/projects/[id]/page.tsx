@@ -72,10 +72,10 @@ export default async function ProjectDetailPage({
 									{project.status === 'COMPLETED'
 										? 'Voltooid'
 										: project.status === 'IN_PROGRESS'
-										? 'In behandeling'
-										: project.status === 'DRAFT'
-										? 'Concept'
-										: 'Gearchiveerd'}
+											? 'In behandeling'
+											: project.status === 'DRAFT'
+												? 'Concept'
+												: 'Gearchiveerd'}
 								</p>
 							</div>
 							<div>

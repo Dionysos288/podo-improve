@@ -5,7 +5,8 @@ import type { NextRequest } from 'next/server';
 const publicRoutes = ['/login', '/register', '/join'];
 
 // API routes that should be excluded from middleware
-const excludedRoutes = ['/api/auth', '/api/invitations/validate'];
+// /api/agent uses Bearer token auth, not session cookies
+const excludedRoutes = ['/api/auth', '/api/invitations/validate', '/api/agent'];
 
 export default async function proxy(request: NextRequest) {
 	const { pathname } = request.nextUrl;

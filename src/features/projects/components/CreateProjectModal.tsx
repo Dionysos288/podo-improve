@@ -8,26 +8,11 @@ import { createProject } from '@/src/features/projects/server/actions';
 import { getPatients } from '@/src/features/patients/server/actions';
 import { useOrganizationMembers } from '@/src/features/organizations/hooks/use-organization';
 import { useSession } from '@/src/shared/core/auth/auth-client';
-
-interface CreateProjectModalProps {
-	open: boolean;
-	onClose: () => void;
-	orgSlug: string;
-	patientId?: string;
-	patientName?: string;
-}
-
-interface Patient {
-	id: string;
-	firstName: string;
-	lastName: string;
-}
-
-interface Member {
-	id: string;
-	name: string;
-	email: string;
-}
+import type {
+	CreateProjectModalProps,
+	PatientOption,
+	Member,
+} from '@/src/features/projects/types/types';
 
 export function CreateProjectModal({
 	open,
@@ -42,11 +27,13 @@ export function CreateProjectModal({
 		useOrganizationMembers();
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [projectName, setProjectName] = useState('');
-	const [selectedPatientId, setSelectedPatientId] = useState(initialPatientId || '');
+	const [selectedPatientId, setSelectedPatientId] = useState(
+		initialPatientId || ''
+	);
 	const [selectedDoctorId, setSelectedDoctorId] = useState('');
-	const [patients, setPatients] = useState<Patient[]>([]);
+	const [patients, setPatients] = useState<PatientOption[]>([]);
 	const [isLoadingPatients, setIsLoadingPatients] = useState(false);
-	
+
 	const isPatientPreselected = !!initialPatientId;
 
 	// Set default doctor to current user when members load
@@ -85,12 +72,18 @@ export function CreateProjectModal({
 	if (!open) return null;
 
 	const selectedPatient = isPatientPreselected
-		? { id: initialPatientId!, firstName: initialPatientName?.split(' ')[0] || '', lastName: initialPatientName?.split(' ').slice(1).join(' ') || '' }
+		? {
+				id: initialPatientId!,
+				firstName: initialPatientName?.split(' ')[0] || '',
+				lastName: initialPatientName?.split(' ').slice(1).join(' ') || '',
+			}
 		: patients.find((p) => p.id === selectedPatientId);
 
 	const handleSubmit = async (e: React.FormEvent) => {
 		e.preventDefault();
-		const finalPatientId = isPatientPreselected ? initialPatientId! : selectedPatientId;
+		const finalPatientId = isPatientPreselected
+			? initialPatientId!
+			: selectedPatientId;
 		if (!finalPatientId) return;
 
 		setIsSubmitting(true);
@@ -99,7 +92,7 @@ export function CreateProjectModal({
 			const projectNameFallback = isPatientPreselected
 				? `Project voor ${initialPatientName}`
 				: `Project voor ${selectedPatient?.firstName} ${selectedPatient?.lastName}`;
-			
+
 			const project = await createProject({
 				patientId: finalPatientId,
 				name: projectName || projectNameFallback,
@@ -188,8 +181,8 @@ export function CreateProjectModal({
 								isPatientPreselected
 									? `Project voor ${initialPatientName}`
 									: selectedPatient
-									? `Project voor ${selectedPatient.firstName} ${selectedPatient.lastName}`
-									: 'Projectnaam'
+										? `Project voor ${selectedPatient.firstName} ${selectedPatient.lastName}`
+										: 'Projectnaam'
 							}
 							className="w-full rounded-xl border border-ui-border bg-ui-card px-4 py-3 text-foreground placeholder:text-ui-muted focus:border-ui-accent focus:outline-none focus:ring-2 focus:ring-ui-accent/20"
 						/>

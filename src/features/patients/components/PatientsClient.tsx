@@ -2,29 +2,15 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import {
-	Card,
-	CardContent,
-	CardHeader,
-	CardTitle,
-} from '@/src/shared/components/ui/card';
+
 import { Button } from '@/src/shared/components/ui/button';
 import { Input } from '@/src/shared/components/ui/input';
 import { Plus, Search, User } from 'lucide-react';
 import { CreatePatientModal } from './CreatePatientModal';
-
-interface Patient {
-	id: string;
-	firstName: string;
-	lastName: string;
-	birthDate: Date | null;
-	notes: string | null;
-	createdAt: Date;
-	projectsCount: number;
-}
+import type { PatientListItem } from '@/src/features/patients/types/types';
 
 interface PatientsClientProps {
-	patients: Patient[];
+	patients: PatientListItem[];
 	orgSlug: string;
 }
 

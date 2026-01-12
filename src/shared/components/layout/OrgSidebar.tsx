@@ -8,7 +8,6 @@ import {
 	Settings,
 	LogOut,
 	LayoutDashboard,
-	UserCog,
 } from 'lucide-react';
 import { signOut } from '@/src/shared/core/auth/auth-client';
 
@@ -26,7 +25,6 @@ const navItems = [
 ];
 
 const adminItems = [
-	{ label: 'Beheer', href: '/admin', icon: UserCog },
 	{ label: 'Instellingen', href: '/settings', icon: Settings },
 ];
 

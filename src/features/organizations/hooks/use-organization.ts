@@ -1,5 +1,6 @@
 'use client';
 
+import type { UpdateMemberRoleData } from '../types/types';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
 	getOrganization,
@@ -38,7 +39,7 @@ export function useUpdateMemberRole() {
 	const queryClient = useQueryClient();
 
 	return useMutation({
-		mutationFn: ({ userId, role }: { userId: string; role: 'ADMIN' | 'DOCTOR' }) =>
+		mutationFn: ({ userId, role }: UpdateMemberRoleData) =>
 			updateMemberRole(userId, role),
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ['organization', 'members'] });

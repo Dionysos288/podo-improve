@@ -6,6 +6,7 @@ import {
 	createInvitation,
 	revokeInvitation,
 } from '../server/actions';
+import { CreateInvitationData } from '../types/types';
 
 export function useInvitations() {
 	return useQuery({
@@ -18,12 +19,7 @@ export function useCreateInvitation() {
 	const queryClient = useQueryClient();
 
 	return useMutation({
-		mutationFn: (data: {
-			email?: string;
-			role?: 'ADMIN' | 'DOCTOR';
-			type: 'email' | 'code';
-			expiresInDays?: number;
-		}) => createInvitation(data),
+		mutationFn: (data: CreateInvitationData) => createInvitation(data),
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ['invitations'] });
 		},
