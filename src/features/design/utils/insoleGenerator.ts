@@ -314,13 +314,16 @@ export function generateContouredInsole(
 
 	planeGeometry.computeVertexNormals();
 
-	console.log('Generated insole geometry:', {
-		width,
-		depth,
-		minY,
-		vertices: positions.count,
-		template,
-	});
+	// Debug logging - only in development
+	if (process.env.NODE_ENV === 'development') {
+		console.log('Generated insole geometry:', {
+			width,
+			depth,
+			minY,
+			vertices: positions.count,
+			template,
+		});
+	}
 
 	return planeGeometry;
 }

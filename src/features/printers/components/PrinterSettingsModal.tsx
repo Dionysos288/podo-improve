@@ -5,7 +5,12 @@ import { BaseModal } from '@/src/shared/components/ui/modal';
 import { Button } from '@/src/shared/components/ui/button';
 import { Input } from '@/src/shared/components/ui/input';
 import { updatePrinterSettings } from '@/src/features/printers/server/actions';
-import type { PrinterListItem, PrinterSettings } from '@/src/features/printers/types/printers';
+import type {
+	PrinterListItem,
+	PrinterSettings,
+	HardnessKey,
+	HardnessProfile,
+} from '@/src/features/printers/types/printers';
 
 function clampNumber(value: number, min: number, max: number) {
 	if (Number.isNaN(value)) return min;
@@ -38,7 +43,8 @@ export function PrinterSettingsModal({
 		});
 	};
 
-	const hardness = local.hardnessProfiles ?? {};
+	const hardness: Record<HardnessKey, HardnessProfile | undefined> =
+		(local.hardnessProfiles ?? {}) as Record<HardnessKey, HardnessProfile | undefined>;
 
 	return (
 		<BaseModal

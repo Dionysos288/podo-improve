@@ -17,19 +17,15 @@ export default async function OrgLayout({ children, params }: OrgLayoutProps) {
 		redirect('/login');
 	}
 
-	// Get the organization by slug
-	const organization = await prisma.organization.findUnique({
-		where: { slug: orgSlug },
-	});
+	// Parallel queries - eliminates waterfall
+	const [organization, user] = await Promise.all([
+		prisma.organization.findUnique({ where: { slug: orgSlug } }),
+		prisma.user.findUnique({ where: { id: session.user.id } }),
+	]);
 
 	if (!organization) {
 		notFound();
 	}
-
-	// Check if user belongs to this organization
-	const user = await prisma.user.findUnique({
-		where: { id: session.user.id },
-	});
 
 	if (!user || user.orgId !== organization.id) {
 		// User doesn't belong to this org

@@ -1,5 +1,6 @@
 'use server';
 
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/src/shared/core/db/prisma';
 import { requireOrganization, requireSession } from '@/src/shared/core/auth/get-session';
 import type { OrgSettings } from '../types/settings.ts';
@@ -27,7 +28,7 @@ export async function updateOrgSettings(patch: OrgSettings): Promise<OrgSettings
 	const merged = { ...asObject(existing?.settings), ...patch };
 	const updated = await prisma.organization.update({
 		where: { id: orgId },
-		data: { settings: merged },
+		data: { settings: merged as Prisma.InputJsonValue },
 		select: { settings: true },
 	});
 	return (updated.settings as OrgSettings) ?? {};
@@ -53,7 +54,7 @@ export async function updateUserSettings(
 	const merged = { ...asObject(existing?.settings), ...patch };
 	const updated = await prisma.user.update({
 		where: { id: session.user.id },
-		data: { settings: merged },
+		data: { settings: merged as Prisma.InputJsonValue },
 		select: { settings: true },
 	});
 	return (updated.settings as Record<string, unknown>) ?? {};

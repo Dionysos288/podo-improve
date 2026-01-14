@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/src/shared/core/auth/get-session';
 import { prisma } from '@/src/shared/core/db/prisma';
+import { Prisma } from '@prisma/client';
 
 function asObject(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== 'object') return {};
@@ -29,7 +30,7 @@ export async function PUT(req: NextRequest) {
 		const merged = { ...asObject(existing?.settings), ...patch };
 		const updated = await prisma.user.update({
 			where: { id: session.user.id },
-			data: { settings: merged },
+			data: { settings: merged as Prisma.InputJsonValue },
 			select: { settings: true },
 		});
 

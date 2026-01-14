@@ -50,7 +50,6 @@ export function STLViewer({
 	rightUrl,
 	showGrid = true,
 }: STLViewerProps) {
-	console.log(leftUrl, rightUrl);
 	return (
 		<div className="w-full h-full bg-gray-900">
 			<Canvas>

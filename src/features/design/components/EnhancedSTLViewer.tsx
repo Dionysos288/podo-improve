@@ -15,6 +15,7 @@ import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as THREE from 'three';
+// Note: Full THREE import needed for react-three-fiber compatibility
 import { centerMesh, scaleMesh } from '@/src/features/design/utils/matching';
 import { useDesignStore } from '@/src/shared/core/store/designStore';
 import {
@@ -195,12 +196,15 @@ export const EnhancedSTLViewer = forwardRef<
 			const cam = cameraRef.current;
 			const ctrl = controlsRef.current;
 			if (!cam) return;
-			const payload = {
-				position: cam.position.toArray(),
-				target: ctrl?.target?.toArray ? ctrl.target.toArray() : [0, 0, 0],
-				up: cam.up.toArray(),
-			};
-			console.log('CameraView', payload);
+			// Camera debug info - only in development
+			if (process.env.NODE_ENV === 'development') {
+				const payload = {
+					position: cam.position.toArray(),
+					target: ctrl?.target?.toArray ? ctrl.target.toArray() : [0, 0, 0],
+					up: cam.up.toArray(),
+				};
+				console.log('CameraView', payload);
+			}
 		};
 
 		const handleMatch = () => {
@@ -221,7 +225,7 @@ export const EnhancedSTLViewer = forwardRef<
 					translation: [offset.x, offset.y, offset.z] as [
 						number,
 						number,
-						number
+						number,
 					],
 					rotation: [0, 0, 0] as [number, number, number],
 					scale: 1,
@@ -267,27 +271,27 @@ export const EnhancedSTLViewer = forwardRef<
 				meta1: toLocal(landmarkPoints.meta1).toArray() as [
 					number,
 					number,
-					number
+					number,
 				],
 				meta5: toLocal(landmarkPoints.meta5).toArray() as [
 					number,
 					number,
-					number
+					number,
 				],
 				navicular: toLocal(landmarkPoints.navicular).toArray() as [
 					number,
 					number,
-					number
+					number,
 				],
 				calcaneus: toLocal(landmarkPoints.calcaneus).toArray() as [
 					number,
 					number,
-					number
+					number,
 				],
 				heel: toLocal(landmarkPoints.heel).toArray() as [
 					number,
 					number,
-					number
+					number,
 				],
 			};
 			Promise.resolve().then(() => setLocalLandmarks(next));
@@ -301,7 +305,12 @@ export const EnhancedSTLViewer = forwardRef<
 
 		// Log camera + target whenever view is applied so you can copy values
 		useEffect(() => {
-			if (cameraRef.current && controlsRef.current) {
+			// Camera view logging - only in development
+			if (
+				process.env.NODE_ENV === 'development' &&
+				cameraRef.current &&
+				controlsRef.current
+			) {
 				const cam = cameraRef.current;
 				const ctrl = controlsRef.current;
 				console.log('CameraView', {

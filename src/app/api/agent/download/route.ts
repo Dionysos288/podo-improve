@@ -162,6 +162,8 @@ pause
 			// Unix shell script
 			filename = 'start-agent.sh';
 			contentType = 'application/x-sh';
+			// Use $0 instead of BASH_SOURCE[0] to avoid TypeScript parsing issues
+			// $0 works in bash and gives the script path
 			scriptContent = `#!/bin/bash
 # Podo Improve Print Agent Launcher
 # This script starts the Print Agent with your token embedded.
@@ -177,37 +179,37 @@ if ! command -v node &> /dev/null; then
 fi
 
 # Get the directory where this script is located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENT_FILE="$SCRIPT_DIR/agent.mjs"
+SCRIPT_DIR="$(cd "$(dirname "$$0")" && pwd)"
+AGENT_FILE="$$SCRIPT_DIR/agent.mjs"
 
 # Check if agent.mjs exists, if not download it
-if [ ! -f "$AGENT_FILE" ]; then
+if [ ! -f "$$AGENT_FILE" ]; then
     echo ""
     echo "Agent file not found. Downloading from server..."
     echo ""
     
     if command -v curl &> /dev/null; then
-        curl -o "$AGENT_FILE" "${webAppUrl}/api/agent/files/agent.mjs"
+        curl -o "$$AGENT_FILE" "${webAppUrl}/api/agent/files/agent.mjs"
     elif command -v wget &> /dev/null; then
-        wget -O "$AGENT_FILE" "${webAppUrl}/api/agent/files/agent.mjs"
+        wget -O "$$AGENT_FILE" "${webAppUrl}/api/agent/files/agent.mjs"
     else
         echo "ERROR: Neither curl nor wget is installed."
         echo "Please install curl or wget, or download agent.mjs manually."
         exit 1
     fi
     
-    if [ ! -f "$AGENT_FILE" ]; then
+    if [ ! -f "$$AGENT_FILE" ]; then
         echo "ERROR: Failed to download agent file."
         exit 1
     fi
     
-    chmod +x "$AGENT_FILE"
+    chmod +x "$$AGENT_FILE"
     echo "Downloaded successfully!"
     echo ""
 fi
 
 # Start the agent
-cd "$SCRIPT_DIR"
+cd "$$SCRIPT_DIR"
 node agent.mjs --url ${webAppUrl} --token ${agentToken}
 `;
 		}

@@ -1,5 +1,6 @@
 import { getServerSession } from '@/src/shared/core/auth/get-session';
 import { prisma } from '@/src/shared/core/db/prisma';
+import { unstable_cache } from 'next/cache';
 import {
 	StatCard,
 	SectionCard,
@@ -7,6 +8,38 @@ import {
 } from '@/src/shared/components/ui/section-card';
 import Link from 'next/link';
 import { Users, FolderOpen, Printer, ChevronRight } from 'lucide-react';
+
+// Cache dashboard stats for 60 seconds to reduce database load
+const getDashboardStats = unstable_cache(
+	async (orgId: string) => {
+		const [patientsCount, projectsCount, recentProjects] = await Promise.all([
+			prisma.patient.count({
+				where: { orgId, deletedAt: null },
+			}),
+			prisma.project.count({
+				where: {
+					patient: { orgId },
+					deletedAt: null,
+				},
+			}),
+			prisma.project.findMany({
+				where: {
+					patient: { orgId },
+					deletedAt: null,
+				},
+				include: {
+					patient: true,
+					doctor: true,
+				},
+				orderBy: { createdAt: 'desc' },
+				take: 5,
+			}),
+		]);
+		return { patientsCount, projectsCount, recentProjects };
+	},
+	['dashboard-stats'],
+	{ revalidate: 60, tags: ['dashboard'] }
+);
 
 interface DashboardPageProps {
 	params: Promise<{ orgSlug: string }>;
@@ -29,30 +62,8 @@ export default async function DashboardPage({ params }: DashboardPageProps) {
 		return null;
 	}
 
-	// Get dashboard stats
-	const [patientsCount, projectsCount, recentProjects] = await Promise.all([
-		prisma.patient.count({
-			where: { orgId: organization.id, deletedAt: null },
-		}),
-		prisma.project.count({
-			where: {
-				patient: { orgId: organization.id },
-				deletedAt: null,
-			},
-		}),
-		prisma.project.findMany({
-			where: {
-				patient: { orgId: organization.id },
-				deletedAt: null,
-			},
-			include: {
-				patient: true,
-				doctor: true,
-			},
-			orderBy: { createdAt: 'desc' },
-			take: 5,
-		}),
-	]);
+	// Get cached dashboard stats
+	const { patientsCount, projectsCount, recentProjects } = await getDashboardStats(organization.id);
 
 	const stats = [
 		{

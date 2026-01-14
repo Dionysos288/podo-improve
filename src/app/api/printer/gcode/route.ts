@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
 		// Run ideaMaker CLI
 		// Note: ideaMaker CLI arguments may need adjustment based on actual CLI documentation
 		// This is a placeholder implementation
-		return new Promise((resolve) => {
+		return new Promise<Response>((resolve) => {
 			const ideamaker = spawn(ideaMakerPath, [
 				'--slice',
 				'--input',
