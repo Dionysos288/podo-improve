@@ -10,7 +10,7 @@ import {
 	useEffect,
 } from 'react';
 import { Canvas, useLoader, useFrame } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, Grid } from '@react-three/drei';
+import { OrbitControls, PerspectiveCamera } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -22,6 +22,8 @@ import {
 	buildBasicInsole,
 	type LandmarkPoints,
 } from '@/src/features/design/utils/landmarkFitting';
+import { applyAllCorrections } from '@/src/features/design/utils/insoleCorrections';
+import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpPanel';
 
 interface STLMeshProps {
 	url: string;
@@ -30,6 +32,138 @@ interface STLMeshProps {
 	onGeometryReady?: (geometry: THREE.BufferGeometry) => void;
 	onPickPoint?: (point: THREE.Vector3) => void;
 	pointPickMode?: boolean;
+	showZones?: boolean;
+	corrections?: OntwerpCorrections;
+	side?: 'left' | 'right';
+}
+
+// Zone colors
+const ZONE_COLORS = {
+	heel: new THREE.Color('#ef4444'),      // Red
+	midfoot: new THREE.Color('#22c55e'),   // Green  
+	forefoot: new THREE.Color('#3b82f6'),  // Blue
+	arch: new THREE.Color('#f59e0b'),      // Orange/Yellow
+	neutral: new THREE.Color('#d7dadd'),   // Default gray
+};
+
+// Smooth interpolation for zone boundaries
+function smoothstep(edge0: number, edge1: number, x: number): number {
+	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+	return t * t * (3 - 2 * t);
+}
+
+// Calculate zone weights for a vertex position
+function getZoneWeights(relativeY: number, relativeZ: number): { heel: number; midfoot: number; forefoot: number; arch: number } {
+	const transitionWidth = 0.1;
+	
+	// Heel weight
+	const heel = smoothstep(0.2 + transitionWidth, 0.2 - transitionWidth, relativeY);
+	
+	// Midfoot weight
+	let midfoot = 0;
+	if (relativeY < 0.2 + transitionWidth) {
+		midfoot = smoothstep(0.2 - transitionWidth, 0.2 + transitionWidth, relativeY);
+	} else if (relativeY > 0.5 - transitionWidth) {
+		midfoot = smoothstep(0.5 + transitionWidth, 0.5 - transitionWidth, relativeY);
+	} else {
+		midfoot = 1;
+	}
+	
+	// Forefoot weight
+	const forefoot = smoothstep(0.5 - transitionWidth, 0.5 + transitionWidth, relativeY);
+	
+	// Arch weight (based on Z height)
+	const archZ = smoothstep(0.2, 0.6, relativeZ);
+	let archY = 1;
+	if (relativeY < 0.05) {
+		archY = smoothstep(0, 0.05, relativeY);
+	} else if (relativeY > 0.8) {
+		archY = smoothstep(1.0, 0.8, relativeY);
+	}
+	const arch = archZ * archY;
+	
+	return { heel, midfoot, forefoot, arch };
+}
+
+// Apply zone colors to geometry
+function applyZoneColors(geometry: THREE.BufferGeometry): void {
+	const positions = geometry.attributes.position as THREE.BufferAttribute;
+	const colors = new Float32Array(positions.count * 3);
+	
+	// Compute bounding box
+	geometry.computeBoundingBox();
+	const bbox = geometry.boundingBox!;
+	
+	// Determine which axis is the length (heel-to-toe) - it's the longest one
+	const sizeX = bbox.max.x - bbox.min.x;
+	const sizeY = bbox.max.y - bbox.min.y;
+	const sizeZ = bbox.max.z - bbox.min.z;
+	
+	// For insoles, typically Y is the longest (length), Z is height
+	// But we need to detect this dynamically
+	let lengthAxis: string = 'y';
+	let heightAxis: string = 'z';
+	
+	if (sizeX > sizeY && sizeX > sizeZ) {
+		lengthAxis = 'x';
+		heightAxis = 'z';
+	} else if (sizeY > sizeX && sizeY > sizeZ) {
+		lengthAxis = 'y';
+		heightAxis = 'z';
+	} else {
+		lengthAxis = 'z';
+		heightAxis = 'y';
+	}
+	
+	const minLength = lengthAxis === 'x' ? bbox.min.x : lengthAxis === 'y' ? bbox.min.y : bbox.min.z;
+	const maxLength = lengthAxis === 'x' ? bbox.max.x : lengthAxis === 'y' ? bbox.max.y : bbox.max.z;
+	const minHeight = heightAxis === 'x' ? bbox.min.x : heightAxis === 'y' ? bbox.min.y : bbox.min.z;
+	const maxHeight = heightAxis === 'x' ? bbox.max.x : heightAxis === 'y' ? bbox.max.y : bbox.max.z;
+	
+	const lengthSpan = maxLength - minLength;
+	const heightSpan = maxHeight - minHeight;
+	
+	const tempColor = new THREE.Color();
+	
+	console.log('Zone coloring - length axis:', lengthAxis, 'height axis:', heightAxis);
+	console.log('Bounding box:', { sizeX, sizeY, sizeZ });
+	
+	for (let i = 0; i < positions.count; i++) {
+		const x = positions.getX(i);
+		const y = positions.getY(i);
+		const z = positions.getZ(i);
+		
+		const lengthVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
+		const heightVal = heightAxis === 'x' ? x : heightAxis === 'y' ? y : z;
+		
+		const relativeLength = lengthSpan > 0 ? (lengthVal - minLength) / lengthSpan : 0;
+		const relativeHeight = heightSpan > 0 ? (heightVal - minHeight) / heightSpan : 0;
+		
+		const weights = getZoneWeights(relativeLength, relativeHeight);
+		
+		// Find dominant zone
+		const maxWeight = Math.max(weights.heel, weights.midfoot, weights.forefoot, weights.arch);
+		
+		if (maxWeight < 0.1) {
+			tempColor.copy(ZONE_COLORS.neutral);
+		} else if (weights.arch > 0.3 && weights.arch >= maxWeight * 0.8) {
+			// Arch has priority when significant
+			tempColor.copy(ZONE_COLORS.arch);
+		} else if (weights.heel >= maxWeight) {
+			tempColor.copy(ZONE_COLORS.heel);
+		} else if (weights.forefoot >= maxWeight) {
+			tempColor.copy(ZONE_COLORS.forefoot);
+		} else {
+			tempColor.copy(ZONE_COLORS.midfoot);
+		}
+		
+		colors[i * 3] = tempColor.r;
+		colors[i * 3 + 1] = tempColor.g;
+		colors[i * 3 + 2] = tempColor.b;
+	}
+	
+	geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+	console.log('Zone colors applied to', positions.count, 'vertices');
 }
 
 function STLMesh({
@@ -39,23 +173,77 @@ function STLMesh({
 	onGeometryReady,
 	onPickPoint,
 	pointPickMode = false,
+	showZones = false,
+	corrections,
+	side = 'left',
 }: STLMeshProps) {
-	const geometry = useLoader(STLLoader, url);
+	const rawGeometry = useLoader(STLLoader, url);
 	const meshRef = useRef<THREE.Mesh>(null);
 	const processedRef = useRef(false);
+	const lastCorrectionsRef = useRef<string>('');
+	
+	// Create a memoized processed geometry (base without corrections)
+	const baseGeometry = useMemo(() => {
+		// Clone the geometry so we don't modify the cached one
+		const cloned = rawGeometry.clone();
+		
+		// Center the geometry
+		const centerMatrix = centerMesh(cloned);
+		cloned.applyMatrix4(centerMatrix);
 
+		const scaleMatrix = scaleMesh(cloned, 100);
+		cloned.applyMatrix4(scaleMatrix);
+
+		// Recompute normals for better lighting
+		cloned.computeVertexNormals();
+		
+		return cloned;
+	}, [rawGeometry]);
+	
+	// Create a working geometry that includes corrections
+	const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
+	
+	// Initialize geometry and apply corrections when they change
+	useEffect(() => {
+		if (!baseGeometry) return;
+		
+		const correctionsKey = corrections ? JSON.stringify(corrections) : '';
+		
+		// Only recompute if corrections actually changed
+		if (correctionsKey === lastCorrectionsRef.current && geometry) {
+			return;
+		}
+		lastCorrectionsRef.current = correctionsKey;
+		
+		// Clone base geometry for modifications
+		const workingGeometry = baseGeometry.clone();
+		
+		// Apply corrections if provided
+		if (corrections) {
+			try {
+				applyAllCorrections(workingGeometry, corrections, side);
+				console.log(`Applied corrections to ${side} insole`);
+			} catch (err) {
+				console.error('Error applying corrections:', err);
+			}
+		}
+		
+		setGeometry(workingGeometry);
+	}, [baseGeometry, corrections, side]);
+	
+	// Apply zone colors whenever showZones changes
+	useEffect(() => {
+		if (geometry && showZones) {
+			applyZoneColors(geometry);
+		} else if (geometry && !showZones) {
+			// Remove vertex colors when zones are hidden
+			geometry.deleteAttribute('color');
+		}
+	}, [geometry, showZones]);
+	
+	// Notify parent about geometry
 	useEffect(() => {
 		if (geometry && !processedRef.current && onGeometryReady) {
-			// Center the geometry
-			const centerMatrix = centerMesh(geometry);
-			geometry.applyMatrix4(centerMatrix);
-
-			const scaleMatrix = scaleMesh(geometry, 100);
-			geometry.applyMatrix4(scaleMatrix);
-
-			// Recompute normals for better lighting
-			geometry.computeVertexNormals();
-
 			processedRef.current = true;
 			onGeometryReady(geometry);
 		}
@@ -67,6 +255,10 @@ function STLMesh({
 			meshRef.current.rotation.x = -Math.PI / 2;
 		}
 	});
+
+	if (!geometry) {
+		return null;
+	}
 
 	return (
 		<mesh
@@ -81,7 +273,9 @@ function STLMesh({
 			}}
 		>
 			<meshStandardMaterial
-				color={color}
+				key={showZones ? 'zones' : 'normal'}
+				color={showZones ? '#ffffff' : color}
+				vertexColors={showZones}
 				roughness={0.3}
 				metalness={0.0}
 				flatShading={false}
@@ -98,6 +292,8 @@ interface EnhancedSTLViewerProps {
 	lockTopView?: boolean;
 	hideScans?: boolean;
 	pointPickMode?: boolean;
+	showZones?: boolean;
+	corrections?: import('@/src/shared/components/design/OntwerpPanel').OntwerpCorrections;
 	onPickPoint?: (point: [number, number, number]) => void;
 	pickedPoints?: Array<[number, number, number]>;
 	onRightBBox?: (box: THREE.Box3) => void;
@@ -157,6 +353,8 @@ export const EnhancedSTLViewer = forwardRef<
 			lockTopView = false,
 			hideScans = false,
 			pointPickMode = false,
+			showZones = false,
+			corrections,
 			onPickPoint,
 			pickedPoints = [],
 			onRightBBox,
@@ -242,10 +440,10 @@ export const EnhancedSTLViewer = forwardRef<
 				scale: 1,
 			});
 			if (leftMeshRef.current) {
-				leftMeshRef.current.position.set(-80, 0, 0);
+				leftMeshRef.current.position.set(-50, 0, 0);
 			}
 			if (rightMeshRef.current) {
-				rightMeshRef.current.position.set(80, 0, 0);
+				rightMeshRef.current.position.set(50, 0, 0);
 			}
 		};
 
@@ -341,10 +539,10 @@ export const EnhancedSTLViewer = forwardRef<
 				c.maxAzimuthAngle = 0;
 				c.target.set(0, 0, 0);
 			} else {
-				// Preferred angled view
-				cam.position.set(-14, -115, 348);
+				// Preferred angled view - closer to insoles
+				cam.position.set(0, -60, 180);
 				cam.up.set(0, 1, 0);
-				cam.lookAt(-8, -115, -0.14);
+				cam.lookAt(0, 0, 0);
 				c.enableRotate = true;
 				c.enablePan = true;
 				c.enableZoom = true;
@@ -352,7 +550,7 @@ export const EnhancedSTLViewer = forwardRef<
 				c.maxPolarAngle = 0.9;
 				c.minAzimuthAngle = -Infinity;
 				c.maxAzimuthAngle = Infinity;
-				c.target.set(-8, -115, -0.14);
+				c.target.set(0, 0, 0);
 			}
 			c.update();
 			handleLogCamera();
@@ -392,7 +590,7 @@ export const EnhancedSTLViewer = forwardRef<
 					<PerspectiveCamera
 						ref={cameraRef}
 						makeDefault
-						position={[-14, -115, 348]}
+						position={[0, -60, 180]}
 						fov={50}
 					/>
 					<ambientLight intensity={0.4} />
@@ -401,24 +599,19 @@ export const EnhancedSTLViewer = forwardRef<
 					<directionalLight position={[0, 100, 0]} intensity={0.8} />
 					<directionalLight position={[0, -50, 50]} intensity={0.6} />
 
-					{showGrid && (
-						<Grid
-							args={[200, 200]}
-							cellColor="#6f6f6f"
-							sectionColor="#9d4b4b"
-						/>
-					)}
-
 					<Suspense fallback={null}>
 						{!hideScans && leftUrl && (
 							<group ref={leftMeshRef}>
 								<STLMesh
 									url={leftUrl}
-									color="#e8b99a"
-									position={[-80, 0, 0]}
+									color="#d7dadd"
+									position={[-50, 0, 0]}
 									onGeometryReady={setLeftGeometry}
 									onPickPoint={(pt) => onPickPoint?.([pt.x, pt.y, pt.z])}
 									pointPickMode={pointPickMode}
+									showZones={showZones}
+									corrections={corrections}
+									side="left"
 								/>
 							</group>
 						)}
@@ -426,8 +619,8 @@ export const EnhancedSTLViewer = forwardRef<
 							<group ref={rightMeshRef}>
 								<STLMesh
 									url={rightUrl}
-									color="#e8b99a"
-									position={[80, 0, 0]}
+									color="#d7dadd"
+									position={[50, 0, 0]}
 									onGeometryReady={(geom) => {
 										setRightGeometry(geom);
 										if (onRightBBox) {
@@ -442,6 +635,9 @@ export const EnhancedSTLViewer = forwardRef<
 									}}
 									onPickPoint={(pt) => onPickPoint?.([pt.x, pt.y, pt.z])}
 									pointPickMode={pointPickMode}
+									showZones={showZones}
+									corrections={corrections}
+									side="right"
 								/>
 							</group>
 						)}
@@ -483,8 +679,8 @@ export const EnhancedSTLViewer = forwardRef<
 						enablePan={true}
 						enableZoom={true}
 						enableRotate={!lockTopView}
-						minDistance={180}
-						maxDistance={700}
+						minDistance={50}
+						maxDistance={500}
 						minPolarAngle={lockTopView ? 0 : Math.PI / 4}
 						maxPolarAngle={lockTopView ? 0 : Math.PI / 2}
 						minAzimuthAngle={lockTopView ? 0 : undefined}

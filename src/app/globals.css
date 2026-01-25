@@ -60,3 +60,7 @@ body {
 		color: var(--foreground);
 	}
 }
+
+.root {
+  isolation: isolate;
+}

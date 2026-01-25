@@ -1,0 +1,373 @@
+'use client';
+
+import { useState } from 'react';
+import { Collapsible } from '@base-ui/react/collapsible';
+import { Switch } from '@base-ui/react/switch';
+import { Slider } from '@base-ui/react/slider';
+import { NumberField } from '@base-ui/react/number-field';
+import { Select } from '@base-ui/react/select';
+import { cn } from '@/src/shared/lib/cn';
+
+// Types for correction options
+export interface CorrectionValue {
+	leftValue: number;
+	rightValue: number;
+	enabled?: boolean;
+}
+
+export interface SelectOption {
+	value: string;
+	label: string;
+}
+
+export interface CorrectionConfig {
+	id: string;
+	label: string;
+	type: 'number' | 'slider' | 'switch' | 'select' | 'dual-number' | 'dual-select';
+	min?: number;
+	max?: number;
+	step?: number;
+	unit?: string;
+	options?: SelectOption[];
+	defaultValue?: number | string | boolean;
+	defaultLeftValue?: number | string;
+	defaultRightValue?: number | string;
+}
+
+// Styled wrapper for collapsible sections
+interface CollapsibleSectionProps {
+	title: string;
+	defaultOpen?: boolean;
+	children: React.ReactNode;
+	onFavorite?: () => void;
+	isFavorite?: boolean;
+}
+
+export function CollapsibleSection({
+	title,
+	defaultOpen = false,
+	children,
+	onFavorite,
+	isFavorite = false,
+}: CollapsibleSectionProps) {
+	const [open, setOpen] = useState(defaultOpen);
+
+	return (
+		<Collapsible.Root open={open} onOpenChange={setOpen}>
+			<div className="rounded-lg border border-ui-border bg-background/5">
+				<Collapsible.Trigger className="flex w-full items-center justify-between px-3 py-2 text-left">
+					<div className="flex items-center gap-2 text-ui-text">
+						<span
+							className={cn(
+								'text-ui-accent transition-transform',
+								open ? 'rotate-90' : ''
+							)}
+						>
+							▸
+						</span>
+						<span className="font-semibold text-sm">{title}</span>
+					</div>
+					{onFavorite && (
+						<button
+							type="button"
+							onClick={(e) => {
+								e.stopPropagation();
+								onFavorite();
+							}}
+							className={cn(
+								'text-ui-muted transition hover:text-ui-accent',
+								isFavorite && 'text-red-400'
+							)}
+						>
+							♥
+						</button>
+					)}
+				</Collapsible.Trigger>
+				<Collapsible.Panel className="px-3 pb-3">
+					<div className="space-y-3 pt-2">{children}</div>
+				</Collapsible.Panel>
+			</div>
+		</Collapsible.Root>
+	);
+}
+
+// Styled Number Field with mm unit
+interface StyledNumberFieldProps {
+	value: number;
+	onChange: (value: number) => void;
+	min?: number;
+	max?: number;
+	step?: number;
+	unit?: string;
+	label?: string;
+	className?: string;
+}
+
+export function StyledNumberField({
+	value,
+	onChange,
+	min = -10,
+	max = 10,
+	step = 0.5,
+	unit = 'mm',
+	label,
+	className,
+}: StyledNumberFieldProps) {
+	return (
+		<NumberField.Root
+			value={value}
+			onValueChange={(val) => onChange(val ?? 0)}
+			min={min}
+			max={max}
+			step={step}
+			className={cn('flex items-center gap-2', className)}
+		>
+			{label && (
+				<NumberField.ScrubArea className="cursor-ew-resize select-none text-sm text-ui-muted">
+					{label}
+				</NumberField.ScrubArea>
+			)}
+			<NumberField.Group className="flex items-center rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)]">
+				<NumberField.Decrement className="px-2 py-1 text-ui-muted hover:text-ui-text transition">
+					−
+				</NumberField.Decrement>
+				<NumberField.Input className="w-12 bg-transparent text-center text-sm text-ui-text outline-none" />
+				<NumberField.Increment className="px-2 py-1 text-ui-muted hover:text-ui-text transition">
+					+
+				</NumberField.Increment>
+			</NumberField.Group>
+			{unit && <span className="text-xs text-ui-muted">{unit}</span>}
+		</NumberField.Root>
+	);
+}
+
+// Styled Slider
+interface StyledSliderProps {
+	value: number;
+	onChange: (value: number) => void;
+	min?: number;
+	max?: number;
+	step?: number;
+	label?: string;
+	className?: string;
+}
+
+export function StyledSlider({
+	value,
+	onChange,
+	min = 0,
+	max = 100,
+	step = 1,
+	label,
+	className,
+}: StyledSliderProps) {
+	return (
+		<div className={cn('space-y-1', className)}>
+			{label && (
+				<div className="flex justify-between text-xs text-ui-muted">
+					<span>{label}</span>
+					<span>{value}</span>
+				</div>
+			)}
+			<Slider.Root
+				value={value}
+				onValueChange={(val) => onChange(val)}
+				min={min}
+				max={max}
+				step={step}
+				className="relative flex h-5 w-full touch-none select-none items-center"
+			>
+				<Slider.Control className="flex h-5 w-full items-center">
+					<Slider.Track className="relative h-1.5 w-full grow rounded-full bg-[rgba(255,255,255,0.1)]">
+						<Slider.Indicator className="absolute h-full rounded-full bg-ui-accent" />
+						<Slider.Thumb className="block h-4 w-4 cursor-pointer rounded-full border-2 border-ui-accent bg-ui-panel shadow-md transition-colors hover:bg-ui-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ui-accent" />
+					</Slider.Track>
+				</Slider.Control>
+			</Slider.Root>
+		</div>
+	);
+}
+
+// Styled Switch
+interface StyledSwitchProps {
+	checked: boolean;
+	onChange: (checked: boolean) => void;
+	label?: string;
+	className?: string;
+}
+
+export function StyledSwitch({
+	checked,
+	onChange,
+	label,
+	className,
+}: StyledSwitchProps) {
+	return (
+		<div className={cn('flex items-center gap-3', className)}>
+			{label && <span className="text-sm text-ui-text">{label}</span>}
+			<Switch.Root
+				checked={checked}
+				onCheckedChange={onChange}
+				className={cn(
+					'relative h-6 w-11 cursor-pointer rounded-full transition-colors',
+					checked ? 'bg-ui-accent' : 'bg-[rgba(255,255,255,0.2)]'
+				)}
+			>
+				<Switch.Thumb
+					className={cn(
+						'block h-5 w-5 rounded-full bg-white shadow-md transition-transform',
+						checked ? 'translate-x-[22px]' : 'translate-x-0.5'
+					)}
+				/>
+			</Switch.Root>
+		</div>
+	);
+}
+
+// Styled Select
+interface StyledSelectProps {
+	value: string;
+	onChange: (value: string) => void;
+	options: SelectOption[];
+	label?: string;
+	placeholder?: string;
+	className?: string;
+}
+
+export function StyledSelect({
+	value,
+	onChange,
+	options,
+	label,
+	placeholder = 'Selecteer...',
+	className,
+}: StyledSelectProps) {
+	return (
+		<div className={cn('space-y-1', className)}>
+			{label && <span className="text-xs text-ui-muted">{label}</span>}
+			<Select.Root 
+				value={value} 
+				onValueChange={(val) => {
+					if (val !== null) onChange(val);
+				}}
+			>
+				<Select.Trigger className="flex w-full items-center justify-between rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-sm text-ui-text hover:bg-[rgba(255,255,255,0.08)] transition cursor-pointer">
+					<Select.Value placeholder={placeholder} />
+					<Select.Icon className="text-ui-muted text-xs">▼</Select.Icon>
+				</Select.Trigger>
+				<Select.Portal>
+					<Select.Positioner className="z-[100]">
+						<Select.Popup className="max-h-60 overflow-auto rounded-lg border border-ui-border bg-ui-panel py-1 shadow-xl">
+							{options.map((opt) => (
+								<Select.Item
+									key={opt.value}
+									value={opt.value}
+									className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm text-ui-text outline-none hover:bg-[rgba(255,255,255,0.08)] data-[highlighted]:bg-[rgba(255,255,255,0.08)]"
+								>
+									<Select.ItemIndicator className="text-ui-accent">
+										✓
+									</Select.ItemIndicator>
+									<Select.ItemText>{opt.label}</Select.ItemText>
+								</Select.Item>
+							))}
+						</Select.Popup>
+					</Select.Positioner>
+				</Select.Portal>
+			</Select.Root>
+		</div>
+	);
+}
+
+// Dual input component for left/right foot values
+interface DualNumberInputProps {
+	leftValue: number;
+	rightValue: number;
+	onLeftChange: (value: number) => void;
+	onRightChange: (value: number) => void;
+	min?: number;
+	max?: number;
+	step?: number;
+	unit?: string;
+	label?: string;
+	className?: string;
+}
+
+export function DualNumberInput({
+	leftValue,
+	rightValue,
+	onLeftChange,
+	onRightChange,
+	min = -10,
+	max = 10,
+	step = 0.5,
+	unit = 'mm',
+	label,
+	className,
+}: DualNumberInputProps) {
+	return (
+		<div className={cn('space-y-2', className)}>
+			{label && <span className="text-sm text-ui-muted">{label}</span>}
+			<div className="flex items-center gap-4">
+				<div className="flex-1">
+					<span className="text-xs text-ui-muted mb-1 block">Links</span>
+					<StyledNumberField
+						value={leftValue}
+						onChange={onLeftChange}
+						min={min}
+						max={max}
+						step={step}
+						unit={unit}
+					/>
+				</div>
+				<div className="flex-1">
+					<span className="text-xs text-ui-muted mb-1 block">Rechts</span>
+					<StyledNumberField
+						value={rightValue}
+						onChange={onRightChange}
+						min={min}
+						max={max}
+						step={step}
+						unit={unit}
+					/>
+				</div>
+			</div>
+		</div>
+	);
+}
+
+// Dual select component for left/right foot values
+interface DualSelectInputProps {
+	leftValue: string;
+	rightValue: string;
+	onLeftChange: (value: string) => void;
+	onRightChange: (value: string) => void;
+	options: SelectOption[];
+	label?: string;
+	className?: string;
+}
+
+export function DualSelectInput({
+	leftValue,
+	rightValue,
+	onLeftChange,
+	onRightChange,
+	options,
+	label,
+	className,
+}: DualSelectInputProps) {
+	return (
+		<div className={cn('space-y-2', className)}>
+			{label && <span className="text-sm text-ui-muted">{label}</span>}
+			<div className="flex items-center gap-4">
+				<div className="flex-1">
+					<span className="text-xs text-ui-muted mb-1 block">Links</span>
+					<StyledSelect value={leftValue} onChange={onLeftChange} options={options} />
+				</div>
+				<div className="flex-1">
+					<span className="text-xs text-ui-muted mb-1 block">Rechts</span>
+					<StyledSelect value={rightValue} onChange={onRightChange} options={options} />
+				</div>
+			</div>
+		</div>
+	);
+}

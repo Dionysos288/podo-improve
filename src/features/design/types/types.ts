@@ -71,3 +71,38 @@ export function isInsoleParameters(
 		'template' in value
 	);
 }
+
+export type InsoleZone = 'heel' | 'midfoot' | 'forefoot' | 'arch';
+
+export type InsoleAttributes = {
+	gridCols: number;
+	gridRows: number;
+	zones: InsoleZone[];
+	materials: Array<{
+		zone: InsoleZone;
+		materialId: string;
+	}>;
+};
+
+export type LandmarkSet = {
+	heel: [number, number, number];
+	toeTip: [number, number, number];
+	arch: [number, number, number];
+	meta1?: [number, number, number];
+	meta5?: [number, number, number];
+	navicular?: [number, number, number];
+	calcaneus?: [number, number, number];
+};
+
+export type GridEdit = {
+	colIndex: number;
+	rowIndex: number;
+	amount: number;
+	timestamp: number;
+};
+
+export type ZoneAdjustment = {
+	zone: InsoleZone;
+	amount: number;
+	timestamp: number;
+};

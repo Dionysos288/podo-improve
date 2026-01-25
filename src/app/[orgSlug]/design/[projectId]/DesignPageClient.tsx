@@ -12,6 +12,10 @@ import {
 	DirectProducePanel,
 	type PrinterSettings,
 } from '@/src/shared/components/design/DirectProducePanel';
+import {
+	OntwerpPanel,
+	type OntwerpCorrections,
+} from '@/src/shared/components/design/OntwerpPanel';
 import { BaseModal } from '@/src/shared/components/ui/modal';
 import { cn } from '@/src/shared/lib/cn';
 import {
@@ -48,6 +52,32 @@ const STLSelector = dynamic(
 	{ ssr: false }
 );
 
+const BaseSTLSelector = dynamic(
+	() =>
+		import('@/src/features/design/components/BaseSTLSelector').then(
+			(mod) => mod.BaseSTLSelector
+		),
+	{ ssr: false }
+);
+
+const DynamicInsoleWorkspace = dynamic(
+	() =>
+		import('@/src/features/design/components/DynamicInsoleWorkspace').then(
+			(mod) => mod.DynamicInsoleWorkspace
+		),
+	{
+		ssr: false,
+		loading: () => (
+			<div className="flex h-full items-center justify-center bg-gray-900">
+				<div className="text-center">
+					<div className="mb-2 h-8 w-8 animate-spin rounded-full border-2 border-ui-accent border-t-transparent mx-auto" />
+					<p className="text-ui-muted">Loading editor...</p>
+				</div>
+			</div>
+		),
+	}
+);
+
 const MiniSTLPreview = dynamic(
 	() =>
 		import('@/src/features/design/components/MiniSTLPreview').then(
@@ -77,7 +107,11 @@ export interface ProjectDetail {
 	}>;
 }
 
-type WorkflowStep = 'base' | 'stl-select' | 'point-pick';
+type WorkflowStep = 'base' | 'stl-select' | 'point-pick' | 'dynamic-edit';
+
+// Default STL files - Amina Dion L/R (always used)
+const DEFAULT_LEFT_STL = '/base/(Amina) Ruymen - voor Dion_L.stl';
+const DEFAULT_RIGHT_STL = '/base/(Amina) Ruymen - voor Dion_R.stl';
 
 const POINT_SEQUENCE = [
 	{ id: 'meta1', label: 'Klik op metatarsaal punt 1' },
@@ -140,6 +174,13 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		'export'
 	);
 	const [productionMethod, setProductionMethod] = useState('Printer: Solid');
+	const [selectedBaseSTL, setSelectedBaseSTL] = useState<string | null>(null);
+	const [corrections, setCorrections] = useState<OntwerpCorrections | undefined>(undefined);
+	const [showZones, setShowZones] = useState(false);
+	
+	// Always use Amina Dion L/R as default STL files
+	const leftStlUrl = DEFAULT_LEFT_STL;
+	const rightStlUrl = DEFAULT_RIGHT_STL;
 
 	const scans = project.scans ?? [];
 	const orderedScans = scans
@@ -341,7 +382,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 				return (
 					<Card>
 						<CardContent>
-							<div className=" pb-4">
+							<div className="pb-4">
 								<h4 className="text-sm font-semibold text-ui-accent">
 									Algemeen
 								</h4>
@@ -380,7 +421,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							</div>
 
 							<div className="mb-3 flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm">
-								<span className="text-(--ui-text)">Correctie toevoegen</span>
+								<span className="text-ui-text">Correctie toevoegen</span>
 								<button
 									type="button"
 									className="h-7 w-7 rounded-full bg-ui-accent text-slate-900"
@@ -389,42 +430,12 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								</button>
 							</div>
 
-							<div className="space-y-3 text-sm">
-								{[
-									'Kuip hoogte',
-									'Voorvoet uitvlakken',
-									'Hiel heffing',
-									'Mediale boog correctie',
-									'Gladstrijken',
-									'Pronatie',
-									'Supinatie',
-								].map((label) => (
-									<div
-										key={label}
-										className="rounded-lg border border-ui-border bg-background/0.02 px-3 py-2"
-									>
-										<div className="flex items-center justify-between">
-											<div className="flex items-center gap-2 text-ui-text">
-												<span className="text-ui-accent">▸</span>
-												<span className="font-semibold">{label}</span>
-											</div>
-											<button
-												type="button"
-												className="text-ui-muted transition hover:text-ui-accent"
-											>
-												♥
-											</button>
-										</div>
-										<div className="mt-2 flex items-center gap-3 text-ui-muted">
-											<span className="text-[11px] uppercase">Mock</span>
-											<div className="flex items-center gap-1 rounded bg-[rgba(255,255,255,0.04)] px-2 py-1">
-												<span className="text-xs text-(--ui-text)">0</span>
-												<span className="text-[11px]">mm</span>
-											</div>
-										</div>
-									</div>
-								))}
-							</div>
+							<OntwerpPanel
+								corrections={corrections}
+								onCorrectionsChange={setCorrections}
+								showZones={showZones}
+								onShowZonesChange={setShowZones}
+							/>
 						</CardContent>
 					</Card>
 				);
@@ -691,18 +702,48 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 						</div>
 					)}
 
+					{workflowStep === 'dynamic-edit' && !selectedBaseSTL && (
+						<div className="flex h-full items-center justify-center">
+							<BaseSTLSelector
+								onSelect={(url) => {
+									setSelectedBaseSTL(url);
+								}}
+							/>
+						</div>
+					)}
+
+					{workflowStep === 'dynamic-edit' && selectedBaseSTL && (
+						<div className="relative h-full w-full">
+							<DynamicInsoleWorkspace stlUrl={selectedBaseSTL} />
+							<div className="absolute left-4 top-4 z-20">
+								<Button
+									variant="outline"
+									size="sm"
+									onClick={() => {
+										setSelectedBaseSTL(null);
+										setWorkflowStep('base');
+									}}
+								>
+									← Back
+								</Button>
+							</div>
+						</div>
+					)}
+
 					{workflowStep === 'base' && (
 						<div className="relative h-full w-full">
 							<EnhancedSTLViewer
 								ref={viewerRef}
-								leftUrl={selectedLeftScan?.stlUrl}
-								rightUrl={selectedRightScan?.stlUrl}
+								leftUrl={leftStlUrl}
+								rightUrl={rightStlUrl}
 								showGrid={true}
-								showBasePreview={!designPlan.plan}
+								showBasePreview={false}
 								lockTopView={false}
 								hideScans={false}
 								landmarkPoints={designPlan.points ?? undefined}
-								showGeneratedInsole={Boolean(designPlan.plan)}
+								showGeneratedInsole={false}
+								showZones={showZones}
+								corrections={corrections}
 							/>
 							{isFitting && (
 								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel px-4 py-2 text-xs font-semibold text-ui-text shadow-lg">
