@@ -289,8 +289,10 @@ export function applyMedialeBoogCorrectie(
 
 /**
  * GLADSTRIJKEN (Smoothing)
- * Applies Laplacian smoothing to reduce surface irregularities
- * Higher values = more smoothing iterations
+ * Smooths out bumps and height variations across the entire insole surface
+ * Works by finding local average heights and using bilinear interpolation
+ * to create perfectly smooth transitions without visible bands
+ * Higher values = more smoothing (reduces bumps more aggressively)
  */
 export function applyGladstrijken(
 	geometry: THREE.BufferGeometry,
@@ -299,89 +301,142 @@ export function applyGladstrijken(
 	if (intensity === 0) return;
 	
 	const positions = geometry.attributes.position as THREE.BufferAttribute;
-	const iterations = Math.round(intensity);
+	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
 	
-	// Simple averaging smooth - find nearby vertices and average
-	const positionArray = positions.array as Float32Array;
-	const count = positions.count;
+	const minLength = getMinForAxis(bbox, lengthAxis);
+	const minWidth = getMinForAxis(bbox, widthAxis);
 	
-	// Create spatial index for finding neighbors
-	const gridSize = 5; // Size of spatial grid cells
-	const spatialGrid = new Map<string, number[]>();
+	// Create a grid to compute local average heights
+	// Use fixed resolution for consistent results
+	const gridResolution = 20;
+	const cellSizeLength = lengthSpan / (gridResolution - 1);
+	const cellSizeWidth = widthSpan / (gridResolution - 1);
 	
-	// Build spatial grid
-	for (let i = 0; i < count; i++) {
-		const x = Math.floor(positionArray[i * 3] / gridSize);
-		const y = Math.floor(positionArray[i * 3 + 1] / gridSize);
-		const z = Math.floor(positionArray[i * 3 + 2] / gridSize);
-		const key = `${x},${y},${z}`;
-		
-		if (!spatialGrid.has(key)) {
-			spatialGrid.set(key, []);
+	// Build grid of average heights
+	const heightGrid: { sum: number; count: number }[][] = [];
+	for (let i = 0; i < gridResolution; i++) {
+		heightGrid[i] = [];
+		for (let j = 0; j < gridResolution; j++) {
+			heightGrid[i][j] = { sum: 0, count: 0 };
 		}
-		spatialGrid.get(key)!.push(i);
 	}
 	
-	// Smoothing iterations
-	for (let iter = 0; iter < iterations; iter++) {
-		const newPositions = new Float32Array(positionArray.length);
+	// First pass: accumulate heights into grid cells
+	for (let i = 0; i < positions.count; i++) {
+		const lengthVal = getAxisValue(positions, i, lengthAxis);
+		const widthVal = getAxisValue(positions, i, widthAxis);
+		const heightVal = getAxisValue(positions, i, heightAxis);
 		
-		for (let i = 0; i < count; i++) {
-			const x = positionArray[i * 3];
-			const y = positionArray[i * 3 + 1];
-			const z = positionArray[i * 3 + 2];
-			
-			// Find neighbors in adjacent grid cells
-			const gx = Math.floor(x / gridSize);
-			const gy = Math.floor(y / gridSize);
-			const gz = Math.floor(z / gridSize);
-			
-			let sumX = x, sumY = y, sumZ = z;
-			let neighborCount = 1;
-			
-			// Check neighboring cells
-			for (let dx = -1; dx <= 1; dx++) {
-				for (let dy = -1; dy <= 1; dy++) {
-					for (let dz = -1; dz <= 1; dz++) {
-						const key = `${gx + dx},${gy + dy},${gz + dz}`;
-						const neighbors = spatialGrid.get(key);
-						
-						if (neighbors) {
-							for (const j of neighbors) {
-								if (j !== i) {
-									const nx = positionArray[j * 3];
-									const ny = positionArray[j * 3 + 1];
-									const nz = positionArray[j * 3 + 2];
-									
-									// Check if within smoothing radius
-									const dist = Math.sqrt(
-										(x - nx) ** 2 + (y - ny) ** 2 + (z - nz) ** 2
-									);
-									
-									if (dist < gridSize * 1.5) {
-										sumX += nx;
-										sumY += ny;
-										sumZ += nz;
-										neighborCount++;
-									}
+		const gridX = Math.min(gridResolution - 1, Math.max(0, Math.round((lengthVal - minLength) / cellSizeLength)));
+		const gridY = Math.min(gridResolution - 1, Math.max(0, Math.round((widthVal - minWidth) / cellSizeWidth)));
+		
+		heightGrid[gridX][gridY].sum += heightVal;
+		heightGrid[gridX][gridY].count++;
+	}
+	
+	// Compute average heights per cell (fill empty cells with neighbors)
+	const avgHeights: number[][] = [];
+	for (let i = 0; i < gridResolution; i++) {
+		avgHeights[i] = [];
+		for (let j = 0; j < gridResolution; j++) {
+			const cell = heightGrid[i][j];
+			if (cell.count > 0) {
+				avgHeights[i][j] = cell.sum / cell.count;
+			} else {
+				// Find nearest non-empty cell
+				let found = false;
+				for (let r = 1; r < gridResolution && !found; r++) {
+					for (let di = -r; di <= r && !found; di++) {
+						for (let dj = -r; dj <= r && !found; dj++) {
+							const ni = i + di;
+							const nj = j + dj;
+							if (ni >= 0 && ni < gridResolution && nj >= 0 && nj < gridResolution) {
+								const neighbor = heightGrid[ni][nj];
+								if (neighbor.count > 0) {
+									avgHeights[i][j] = neighbor.sum / neighbor.count;
+									found = true;
 								}
 							}
 						}
 					}
 				}
+				if (!found) avgHeights[i][j] = 0;
 			}
-			
-			// Blend original with averaged position (keep some original detail)
-			const smoothFactor = 0.3;
-			newPositions[i * 3] = x + (sumX / neighborCount - x) * smoothFactor;
-			newPositions[i * 3 + 1] = y + (sumY / neighborCount - y) * smoothFactor;
-			newPositions[i * 3 + 2] = z + (sumZ / neighborCount - z) * smoothFactor;
 		}
+	}
+	
+	// Apply multiple smoothing passes to the grid itself
+	const smoothPasses = Math.ceil(intensity / 2);
+	let smoothedHeights = avgHeights;
+	
+	for (let pass = 0; pass < smoothPasses; pass++) {
+		const newSmoothed: number[][] = [];
+		for (let i = 0; i < gridResolution; i++) {
+			newSmoothed[i] = [];
+			for (let j = 0; j < gridResolution; j++) {
+				let sum = smoothedHeights[i][j];
+				let count = 1;
+				
+				// Average with neighbors (gaussian-like weighting)
+				for (let di = -1; di <= 1; di++) {
+					for (let dj = -1; dj <= 1; dj++) {
+						if (di === 0 && dj === 0) continue;
+						const ni = i + di;
+						const nj = j + dj;
+						if (ni >= 0 && ni < gridResolution && nj >= 0 && nj < gridResolution) {
+							// Corner neighbors get less weight
+							const weight = (di !== 0 && dj !== 0) ? 0.5 : 1.0;
+							sum += smoothedHeights[ni][nj] * weight;
+							count += weight;
+						}
+					}
+				}
+				newSmoothed[i][j] = sum / count;
+			}
+		}
+		smoothedHeights = newSmoothed;
+	}
+	
+	// Normalize intensity to blend factor (0.1 to 0.9)
+	const blendFactor = 0.1 + (intensity / 10) * 0.8;
+	
+	// Second pass: use BILINEAR INTERPOLATION for smooth transitions
+	for (let i = 0; i < positions.count; i++) {
+		const lengthVal = getAxisValue(positions, i, lengthAxis);
+		const widthVal = getAxisValue(positions, i, widthAxis);
+		const currentHeight = getAxisValue(positions, i, heightAxis);
 		
-		// Copy back
-		for (let i = 0; i < positionArray.length; i++) {
-			positionArray[i] = newPositions[i];
-		}
+		// Get continuous grid coordinates
+		const gx = (lengthVal - minLength) / cellSizeLength;
+		const gy = (widthVal - minWidth) / cellSizeWidth;
+		
+		// Clamp to grid bounds
+		const gxClamped = Math.max(0, Math.min(gridResolution - 1.001, gx));
+		const gyClamped = Math.max(0, Math.min(gridResolution - 1.001, gy));
+		
+		// Get integer and fractional parts for bilinear interpolation
+		const x0 = Math.floor(gxClamped);
+		const y0 = Math.floor(gyClamped);
+		const x1 = Math.min(x0 + 1, gridResolution - 1);
+		const y1 = Math.min(y0 + 1, gridResolution - 1);
+		const fx = gxClamped - x0;
+		const fy = gyClamped - y0;
+		
+		// Bilinear interpolation between 4 grid points
+		const h00 = smoothedHeights[x0][y0];
+		const h10 = smoothedHeights[x1][y0];
+		const h01 = smoothedHeights[x0][y1];
+		const h11 = smoothedHeights[x1][y1];
+		
+		const targetHeight = 
+			h00 * (1 - fx) * (1 - fy) +
+			h10 * fx * (1 - fy) +
+			h01 * (1 - fx) * fy +
+			h11 * fx * fy;
+		
+		// Blend current height toward target (smoothed interpolated average)
+		const newHeight = currentHeight + (targetHeight - currentHeight) * blendFactor;
+		setAxisValue(positions, i, heightAxis, newHeight);
 	}
 	
 	positions.needsUpdate = true;

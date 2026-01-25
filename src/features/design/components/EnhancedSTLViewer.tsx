@@ -8,6 +8,7 @@ import {
 	forwardRef,
 	useMemo,
 	useEffect,
+	useCallback,
 } from 'react';
 import { Canvas, useLoader, useFrame } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera } from '@react-three/drei';
@@ -203,7 +204,11 @@ function STLMesh({
 	// Create a working geometry that includes corrections
 	const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
 	
-	// Initialize geometry and apply corrections when they change
+	// Debounced corrections application to prevent UI blocking
+	const pendingCorrectionsRef = useRef<OntwerpCorrections | undefined>(undefined);
+	const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	
+	// Initialize geometry and apply corrections when they change (debounced)
 	useEffect(() => {
 		if (!baseGeometry) return;
 		
@@ -213,22 +218,42 @@ function STLMesh({
 		if (correctionsKey === lastCorrectionsRef.current && geometry) {
 			return;
 		}
-		lastCorrectionsRef.current = correctionsKey;
 		
-		// Clone base geometry for modifications
-		const workingGeometry = baseGeometry.clone();
+		// Store pending corrections
+		pendingCorrectionsRef.current = corrections;
 		
-		// Apply corrections if provided
-		if (corrections) {
-			try {
-				applyAllCorrections(workingGeometry, corrections, side);
-				console.log(`Applied corrections to ${side} insole`);
-			} catch (err) {
-				console.error('Error applying corrections:', err);
-			}
+		// Clear existing timer
+		if (debounceTimerRef.current) {
+			clearTimeout(debounceTimerRef.current);
 		}
 		
-		setGeometry(workingGeometry);
+		// Debounce the expensive geometry update (150ms delay)
+		debounceTimerRef.current = setTimeout(() => {
+			const pendingCorrections = pendingCorrectionsRef.current;
+			lastCorrectionsRef.current = pendingCorrections ? JSON.stringify(pendingCorrections) : '';
+			
+			// Clone base geometry for modifications
+			const workingGeometry = baseGeometry.clone();
+			
+			// Apply corrections if provided
+			if (pendingCorrections) {
+				try {
+					applyAllCorrections(workingGeometry, pendingCorrections, side);
+					console.log(`Applied corrections to ${side} insole`);
+				} catch (err) {
+					console.error('Error applying corrections:', err);
+				}
+			}
+			
+			setGeometry(workingGeometry);
+		}, 150);
+		
+		// Cleanup timer on unmount or re-render
+		return () => {
+			if (debounceTimerRef.current) {
+				clearTimeout(debounceTimerRef.current);
+			}
+		};
 	}, [baseGeometry, corrections, side]);
 	
 	// Apply zone colors whenever showZones changes
