@@ -38,7 +38,6 @@ import {
 import { extractPlantarSurface } from '@/src/features/design/utils/plantarExtraction';
 import type {
 	ThreePointLandmarks,
-	CompleteLandmarkSet,
 } from '@/src/features/design/types/types';
 import { exportGeometryToSTLBinary } from '@/src/features/design/utils/stlExport';
 import type {
@@ -143,6 +142,20 @@ const POINT_SEQUENCE = [
 	{ id: 'meta1', label: 'Klik op metatarsaal punt 1', description: 'Mediale voorvoet (binnenkant)' },
 	{ id: 'heel', label: 'Klik op het midden van de hiel', description: 'Centrum van de hiel' },
 ];
+
+const clamp = (v: number, min: number, max: number) =>
+	Math.min(max, Math.max(min, v));
+
+const roundTo = (v: number, decimals: number) => {
+	const f = 10 ** decimals;
+	return Math.round(v * f) / f;
+};
+
+const lengthMmToEuSize = (lengthMm: number) => {
+	// Inverse of euSizeToLengthMm(eu) = (eu * 10) / 1.5
+	const eu = (lengthMm * 1.5) / 10;
+	return clamp(roundTo(eu, 1), 20, 55);
+};
 
 interface DesignPageClientProps {
 	project: ProjectDetail;
@@ -512,17 +525,26 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 						const plantar = extractPlantarSurface(footMesh, fg, 1.0);
 						setPlantarData(plantar);
 
-						// Keep the existing base insole workflow (Ontwerp tab) and
-						// seed right-side values from scan-derived geometry.
-						const clamp = (v: number, min: number, max: number) =>
-							Math.min(max, Math.max(min, v));
-						const inferredArchMm = clamp(fg.archHeight * 0.12, 2, 14);
-						const inferredCupMm = clamp(fg.archHeight * 0.08, 1, 10);
+						// Seed right-side values from scan-derived geometry.
+						// Use raw scan length from the viewer metadata (not normalized world units)
+						// so shoe size is inferred stably from the imported scan.
+						const rightScanMeta = viewerRef.current?.getRightScanMeta?.();
+						const scanLengthMm =
+							rightScanMeta && rightScanMeta.rawLengthMm > 0
+								? rightScanMeta.rawLengthMm
+								: fg.footLength;
+						const inferredShoeSizeRight = lengthMmToEuSize(scanLengthMm);
+						const inferredArchMm = roundTo(clamp(fg.archHeight * 0.12, 2, 14), 1);
+						const inferredCupMm = roundTo(clamp(fg.archHeight * 0.08, 1, 10), 1);
 
 						setParameters({
 							...parameters,
 							general: {
 								...generalNormalized,
+								shoeSize: {
+									...generalNormalized.shoeSize,
+									right: inferredShoeSizeRight,
+								},
 								maxInsoleHeightMm: {
 									...generalNormalized.maxInsoleHeightMm,
 									right: inferredArchMm,
@@ -1231,6 +1253,8 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								showBasePreview={false}
 								lockTopView={true}
 								hideScans={false}
+								enableLengthScaling={false}
+								enableInsoleAdjustments={false}
 								pointPickMode
 								onPickPoint={handlePointPicked}
 								pickedPoints={Object.values(pointSelections)}

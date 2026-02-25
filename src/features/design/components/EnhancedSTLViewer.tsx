@@ -42,7 +42,7 @@ interface STLMeshProps {
 	opacity?: number;
 	onGeometryReady?: (
 		geometry: THREE.BufferGeometry,
-		meta?: { mmToWorld: number }
+		meta?: { mmToWorld: number; rawLengthMm: number }
 	) => void;
 	onPickPoint?: (point: THREE.Vector3) => void;
 	pointPickMode?: boolean;
@@ -69,6 +69,9 @@ interface STLMeshProps {
 		point: [number, number, number];
 		normal: [number, number, number];
 	}) => void;
+	enableLengthScaling?: boolean;
+	/** When false, keep STL as a raw scan (no insole-specific deformations). */
+	enableInsoleAdjustments?: boolean;
 }
 
 export type TextAnnotation = {
@@ -297,6 +300,8 @@ function STLMesh({
 	textPlacementEnabled = false,
 	textPlacementText = '',
 	onTextPlace,
+	enableLengthScaling = true,
+	enableInsoleAdjustments = true,
 }: STLMeshProps) {
 	const rawGeometry = useLoader(STLLoader, url);
 	const { parameters } = useDesignStore();
@@ -343,13 +348,22 @@ function STLMesh({
 	}, [rotationOffset]);
 	
 	// Create a memoized processed geometry (base without corrections)
-	const { baseGeometry, mmToWorld } = useMemo(() => {
+	const { baseGeometry, mmToWorld, rawLengthMm } = useMemo(() => {
 		const euSizeToLengthMm = (eu: number) => (eu * 10) / 1.5;
 		const DEFAULT_SHOE_SIZE = 40;
 		// Rim height is applied after corrections so it responds to corrections like kuiphoogte.
 
 		// Clone the geometry so we don't modify the cached one
 		const cloned = rawGeometry.clone();
+		rawGeometry.computeBoundingBox();
+		const rawBox = rawGeometry.boundingBox;
+		const rawLengthMm = rawBox
+			? Math.max(
+				rawBox.max.x - rawBox.min.x,
+				rawBox.max.y - rawBox.min.y,
+				rawBox.max.z - rawBox.min.z
+			)
+			: 0;
 		
 		// Center the geometry
 		const centerMatrix = centerMesh(cloned);
@@ -382,7 +396,11 @@ function STLMesh({
 
 			// 1) Shoe size: heel-anchored stretch/compress along length axis (relative to EU40)
 			const lengthScale =
-				typeof shoeSize === 'number' && Number.isFinite(shoeSize) && shoeSize > 0
+				enableInsoleAdjustments &&
+				enableLengthScaling &&
+				typeof shoeSize === 'number' &&
+				Number.isFinite(shoeSize) &&
+				shoeSize > 0
 					? euSizeToLengthMm(shoeSize) / euSizeToLengthMm(DEFAULT_SHOE_SIZE)
 					: 1;
 
@@ -450,8 +468,9 @@ function STLMesh({
 		return {
 			baseGeometry: cloned,
 			mmToWorld: nextMmToWorld,
+			rawLengthMm,
 		};
-	}, [rawGeometry, shoeSize]);
+	}, [rawGeometry, shoeSize, enableLengthScaling, enableInsoleAdjustments]);
 	
 	// Create a working geometry that includes corrections
 	const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
@@ -625,10 +644,17 @@ function STLMesh({
 		const corrected = correctedGeometryRef.current;
 		if (!corrected) return;
 		const workingGeometry = corrected.clone();
-		applySoleThicknessAfterCorrections(workingGeometry);
-		applyRimHeightAfterCorrections(workingGeometry);
+		if (enableInsoleAdjustments) {
+			applySoleThicknessAfterCorrections(workingGeometry);
+			applyRimHeightAfterCorrections(workingGeometry);
+		}
 		animateGeometryTo(workingGeometry);
-	}, [applyRimHeightAfterCorrections, applySoleThicknessAfterCorrections, animateGeometryTo]);
+	}, [
+		enableInsoleAdjustments,
+		applyRimHeightAfterCorrections,
+		applySoleThicknessAfterCorrections,
+		animateGeometryTo,
+	]);
 
 	// Initialize corrected geometry (base + corrections) when they change (debounced)
 	useEffect(() => {
@@ -658,7 +684,7 @@ function STLMesh({
 			const workingGeometry = baseGeometry.clone();
 			
 			// Apply corrections if provided
-			if (pendingCorrections) {
+			if (pendingCorrections && enableInsoleAdjustments) {
 				try {
 					applyAllCorrections(workingGeometry, pendingCorrections, side, {
 						mmToWorld,
@@ -694,6 +720,7 @@ function STLMesh({
 		activeCorrections,
 		side,
 		mmToWorld,
+		enableInsoleAdjustments,
 		rebuildFinalGeometryFromCorrected,
 	]);
 
@@ -820,9 +847,12 @@ function STLMesh({
 	useEffect(() => {
 		if (geometry && !processedRef.current && onGeometryReady) {
 			processedRef.current = true;
-			onGeometryReady(geometry, { mmToWorld: mmToWorld || 1 });
+			onGeometryReady(geometry, {
+				mmToWorld: mmToWorld || 1,
+				rawLengthMm,
+			});
 		}
-	}, [geometry, onGeometryReady, mmToWorld]);
+	}, [geometry, onGeometryReady, mmToWorld, rawLengthMm]);
 
 	// Rotate mesh to face up (STL files often need rotation)
 	// Keep useFrame for legacy behavior, but rotation is also set on geometry init.
@@ -1021,6 +1051,14 @@ interface EnhancedSTLViewerProps {
 	onDeselectSide?: () => void;
 	boxEnabled?: { left: boolean; right: boolean };
 	gridEditMode?: boolean;
+	/**
+	 * When false, skip shoe-size-driven length scaling on loaded STL meshes.
+	 * Useful while selecting landmarks on the raw scan to keep picked points
+	 * in the original scan coordinate space.
+	 */
+	enableLengthScaling?: boolean;
+	/** Disable insole-specific auto-adjustments on displayed STL meshes. */
+	enableInsoleAdjustments?: boolean;
 }
 
 function BaseInsolePreview({
@@ -1062,6 +1100,8 @@ export interface EnhancedSTLViewerRef {
 	getInsoleGeometry: () => THREE.BufferGeometry | null;
 	/** Get the right foot scan geometry for external computation */
 	getRightGeometry: () => THREE.BufferGeometry | null;
+	/** Get right scan conversion metadata (world↔mm) */
+	getRightScanMeta: () => { mmToWorld: number; rawLengthMm: number };
 	/** Set a precision insole geometry generated externally */
 	setPrecisionInsole: (geom: THREE.BufferGeometry | null) => void;
 }
@@ -1103,6 +1143,8 @@ export const EnhancedSTLViewer = forwardRef<
 			onDeselectSide,
 			boxEnabled = { left: false, right: false },
 			gridEditMode = false,
+			enableLengthScaling = true,
+			enableInsoleAdjustments = true,
 			corrections,
 			onPickPoint,
 			pickedPoints = [],
@@ -1118,6 +1160,7 @@ export const EnhancedSTLViewer = forwardRef<
 			useState<THREE.BufferGeometry | null>(null);
 		const [leftMmToWorld, setLeftMmToWorld] = useState<number>(1);
 		const [rightMmToWorld, setRightMmToWorld] = useState<number>(1);
+		const [rightRawLengthMm, setRightRawLengthMm] = useState<number>(0);
 		const [localLandmarks, setLocalLandmarks] = useState<LandmarkPoints | null>(
 			null
 		);
@@ -1303,8 +1346,12 @@ export const EnhancedSTLViewer = forwardRef<
 			reset: handleReset,
 			getInsoleGeometry: () => precisionInsole ?? generatedInsole,
 			getRightGeometry: () => rightGeometry,
+			getRightScanMeta: () => ({
+				mmToWorld: rightMmToWorld || 1,
+				rawLengthMm: rightRawLengthMm || 0,
+			}),
 			setPrecisionInsole: (geom: THREE.BufferGeometry | null) => setPrecisionInsole(geom),
-		}));
+		}), [generatedInsole, precisionInsole, rightGeometry, rightMmToWorld, rightRawLengthMm]);
 
 		useEffect(() => {
 			if (!landmarkPoints || !rightMeshRef.current) {
@@ -1591,6 +1638,8 @@ export const EnhancedSTLViewer = forwardRef<
 									textPlacementText={textPlacementText}
 									onTextPlace={onTextPlace}
 									side="left"
+									enableLengthScaling={enableLengthScaling}
+									enableInsoleAdjustments={enableInsoleAdjustments}
 								/>
 							</group>
 						)}
@@ -1603,6 +1652,7 @@ export const EnhancedSTLViewer = forwardRef<
 									onGeometryReady={(geom, meta) => {
 										setRightGeometry(geom);
 										setRightMmToWorld(meta?.mmToWorld || 1);
+										setRightRawLengthMm(meta?.rawLengthMm || 0);
 										if (onRightBBox) {
 											const posAttr = geom.getAttribute(
 												'position'
@@ -1638,6 +1688,8 @@ export const EnhancedSTLViewer = forwardRef<
 									textPlacementText={textPlacementText}
 									onTextPlace={onTextPlace}
 									side="right"
+									enableLengthScaling={enableLengthScaling}
+									enableInsoleAdjustments={enableInsoleAdjustments}
 								/>
 							</group>
 						)}
@@ -1657,6 +1709,8 @@ export const EnhancedSTLViewer = forwardRef<
 									heatmap={false}
 									pointPickMode={false}
 									side="left"
+									enableLengthScaling={false}
+									enableInsoleAdjustments={false}
 								/>
 							</group>
 						)}
@@ -1674,6 +1728,8 @@ export const EnhancedSTLViewer = forwardRef<
 									heatmap={false}
 									pointPickMode={false}
 									side="right"
+									enableLengthScaling={false}
+									enableInsoleAdjustments={false}
 								/>
 							</group>
 						)}
