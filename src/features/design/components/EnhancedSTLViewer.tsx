@@ -899,7 +899,7 @@ function STLMesh({
 		>
 			<meshStandardMaterial
 				key={showZones || heatmap ? 'colored' : 'normal'}
-				color={showZones ? '#ffffff' : color}
+				color={showZones ? '#ffffff' : pointPickMode ? '#d9b5a1' : color}
 				vertexColors={showZones || heatmap}
 				side={THREE.DoubleSide}
 				shadowSide={THREE.DoubleSide}
@@ -1062,6 +1062,8 @@ export interface EnhancedSTLViewerRef {
 	getInsoleGeometry: () => THREE.BufferGeometry | null;
 	/** Get the right foot scan geometry for external computation */
 	getRightGeometry: () => THREE.BufferGeometry | null;
+	/** Conversion factor from real millimeters to world units for current right mesh */
+	getRightMmToWorld: () => number;
 	/** Set a precision insole geometry generated externally */
 	setPrecisionInsole: (geom: THREE.BufferGeometry | null) => void;
 }
@@ -1303,6 +1305,7 @@ export const EnhancedSTLViewer = forwardRef<
 			reset: handleReset,
 			getInsoleGeometry: () => precisionInsole ?? generatedInsole,
 			getRightGeometry: () => rightGeometry,
+			getRightMmToWorld: () => rightMmToWorld || 1,
 			setPrecisionInsole: (geom: THREE.BufferGeometry | null) => setPrecisionInsole(geom),
 		}));
 
@@ -1400,13 +1403,13 @@ export const EnhancedSTLViewer = forwardRef<
 					const halfFovRad = THREE.MathUtils.degToRad((cam.fov || 50) / 2);
 					const dist = Math.max((footSpan * 0.7) / Math.tan(halfFovRad), 120);
 
-					cam.position.set(center.x, center.y + dist, center.z);
-					cam.up.set(1, 0, 0);
+					cam.position.set(center.x, center.y, center.z + dist);
+					cam.up.set(0, 1, 0);
 					cam.lookAt(center);
 					c.target.copy(center);
 				} else {
-					cam.position.set(50, 200, 0);
-					cam.up.set(2, 0, 0);
+					cam.position.set(50, 0, 200);
+					cam.up.set(0, 1, 0);
 					cam.lookAt(50, 0, 0);
 					c.target.set(50, 0, 0);
 				}
@@ -1528,8 +1531,8 @@ export const EnhancedSTLViewer = forwardRef<
 			const dist = Math.max((footSpan * 0.7) / Math.tan(halfFovRad), 120);
 
 			const c = controlsRef.current;
-			cam.position.set(center.x, center.y + dist, center.z);
-			cam.up.set(1, 0, 0);
+			cam.position.set(center.x, center.y, center.z + dist);
+			cam.up.set(0, 1, 0);
 			cam.lookAt(center);
 			c.target.copy(center);
 			c.update();
@@ -1849,9 +1852,12 @@ export const EnhancedSTLViewer = forwardRef<
 							const markerSize = 4;
 							const markerThickness = 0.8;
 							return (
-								<group key={`${pt.join('-')}-${idx}`} position={pt}>
+								<group
+									key={`${pt.join('-')}-${idx}`}
+									position={[pt[0], pt[1] + 0.25, pt[2]]}
+								>
 									{/* Horizontal bar of X */}
-									<mesh rotation={[0, 0, Math.PI / 4]}>
+									<mesh rotation={[0, Math.PI / 4, 0]}>
 										<boxGeometry args={[markerSize, markerThickness, markerThickness]} />
 										<meshStandardMaterial
 											color="#111827"
@@ -1860,7 +1866,7 @@ export const EnhancedSTLViewer = forwardRef<
 										/>
 									</mesh>
 									{/* Vertical bar of X */}
-									<mesh rotation={[0, 0, -Math.PI / 4]}>
+									<mesh rotation={[0, -Math.PI / 4, 0]}>
 										<boxGeometry args={[markerSize, markerThickness, markerThickness]} />
 										<meshStandardMaterial
 											color="#111827"

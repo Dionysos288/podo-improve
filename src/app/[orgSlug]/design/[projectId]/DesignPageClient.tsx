@@ -138,11 +138,101 @@ const DEFAULT_RIGHT_STL = '/STL/Ekrem_Zeneli_055037_000528_R.stl';
 const DEFAULT_BASE_LEFT_STL = '/base/(Amina) Ruymen - voor Dion_L.stl';
 const DEFAULT_BASE_RIGHT_STL = '/base/(Amina) Ruymen - voor Dion_R.stl';
 
-const POINT_SEQUENCE = [
-	{ id: 'meta5', label: 'Klik op metatarsaal punt 5', description: 'Laterale voorvoet (buitenkant)' },
-	{ id: 'meta1', label: 'Klik op metatarsaal punt 1', description: 'Mediale voorvoet (binnenkant)' },
-	{ id: 'heel', label: 'Klik op het midden van de hiel', description: 'Centrum van de hiel' },
+type PickPointId =
+	| 'heel'
+	| 'heelLateral'
+	| 'meta1'
+	| 'meta2'
+	| 'meta5';
+
+type PickSelections = Partial<Record<PickPointId, [number, number, number]>>;
+
+const POINT_SEQUENCE: Array<{ id: PickPointId; label: string; description: string; short: string }> = [
+	{ id: 'meta1', label: 'Klik op 1e metatarsale kop', description: 'Mediale voorvoet (M1)', short: 'M1' },
+	{ id: 'meta2', label: 'Klik op 2e metatarsale kop', description: 'Midden voorvoet (M2)', short: 'M2' },
+	{ id: 'meta5', label: 'Klik op 5e metatarsale kop', description: 'Laterale voorvoet (M5)', short: 'M5' },
+	{ id: 'heelLateral', label: 'Klik op laterale stabiliteitspunt (L)', description: 'Laterale hielrand / stabiliteitspunt', short: 'L' },
+	{ id: 'heel', label: 'Klik op het midden van de hiel (H)', description: 'Rear anchor / hielcentrum', short: 'H' },
 ];
+
+const distance3 = (a: [number, number, number], b: [number, number, number]) =>
+	Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+
+const deriveSeedFromPickedPoints = (
+	points: PickSelections,
+	fallbackArchMm: number,
+	worldToMm = 1
+) => {
+	const heel = points.heel;
+	const heelLateral = points.heelLateral;
+	const meta1 = points.meta1;
+	const meta2 = points.meta2;
+	const meta5 = points.meta5;
+
+	if (!heel || !heelLateral || !meta1 || !meta2 || !meta5) {
+		return {
+			archMm: clamp(fallbackArchMm, 2, 16),
+			cupMm: clamp(fallbackArchMm * 0.55, 1, 12),
+			shoeSizeEu: 40,
+			pronationMm: 0,
+			supinationMm: 0,
+		};
+	}
+
+	const forefootCenter: [number, number, number] = [
+		(meta1[0] + meta2[0] + meta5[0]) / 3,
+		(meta1[1] + meta2[1] + meta5[1]) / 3,
+		(meta1[2] + meta2[2] + meta5[2]) / 3,
+	];
+
+	const footLengthMm = distance3(heel, forefootCenter) * 1.2 * worldToMm;
+	const forefootWidthMm = distance3(meta1, meta5) * worldToMm;
+	const lateralSpanMm = distance3(heel, heelLateral) * worldToMm;
+
+	// Forefoot load triangle: M2 offset to M1-M5 line (biomechanical intent)
+	const aToB: [number, number, number] = [meta5[0] - meta1[0], meta5[1] - meta1[1], meta5[2] - meta1[2]];
+	const aToP: [number, number, number] = [meta2[0] - meta1[0], meta2[1] - meta1[1], meta2[2] - meta1[2]];
+	const abLen2 = Math.max(1e-6, aToB[0] ** 2 + aToB[1] ** 2 + aToB[2] ** 2);
+	const t = (aToP[0] * aToB[0] + aToP[1] * aToB[1] + aToP[2] * aToB[2]) / abLen2;
+	const proj: [number, number, number] = [
+		meta1[0] + aToB[0] * t,
+		meta1[1] + aToB[1] * t,
+		meta1[2] + aToB[2] * t,
+	];
+	const m2OffsetMm = distance3(meta2, proj) * worldToMm;
+
+	// Heel alignment proxy in top view (x/z): lateral heel vector vs forefoot axis
+	const heelLine: [number, number] = [heelLateral[0] - heel[0], heelLateral[2] - heel[2]];
+	const foreLine: [number, number] = [meta5[0] - meta1[0], meta5[2] - meta1[2]];
+	const heelAngle = Math.atan2(heelLine[1], heelLine[0]);
+	const foreAngle = Math.atan2(foreLine[1], foreLine[0]);
+	let deltaDeg = ((heelAngle - foreAngle) * 180) / Math.PI;
+	while (deltaDeg > 90) deltaDeg -= 180;
+	while (deltaDeg < -90) deltaDeg += 180;
+
+	const archByForefoot = clamp(4 + m2OffsetMm * 0.45, 2, 16);
+	const archByWidth = clamp(5 + ((forefootWidthMm - 80) * 0.08), 2, 16);
+	// Step 2 refine: combine point biomechanics + STL geometry estimate
+	const archMm = clamp((fallbackArchMm * 0.65) + (archByForefoot * 0.2) + (archByWidth * 0.15), 2, 16);
+	const cupMm = clamp(2 + ((lateralSpanMm - 24) * 0.1), 1, 10);
+	// EU size estimate from foot length + functional toe allowance (~15mm)
+	const rawShoeSizeEu = ((footLengthMm + 15) * 1.5) / 10;
+	const plausibleLength = footLengthMm >= 180 && footLengthMm <= 340;
+	const shoeSizeEu = plausibleLength ? clamp(rawShoeSizeEu, 32, 52) : 40;
+
+	const pronationMm = deltaDeg > 0 ? clamp(deltaDeg * 0.25, 0, 6) : 0;
+	const supinationMm = deltaDeg < 0 ? clamp(Math.abs(deltaDeg) * 0.25, 0, 6) : 0;
+
+	return {
+		archMm: Number.isFinite(archMm) ? archMm : clamp(fallbackArchMm, 2, 16),
+		cupMm,
+		shoeSizeEu,
+		pronationMm,
+		supinationMm,
+	};
+};
 
 interface DesignPageClientProps {
 	project: ProjectDetail;
@@ -175,9 +265,19 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		point: [number, number, number];
 	} | null>(null);
 	const [pointStepIndex, setPointStepIndex] = useState(0);
-	const [pointSelections, setPointSelections] = useState<
-		Record<string, [number, number, number]>
-	>({});
+	const [pointPickFoot, setPointPickFoot] = useState<'right' | 'left'>('right');
+	const [rightPointSelections, setRightPointSelections] = useState<PickSelections>({});
+	const [leftPointSelections, setLeftPointSelections] = useState<PickSelections>({});
+	const [scansActive, setScansActive] = useState(false);
+	const [showOverlays, setShowOverlays] = useState(false);
+	const [planWorldToMm, setPlanWorldToMm] = useState(1);
+	const rightFittingRef = useRef<{
+		archHeight: number;
+		cupHeight: number;
+		shoeSize: number;
+		pronation: number;
+		supination: number;
+	} | null>(null);
 	const [isFitting, setIsFitting] = useState(false);
 	const [designPlan, setDesignPlan] = useState<{
 		plan: ReturnType<typeof buildInsolePlan> | null;
@@ -433,37 +533,65 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 	} = useDesignStore();
 
 	const startPointPicking = useCallback(() => {
-		setPointSelections({});
+		setRightPointSelections({});
+		setLeftPointSelections({});
 		setPointStepIndex(0);
+		setPointPickFoot('right');
+		setPlanWorldToMm(1);
+		rightFittingRef.current = null;
+		setShowOverlays(false);
 		viewerRef.current?.setPrecisionInsole?.(null);
 		clearLandmarkPipeline();
 		setWorkflowStep('point-pick');
 	}, [clearLandmarkPipeline]);
 
 	const handleCancelPointPick = useCallback(() => {
-		setPointSelections({});
+		setRightPointSelections({});
+		setLeftPointSelections({});
 		setPointStepIndex(0);
+		setPointPickFoot('right');
+		setPlanWorldToMm(1);
+		rightFittingRef.current = null;
 		viewerRef.current?.setPrecisionInsole?.(null);
 		setWorkflowStep('base');
 	}, []);
 
 	/** Undo the last picked landmark point */
 	const handleUndoLastPoint = useCallback(() => {
-		if (pointStepIndex <= 0) return;
+		if (pointStepIndex <= 0) {
+			// At start of left foot — go back to right foot's last step
+			if (pointPickFoot === 'left') {
+				setPointPickFoot('right');
+				const lastStep = POINT_SEQUENCE[POINT_SEQUENCE.length - 1];
+				setRightPointSelections((prev) => {
+					const next = { ...prev };
+					delete next[lastStep.id];
+					return next;
+				});
+				setPointStepIndex(POINT_SEQUENCE.length - 1);
+				rightFittingRef.current = null;
+			}
+			return;
+		}
 		const prevStep = POINT_SEQUENCE[pointStepIndex - 1];
 		if (!prevStep) return;
-		setPointSelections((prev) => {
+		const setSelections = pointPickFoot === 'right' ? setRightPointSelections : setLeftPointSelections;
+		setSelections((prev) => {
 			const next = { ...prev };
 			delete next[prevStep.id];
 			return next;
 		});
 		setPointStepIndex((prev) => prev - 1);
-	}, [pointStepIndex]);
+	}, [pointStepIndex, pointPickFoot]);
 
 	/** Reset all picked points and restart */
 	const handleResetPoints = useCallback(() => {
-		setPointSelections({});
+		setRightPointSelections({});
+		setLeftPointSelections({});
 		setPointStepIndex(0);
+		setPointPickFoot('right');
+		setPlanWorldToMm(1);
+		rightFittingRef.current = null;
 	}, []);
 
 	const handlePointPicked = useCallback(
@@ -472,102 +600,201 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 			const step = POINT_SEQUENCE[pointStepIndex];
 			if (!step) return;
 
+			const isRightFoot = pointPickFoot === 'right';
+			const currentSelections = isRightFoot ? rightPointSelections : leftPointSelections;
+			const setCurrentSelections = isRightFoot ? setRightPointSelections : setLeftPointSelections;
+
 			const updatedSelections = {
-				...pointSelections,
+				...currentSelections,
 				[step.id]: point,
 			};
-			setPointSelections(updatedSelections);
+			setCurrentSelections(updatedSelections);
 
-			const isLast = pointStepIndex >= POINT_SEQUENCE.length - 1;
-			if (isLast) {
-				setPointStepIndex(0);
-				setIsFitting(true);
-				setIsGeneratingInsole(true);
+			const isLastPointForFoot = pointStepIndex >= POINT_SEQUENCE.length - 1;
 
-				// Build 3-point landmarks
-				const threePoints: ThreePointLandmarks = {
-					meta5: updatedSelections.meta5,
-					meta1: updatedSelections.meta1,
-					heel: updatedSelections.heel,
-				};
-				setThreePointLandmarks(threePoints);
-
-				// Get the foot scan mesh from the viewer for geometry computation
-				const footMesh = viewerRef.current?.getRightGeometry?.();
-				if (footMesh) {
+			if (isLastPointForFoot && isRightFoot) {
+				// ── Right foot done — compute fitting, then switch to left foot ──
+				const geom = viewerRef.current?.getRightGeometry?.();
+				const mmToWorld = viewerRef.current?.getRightMmToWorld?.() ?? 1;
+				const worldToMm = 1 / Math.max(1e-6, mmToWorld);
+				if (geom) {
 					try {
-						// Compute foot geometry from 3 points + mesh
+						const meta5 = updatedSelections.meta5;
+						const meta1 = updatedSelections.meta1;
+						const heel = updatedSelections.heel;
+						if (!meta1 || !meta5 || !heel) {
+							return;
+						}
+						const threePoints: ThreePointLandmarks = {
+							meta5,
+							meta1,
+							heel,
+						};
+						setThreePointLandmarks(threePoints);
+
 						const { footGeometry: fg, derived, complete } =
-							computeFootGeometryFrom3Points(threePoints, footMesh);
+							computeFootGeometryFrom3Points(threePoints, geom);
 						setFootGeometry(fg);
 						setDerivedLandmarks(derived);
 						setCompleteLandmarks(complete);
 
-						// Convert to legacy format for backward compatibility
 						const legacyPoints = completeLandmarksToLegacy(complete);
 						const plan = buildInsolePlan(legacyPoints);
 						setDesignPlan({ plan, points: legacyPoints });
+						setPlanWorldToMm(worldToMm);
 
-						// Extract plantar surface
-						const plantar = extractPlantarSurface(footMesh, fg, 1.0);
+						const plantar = extractPlantarSurface(geom, fg, 1.0);
 						setPlantarData(plantar);
 
-						// Keep the existing base insole workflow (Ontwerp tab) and
-						// seed right-side values from scan-derived geometry.
-						const clamp = (v: number, min: number, max: number) =>
-							Math.min(max, Math.max(min, v));
-						const inferredArchMm = clamp(fg.archHeight * 0.12, 2, 14);
-						const inferredCupMm = clamp(fg.archHeight * 0.08, 1, 10);
-
-						setParameters({
-							...parameters,
-							general: {
-								...generalNormalized,
-								maxInsoleHeightMm: {
-									...generalNormalized.maxInsoleHeightMm,
-									right: inferredArchMm,
-								},
-							},
-						});
-
-						setCorrections((prev) => {
-							const next = prev ?? {
-								kuipHoogte: { left: 0, right: 0 },
-								voorvoetUitvlakken: { enabled: false },
-								hielHeffing: {
-									length: { left: 'lang', right: 'lang' },
-									value: { left: 0, right: 0 },
-								},
-								medialeBoogCorrectie: { left: 0, right: 0 },
-								gladstrijken: 0,
-								pronatie: {
-									regio: { left: 'voorvoet', right: 'voorvoet' },
-									correctie: { left: 0, right: 0 },
-								},
-								supinatie: {
-									regio: { left: 'voorvoet', right: 'voorvoet' },
-									correctie: { left: 0, right: 0 },
-								},
-							};
-							return {
-								...next,
-								kuipHoogte: {
-									...next.kuipHoogte,
-									right: inferredCupMm,
-								},
-								medialeBoogCorrectie: {
-									...next.medialeBoogCorrectie,
-									right: inferredArchMm,
-								},
-							};
-						});
-
-						viewerRef.current?.setPrecisionInsole?.(null);
+						const seeds = deriveSeedFromPickedPoints(
+							updatedSelections,
+							clamp(fg.archHeight * worldToMm * 0.12, 2, 14),
+							worldToMm
+						);
+						rightFittingRef.current = {
+							archHeight: seeds.archMm,
+							cupHeight: seeds.cupMm,
+							shoeSize: seeds.shoeSizeEu,
+							pronation: seeds.pronationMm,
+							supination: seeds.supinationMm,
+						};
 					} catch (err) {
-						console.error('Insole generation failed:', err);
+						console.error('Right foot fitting failed:', err);
 					}
 				}
 
+				// Switch to left foot
+				setPointStepIndex(0);
+				setPointPickFoot('left');
+			} else if (isLastPointForFoot && !isRightFoot) {
+				// ── Left foot done — fit left foot, apply corrections from both ──
+				setIsFitting(true);
+				setIsGeneratingInsole(true);
+
+				let leftArchMm = generalNormalized.maxInsoleHeightMm.left;
+				let leftCupMm = 0;
+				let leftShoeSize = generalNormalized.shoeSize.left;
+				let leftPronation = 0;
+				let leftSupination = 0;
+
+				const leftGeom = viewerRef.current?.getRightGeometry?.();
+				const leftMmToWorld = viewerRef.current?.getRightMmToWorld?.() ?? 1;
+				const leftWorldToMm = 1 / Math.max(1e-6, leftMmToWorld);
+				if (leftGeom) {
+					try {
+						const meta5 = updatedSelections.meta5;
+						const meta1 = updatedSelections.meta1;
+						const heel = updatedSelections.heel;
+						if (!meta1 || !meta5 || !heel) {
+							return;
+						}
+						const leftThreePoints: ThreePointLandmarks = {
+							meta5,
+							meta1,
+							heel,
+						};
+						const { footGeometry: fg } =
+							computeFootGeometryFrom3Points(leftThreePoints, leftGeom);
+						const seeds = deriveSeedFromPickedPoints(
+							updatedSelections,
+							clamp(fg.archHeight * leftWorldToMm * 0.12, 2, 14),
+							leftWorldToMm
+						);
+						leftArchMm = seeds.archMm;
+						leftCupMm = seeds.cupMm;
+						leftShoeSize = seeds.shoeSizeEu;
+						leftPronation = seeds.pronationMm;
+						leftSupination = seeds.supinationMm;
+					} catch (err) {
+						console.error('Left foot fitting failed:', err);
+					}
+				}
+
+				// Gather right foot fitting from earlier
+				const rightFitting = rightFittingRef.current;
+				const rightArchMm = rightFitting?.archHeight ?? generalNormalized.maxInsoleHeightMm.right;
+				const rightCupMm = rightFitting?.cupHeight ?? 0;
+				const rightShoeSize = rightFitting?.shoeSize ?? generalNormalized.shoeSize.right;
+				const rightPronation = rightFitting?.pronation ?? 0;
+				const rightSupination = rightFitting?.supination ?? 0;
+
+				// Seed parameters from both feet
+				setParameters({
+					...parameters,
+					general: {
+						...generalNormalized,
+						shoeSize: {
+							left: leftShoeSize,
+							right: rightShoeSize,
+						},
+						maxInsoleHeightMm: {
+							left: leftArchMm,
+							right: rightArchMm,
+						},
+					},
+				});
+
+				setCorrections((prev) => {
+					const next = prev ?? {
+						kuipHoogte: { left: 0, right: 0 },
+						voorvoetUitvlakken: { enabled: false },
+						hielHeffing: {
+							length: { left: 'lang', right: 'lang' },
+							value: { left: 0, right: 0 },
+						},
+						medialeBoogCorrectie: { left: 0, right: 0 },
+						gladstrijken: 0,
+						pronatie: {
+							regio: { left: 'hiel', right: 'hiel' },
+							correctie: { left: 0, right: 0 },
+						},
+						supinatie: {
+							regio: { left: 'hiel', right: 'hiel' },
+							correctie: { left: 0, right: 0 },
+						},
+					};
+					return {
+						...next,
+						kuipHoogte: {
+							left: leftCupMm,
+							right: rightCupMm,
+						},
+						medialeBoogCorrectie: {
+							left: leftArchMm,
+							right: rightArchMm,
+						},
+						pronatie: {
+							...next.pronatie,
+							regio: {
+								...next.pronatie.regio,
+								left: 'hiel',
+								right: 'hiel',
+							},
+							correctie: {
+								...next.pronatie.correctie,
+								left: leftPronation,
+								right: rightPronation,
+							},
+						},
+						supinatie: {
+							...next.supinatie,
+							regio: {
+								...next.supinatie.regio,
+								left: 'hiel',
+								right: 'hiel',
+							},
+							correctie: {
+								...next.supinatie.correctie,
+								left: leftSupination,
+								right: rightSupination,
+							},
+						},
+					};
+				});
+
+				viewerRef.current?.setPrecisionInsole?.(null);
+				setScansActive(true);
+				setShowOverlays(true);
 				setWorkflowStep('base');
 				setActiveDesignStep(2);
 				setTimeout(() => {
@@ -578,7 +805,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 				setPointStepIndex((prev) => prev + 1);
 			}
 		},
-		[workflowStep, pointStepIndex, pointSelections, setThreePointLandmarks, setFootGeometry, setDerivedLandmarks, setCompleteLandmarks, setPlantarData, setIsGeneratingInsole, setParameters, parameters, generalNormalized]
+		[workflowStep, pointStepIndex, pointPickFoot, rightPointSelections, leftPointSelections, setThreePointLandmarks, setFootGeometry, setDerivedLandmarks, setCompleteLandmarks, setPlantarData, setIsGeneratingInsole, setParameters, parameters, generalNormalized]
 	);
 
 	const handleExportSTL = useCallback(() => {
@@ -707,13 +934,22 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 									className="flex w-full items-center justify-between rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-left text-ui-text transition hover:bg-[rgba(255,255,255,0.08)]"
 								>
 									<span>
-										{selectedLeftScan ? 'Links ✓' : 'Links —'} /{' '}
-										{selectedRightScan ? 'Rechts ✓' : 'Rechts —'}
+										{selectedLeftScan || scansActive ? 'Links ✓' : 'Links —'} /{' '}
+										{selectedRightScan || scansActive ? 'Rechts ✓' : 'Rechts —'}
 									</span>
 									<span className="text-xs uppercase text-ui-muted">
-										Beheer scans
+										{scansActive ? 'Bewerken' : 'Beheer scans'}
 									</span>
 								</button>
+								{scansActive && (
+									<button
+										type="button"
+										onClick={() => startPointPicking()}
+										className="mt-1 w-full rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-center text-xs text-ui-muted transition hover:bg-[rgba(255,255,255,0.08)] hover:text-ui-text"
+									>
+										Herpick punten
+									</button>
+								)}
 							</div>
 
 							<div className="space-y-2">
@@ -1226,14 +1462,14 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							<EnhancedSTLViewer
 								ref={viewerRef}
 								leftUrl={undefined}
-								rightUrl={rightStlUrl}
+								rightUrl={pointPickFoot === 'right' ? rightStlUrl : leftStlUrl}
 								showGrid={false}
 								showBasePreview={false}
 								lockTopView={true}
 								hideScans={false}
 								pointPickMode
 								onPickPoint={handlePointPicked}
-								pickedPoints={Object.values(pointSelections)}
+								pickedPoints={Object.values(pointPickFoot === 'right' ? rightPointSelections : leftPointSelections)}
 							/>
 							{crosshair && (
 								<>
@@ -1253,13 +1489,18 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 									</div>
 								</>
 							)}
-							<div className="absolute right-4 top-4 z-20 w-[320px] rounded-2xl border border-ui-border bg-ui-panel text-ui-text shadow-lg">
+							<div className="absolute right-4 top-4 z-20 w-[420px] rounded-2xl border border-ui-border bg-ui-panel text-ui-text shadow-lg">
 								<div className="flex items-center justify-between border-b border-ui-border px-4 py-3">
-									<span className="text-xs uppercase tracking-wide text-ui-muted">
-										Actie
-									</span>
 									<div className="flex items-center gap-2">
-										{pointStepIndex > 0 && (
+										<span className="text-xs uppercase tracking-wide text-ui-muted">
+											Actie
+										</span>
+										<span className="rounded-full bg-ui-accent/20 px-2 py-0.5 text-[11px] font-semibold text-ui-accent">
+											{pointPickFoot === 'right' ? 'Rechtervoet' : 'Linkervoet'}
+										</span>
+									</div>
+									<div className="flex items-center gap-2">
+										{(pointStepIndex > 0 || pointPickFoot === 'left') && (
 											<Button
 												size="sm"
 												variant="outline"
@@ -1286,29 +1527,39 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 											{currentPointStep.description}
 										</p>
 									)}
-									<div className="flex items-center gap-2">
-										{POINT_SEQUENCE.map((step, idx) => (
-											<div key={step.id} className="flex items-center gap-1">
-												<span
-													className={cn(
-														'h-2.5 w-2.5 rounded-full transition-colors',
-														idx < pointStepIndex
-															? 'bg-ui-accent'
-															: idx === pointStepIndex
-																? 'bg-white ring-2 ring-ui-accent/50'
-																: 'bg-ui-muted/40'
-													)}
-												/>
-												<span className={cn(
-													'text-[10px]',
-													idx <= pointStepIndex ? 'text-ui-text' : 'text-ui-muted/40'
-												)}>
-													{step.id === 'meta5' ? 'M5' : step.id === 'meta1' ? 'M1' : 'Hiel'}
-												</span>
-											</div>
-										))}
+									<div className="space-y-1">
+										{(['right', 'left'] as const).map((foot) => {
+											const isCurrent = pointPickFoot === foot;
+											const selections = foot === 'right' ? rightPointSelections : leftPointSelections;
+											const isPast = foot === 'right' && pointPickFoot === 'left';
+											return (
+												<div key={foot} className="flex items-center gap-2">
+													<span className={cn('w-6 text-[10px] font-semibold', isCurrent ? 'text-ui-accent' : 'text-ui-muted')}>
+														{foot === 'right' ? 'R' : 'L'}
+													</span>
+													{POINT_SEQUENCE.map((step, idx) => {
+														const done = isPast ? !!selections[step.id] : isCurrent && idx < pointStepIndex;
+														const current = isCurrent && idx === pointStepIndex;
+														return (
+															<div key={step.id} className="flex items-center gap-1">
+																<span className={cn(
+																	'h-2 w-2 rounded-full transition-colors',
+																	done ? 'bg-ui-accent' : current ? 'bg-white ring-2 ring-ui-accent/50' : 'bg-ui-muted/30'
+																)} />
+																<span className={cn(
+																	'text-[10px]',
+																	done || current ? 'text-ui-text' : 'text-ui-muted/30'
+																)}>
+																	{step.short}
+																</span>
+															</div>
+														);
+													})}
+												</div>
+											);
+										})}
 									</div>
-									{Object.keys(pointSelections).length > 0 && (
+									{(Object.keys(rightPointSelections).length > 0 || Object.keys(leftPointSelections).length > 0) && (
 										<button
 											type="button"
 											className="text-[11px] text-ui-muted underline hover:text-ui-text"
@@ -1356,8 +1607,8 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								ref={viewerRef}
 								leftUrl={DEFAULT_BASE_LEFT_STL}
 								rightUrl={DEFAULT_BASE_RIGHT_STL}
-								leftOverlayUrl={leftStlUrl}
-								rightOverlayUrl={rightStlUrl}
+								leftOverlayUrl={showOverlays ? leftStlUrl : undefined}
+								rightOverlayUrl={showOverlays ? rightStlUrl : undefined}
 								showGrid={true}
 								showBasePreview={false}
 								lockTopView={false}
@@ -1436,9 +1687,9 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							{designPlan.plan && (
 								<div className="absolute left-1/2 top-4 z-20 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel/90 px-4 py-2 text-xs text-ui-text">
 									Steunzool gegenereerd — lengte{' '}
-									{designPlan.plan.frame.footLength.toFixed(1)} mm, breedte{' '}
-									{designPlan.plan.frame.forefootWidth.toFixed(1)} mm, boog{' '}
-									{designPlan.plan.frame.archHeight.toFixed(1)} mm
+									{(designPlan.plan.frame.footLength * planWorldToMm).toFixed(1)} mm, breedte{' '}
+									{(designPlan.plan.frame.forefootWidth * planWorldToMm).toFixed(1)} mm, boog{' '}
+									{(designPlan.plan.frame.archHeight * planWorldToMm).toFixed(1)} mm
 								</div>
 							)}
 							{!selectedInsoleSide && (
