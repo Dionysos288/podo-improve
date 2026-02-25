@@ -229,6 +229,8 @@ model Design {
   parameters     Json      @default("{}")
   elements       Json      @default("[]")
   matchTransform Json?     @map("match_transform")
+  landmarks      Json?     @default("{}") // ThreePointLandmarks + DerivedLandmarks + FootGeometry
+  scanMetadata   Json?     @map("scan_metadata") @default("{}") // bounding box, units, vertex count for re-import validation
   stlUrl         String?   @map("stl_url")
   gcodeUrl       String?   @map("gcode_url")
   version        Int       @default(1)

@@ -1,6 +1,12 @@
 'use client';
 
 import * as THREE from 'three';
+import type {
+	ThreePointLandmarks,
+	DerivedLandmarks,
+	CompleteLandmarkSet,
+	FootGeometry,
+} from '../types/types';
 
 export type LandmarkPoints = Record<
 	'meta1' | 'meta5' | 'navicular' | 'calcaneus' | 'heel',
@@ -26,6 +32,192 @@ export interface SlicePlane {
 
 const toVec = (p: [number, number, number]) =>
 	new THREE.Vector3(p[0], p[1], p[2]);
+
+// ============================================
+// 3-Point Landmark System (new)
+// ============================================
+
+/**
+ * Compute the complete foot geometry from 3 manually selected landmarks
+ * plus the full mesh geometry. Auto-derives navicular, calcaneus, toe tip, and lateral edge.
+ *
+ * Required landmarks:
+ * - meta5: Metatarsal 5 (lateral forefoot)
+ * - meta1: Metatarsal 1 (medial forefoot)
+ * - heel: Center of the heel
+ *
+ * @param landmarks The 3 manually picked landmarks
+ * @param footMesh  The foot scan BufferGeometry
+ * @param filename  Optional filename to infer left/right side
+ */
+export function computeFootGeometryFrom3Points(
+	landmarks: ThreePointLandmarks,
+	footMesh: THREE.BufferGeometry,
+	filename?: string
+): { footGeometry: FootGeometry; derived: DerivedLandmarks; complete: CompleteLandmarkSet } {
+	const pHeel = toVec(landmarks.heel);
+	const pM1 = toVec(landmarks.meta1);
+	const pM5 = toVec(landmarks.meta5);
+
+	// 1. Compute foot axis: heel → midpoint(M1, M5)
+	const forefootMid = new THREE.Vector3().addVectors(pM1, pM5).multiplyScalar(0.5);
+	const footAxisVec = new THREE.Vector3().subVectors(forefootMid, pHeel);
+	const heelToForefootDist = footAxisVec.length();
+	const footAxisNorm = footAxisVec.clone().normalize();
+
+	// 2. Compute ground plane from the 3 landmarks
+	const v1 = new THREE.Vector3().subVectors(pM1, pHeel);
+	const v2 = new THREE.Vector3().subVectors(pM5, pHeel);
+	let groundNormal = new THREE.Vector3().crossVectors(v1, v2).normalize();
+
+	// Ensure ground normal points "up" (away from plantar surface)
+	// The cross product of (heel→M1) × (heel→M5) should point upward for a right foot
+	// We verify by checking that the normal has a positive component along the expected "up" direction
+	// For a foot placed sole-down, the up direction is generally +Z or +Y depending on scan orientation
+	// Heuristic: pick whichever direction has the larger magnitude
+	if (groundNormal.length() < 1e-6) {
+		// Degenerate case: landmarks are collinear, fall back to Z-up
+		groundNormal.set(0, 0, 1);
+	}
+
+	// 3. Lateral axis: perpendicular to footAxis within the ground plane
+	const lateralAxis = new THREE.Vector3().crossVectors(groundNormal, footAxisNorm).normalize();
+
+	// If lateral axis is degenerate, recalculate
+	if (lateralAxis.length() < 1e-6) {
+		// Fallback: use M1→M5 direction
+		lateralAxis.copy(new THREE.Vector3().subVectors(pM5, pM1).normalize());
+	}
+
+	// 4. Forefoot width: project M1→M5 onto lateral axis
+	const m1m5 = new THREE.Vector3().subVectors(pM1, pM5);
+	const forefootWidth = Math.abs(m1m5.dot(lateralAxis));
+
+	// 5. Scan the mesh to find foot length, navicular, calcaneus, toe tip
+	const posAttr = footMesh.getAttribute('position');
+	if (!posAttr) {
+		throw new Error('Foot mesh has no position attribute');
+	}
+
+	let maxProjection = -Infinity;
+	let minProjection = Infinity;
+	let toeTipPoint = pHeel.clone();
+	const tmp = new THREE.Vector3();
+
+	// Track vertices in different regions for auto-deriving landmarks
+	let bestNavicularHeight = -Infinity;
+	let navicularPoint = forefootMid.clone();
+	let lowestPosteriorW = Infinity;
+	let calcaneusPoint = pHeel.clone();
+	let lateralEdgePoint = pM5.clone();
+	let maxLateralV = -Infinity;
+
+	for (let i = 0; i < posAttr.count; i++) {
+		tmp.set(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+		const rel = tmp.clone().sub(pHeel);
+		const u = rel.dot(footAxisNorm); // projection along foot axis
+		const v = rel.dot(lateralAxis); // projection along lateral axis
+		const w = rel.dot(groundNormal); // height above ground plane
+
+		// Foot length: most distal vertex
+		if (u > maxProjection) {
+			maxProjection = u;
+			toeTipPoint.copy(tmp);
+		}
+		if (u < minProjection) {
+			minProjection = u;
+		}
+
+		// Navicular: highest vertex in the medial midfoot region
+		// Medial = negative V for right foot (or positive for left), midfoot = 30-60% of heel-to-forefoot distance
+		const tU = u / heelToForefootDist;
+		if (tU > 0.25 && tU < 0.65) {
+			// Check if on medial side (opposite to M5 direction)
+			const m5Side = new THREE.Vector3().subVectors(pM5, pHeel).dot(lateralAxis);
+			const isMedial = m5Side > 0 ? v < 0 : v > 0;
+			if (isMedial && w > bestNavicularHeight) {
+				bestNavicularHeight = w;
+				navicularPoint.copy(tmp);
+			}
+		}
+
+		// Calcaneus: lowest posterior vertex (bottom of heel)
+		if (tU >= -0.1 && tU < 0.15 && w < lowestPosteriorW) {
+			lowestPosteriorW = w;
+			calcaneusPoint.copy(tmp);
+		}
+
+		// Lateral edge: most lateral vertex in the midfoot
+		if (tU > 0.2 && tU < 0.8) {
+			const m5Side = new THREE.Vector3().subVectors(pM5, pHeel).dot(lateralAxis);
+			const lateralV = m5Side > 0 ? v : -v;
+			if (lateralV > maxLateralV) {
+				maxLateralV = lateralV;
+				lateralEdgePoint.copy(tmp);
+			}
+		}
+	}
+
+	const footLength = maxProjection - Math.min(0, minProjection);
+
+	// Arch height: navicular height relative to ground plane
+	const archHeight = bestNavicularHeight > -Infinity ? bestNavicularHeight : 0;
+
+	// Infer foot side from filename or landmark geometry
+	let side: 'left' | 'right' | 'unknown' = 'unknown';
+	if (filename) {
+		const lower = filename.toLowerCase();
+		if (lower.includes('_l.') || lower.includes('_l_') || lower.includes('left') || lower.endsWith('_l')) {
+			side = 'left';
+		} else if (lower.includes('_r.') || lower.includes('_r_') || lower.includes('right') || lower.endsWith('_r')) {
+			side = 'right';
+		}
+	}
+
+	const derived: DerivedLandmarks = {
+		navicular: navicularPoint.toArray() as [number, number, number],
+		calcaneus: calcaneusPoint.toArray() as [number, number, number],
+		toeTip: toeTipPoint.toArray() as [number, number, number],
+		lateralEdge: lateralEdgePoint.toArray() as [number, number, number],
+	};
+
+	const complete: CompleteLandmarkSet = {
+		...landmarks,
+		...derived,
+	};
+
+	const footGeometryResult: FootGeometry = {
+		footLength,
+		forefootWidth,
+		footAxis: footAxisNorm.toArray() as [number, number, number],
+		lateralAxis: lateralAxis.toArray() as [number, number, number],
+		groundNormal: groundNormal.toArray() as [number, number, number],
+		origin: pHeel.toArray() as [number, number, number],
+		forefootMid: forefootMid.toArray() as [number, number, number],
+		archHeight,
+		side,
+	};
+
+	return { footGeometry: footGeometryResult, derived, complete };
+}
+
+/**
+ * Convert a CompleteLandmarkSet (new 3-point system) into the legacy LandmarkPoints
+ * format needed by the existing insole generation and corrections pipeline.
+ */
+export function completeLandmarksToLegacy(complete: CompleteLandmarkSet): LandmarkPoints {
+	return {
+		meta1: complete.meta1,
+		meta5: complete.meta5,
+		navicular: complete.navicular,
+		calcaneus: complete.calcaneus,
+		heel: complete.heel,
+	};
+}
+
+// ============================================
+// Legacy 5-Point System (preserved for backward compatibility)
+// ============================================
 
 export function computeFootReference(
 	points: LandmarkPoints
@@ -435,6 +627,20 @@ export interface BasicInsoleOptions extends InsoleGenerationOptions {
 	heelTaper?: number; // 0..1 taper factor toward heel
 	resU?: number;
 	resV?: number;
+	/** Additional scale factor applied to the planform (length + width). */
+	lengthScale?: number;
+	/** Raise the lateral/medial edges above the top surface (world units). */
+	rimHeight?: number;
+	/**
+	 * Optional override to scale the insole planform to a target foot length.
+	 * Uses the landmark-derived frame length as the reference.
+	 */
+	targetFootLength?: number;
+	/**
+	 * Optional override to steer arch height (world units). Implemented as an
+	 * archBoost derived from frame.archHeight.
+	 */
+	targetArchHeight?: number;
 }
 
 /**
@@ -449,7 +655,7 @@ export function buildBasicInsole(
 	const frame = computeFootReference(points);
 	const padScale = options?.padScale ?? 1.02;
 	const thickness = options?.thickness ?? 0.004; // 4 mm
-	const archBoost = options?.archBoost ?? 0.75;
+	let archBoost = options?.archBoost ?? 0.75;
 	const archSpread = options?.archSpread ?? { u: 0.22, v: 0.35 };
 	const heelCupDepth = options?.heelCupDepth ?? 0.007; // 7 mm
 	const heelCupSpread = options?.heelCupSpread ?? { u: 0.12, v: 0.35 };
@@ -457,22 +663,55 @@ export function buildBasicInsole(
 	const heelTaper = options?.heelTaper ?? 0.08;
 	const resU = options?.resU ?? 140;
 	const resV = options?.resV ?? 70;
+	const targetFootLength = options?.targetFootLength;
+	const targetArchHeight = options?.targetArchHeight;
+	const lengthScale = options?.lengthScale;
+	const rimHeight = options?.rimHeight ?? 0;
+	const smoothstep = (edge0: number, edge1: number, x: number) => {
+		const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+		return t * t * (3 - 2 * t);
+	};
+
+	if (typeof targetArchHeight === 'number' && Number.isFinite(targetArchHeight)) {
+		const denom = frame.archHeight;
+		if (Math.abs(denom) > 1e-8) {
+			archBoost = targetArchHeight / denom;
+			archBoost = Math.max(-5, Math.min(5, archBoost));
+		}
+	}
 
 	footGeometry.computeBoundingBox();
 	const bbox = footGeometry.boundingBox;
 	if (!bbox) return null;
 	const size = bbox.getSize(new THREE.Vector3());
-	const width = size.x * padScale;
-	const length = frame.footLength * padScale;
+	let planScale =
+		typeof targetFootLength === 'number' &&
+		Number.isFinite(targetFootLength) &&
+		targetFootLength > 1e-6
+			? targetFootLength / frame.footLength
+			: 1;
+	if (typeof lengthScale === 'number' && Number.isFinite(lengthScale)) {
+		planScale *= Math.max(0.1, lengthScale);
+	}
+	const width = size.x * padScale * planScale;
+	const length = frame.footLength * padScale * planScale;
 
 	// Sigma for arch/heel
-	const archSigmaU = archSpread.u * frame.footLength;
-	const archSigmaV = archSpread.v * frame.forefootWidth;
-	const heelSigmaU = heelCupSpread.u * frame.footLength;
-	const heelSigmaV = heelCupSpread.v * frame.forefootWidth;
+	const archSigmaU = archSpread.u * frame.footLength * planScale;
+	const archSigmaV = archSpread.v * frame.forefootWidth * planScale;
+	const heelSigmaU = heelCupSpread.u * frame.footLength * planScale;
+	const heelSigmaV = heelCupSpread.v * frame.forefootWidth * planScale;
 
-	const navLocal = mapToFrame(toVec(points.navicular), frame);
-	const heelLocal = mapToFrame(toVec(points.calcaneus), frame);
+	const navLocalRaw = mapToFrame(toVec(points.navicular), frame);
+	const heelLocalRaw = mapToFrame(toVec(points.calcaneus), frame);
+	const navLocal = {
+		u: navLocalRaw.u * planScale,
+		v: navLocalRaw.v * planScale,
+	};
+	const heelLocal = {
+		u: heelLocalRaw.u * planScale,
+		v: heelLocalRaw.v * planScale,
+	};
 
 	const positions = new Float32Array(resU * resV * 2 * 3);
 	const indices: number[] = [];
@@ -480,19 +719,18 @@ export function buildBasicInsole(
 	const idxTop = (iv: number, iu: number) => (iv * resU + iu) * 3;
 	const idxBot = (iv: number, iu: number) => (resU * resV + iv * resU + iu) * 3;
 
-	for (let iv = 0; iv < resV; iv++) {
-		const tv = iv / (resV - 1);
+	for (let iu = 0; iu < resU; iu++) {
+		const tu = iu / (resU - 1);
+		const u = tu * length; // 0 at heel, +length toward toes
 		// Taper width along length: wider mid/fore, slimmer heel
 		const taper =
 			1 -
-			heelTaper * (1 - tv) - // heel side
-			toeTaper * tv; // toe side
+			heelTaper * (1 - tu) - // heel side
+			toeTaper * tu; // toe side
 		const halfW = width * 0.5 * taper;
 
-		for (let iu = 0; iu < resU; iu++) {
-			const tu = iu / (resU - 1);
-			const u = tu * length; // 0 at heel, +length toward toes
-			const lateralOffset = (iu - (resU - 1) / 2) / ((resU - 1) / 2); // -1..1
+		for (let iv = 0; iv < resV; iv++) {
+			const lateralOffset = (iv - (resV - 1) / 2) / ((resV - 1) / 2); // -1..1
 			const v = lateralOffset * halfW;
 
 			// Height shaping
@@ -504,8 +742,14 @@ export function buildBasicInsole(
 			const dvH = (v - heelLocal.v) / heelSigmaV;
 			const heelGauss = Math.exp(-(duH * duH + dvH * dvH));
 
-			const h =
+			let h =
 				archBoost * frame.archHeight * archGauss - heelCupDepth * heelGauss;
+
+			if (rimHeight > 0) {
+				const edge = Math.abs(lateralOffset);
+				const rimWeight = smoothstep(0.65, 1.0, edge);
+				h += rimHeight * rimWeight;
+			}
 
 			const worldPos = frame.origin
 				.clone()

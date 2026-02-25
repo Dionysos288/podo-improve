@@ -7,6 +7,7 @@ import {
 	DualNumberInput,
 	DualSelectInput,
 } from './CorrectionControls';
+import type { CorrectionKey } from './correctionsCatalog';
 
 // Region options for Pronatie/Supinatie
 const REGION_OPTIONS = [
@@ -66,6 +67,7 @@ interface OntwerpPanelProps {
 	onApplyToGeometry?: (corrections: OntwerpCorrections, side: 'left' | 'right' | 'both') => void;
 	showZones?: boolean;
 	onShowZonesChange?: (show: boolean) => void;
+	activeCorrections?: CorrectionKey[];
 }
 
 export function OntwerpPanel({
@@ -74,9 +76,17 @@ export function OntwerpPanel({
 	onApplyToGeometry,
 	showZones = false,
 	onShowZonesChange,
+	activeCorrections,
 }: OntwerpPanelProps) {
 	const [internalCorrections, setInternalCorrections] = useState<OntwerpCorrections>(DEFAULT_CORRECTIONS);
 	const corrections = externalCorrections ?? internalCorrections;
+	const isActive = useCallback(
+		(key: CorrectionKey) => {
+			if (!activeCorrections) return true;
+			return activeCorrections.includes(key);
+		},
+		[activeCorrections]
+	);
 
 	const updateCorrections = useCallback(
 		(updates: Partial<OntwerpCorrections>) => {
@@ -131,50 +141,55 @@ export function OntwerpPanel({
 			</div>
 
 			{/* Kuip hoogte - Dual number input */}
-			<CollapsibleSection title="Kuip hoogte" defaultOpen={false}>
-				<DualNumberInput
-					label="Kuip hoogte"
-					leftValue={corrections.kuipHoogte.left}
-					rightValue={corrections.kuipHoogte.right}
-					onLeftChange={(val) =>
-						updateCorrections({
-							kuipHoogte: { ...corrections.kuipHoogte, left: val },
-						})
-					}
-					onRightChange={(val) =>
-						updateCorrections({
-							kuipHoogte: { ...corrections.kuipHoogte, right: val },
-						})
-					}
-					min={0}
-					max={20}
-					step={0.5}
-					unit="mm"
-				/>
-			</CollapsibleSection>
+			{isActive('kuipHoogte') && (
+				<CollapsibleSection title="Kuip hoogte" defaultOpen={false}>
+					<DualNumberInput
+						label="Kuip hoogte"
+						leftValue={corrections.kuipHoogte.left}
+						rightValue={corrections.kuipHoogte.right}
+						onLeftChange={(val) =>
+							updateCorrections({
+								kuipHoogte: { ...corrections.kuipHoogte, left: val },
+							})
+						}
+						onRightChange={(val) =>
+							updateCorrections({
+								kuipHoogte: { ...corrections.kuipHoogte, right: val },
+							})
+						}
+						min={0}
+						max={20}
+						step={0.5}
+						unit="mm"
+					/>
+				</CollapsibleSection>
+			)}
 
 			{/* Voorvoet uitvlakken - Single switch */}
-			<CollapsibleSection title="Voorvoet uitvlakken" defaultOpen={false}>
-				<div className="flex items-center justify-between">
-					<span className="text-sm text-ui-text">Voorvoet uitvlakken</span>
-					<label className="relative inline-flex cursor-pointer items-center">
-						<input
-							type="checkbox"
-							checked={corrections.voorvoetUitvlakken.enabled}
-							onChange={(e) =>
-								updateCorrections({
-									voorvoetUitvlakken: { enabled: e.target.checked },
-								})
-							}
-							className="peer sr-only"
-						/>
-						<div className="peer h-5 w-9 rounded-full bg-gray-600 after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:bg-ui-accent peer-checked:after:translate-x-full" />
-					</label>
-				</div>
-			</CollapsibleSection>
+			{isActive('voorvoetUitvlakken') && (
+				<CollapsibleSection title="Voorvoet uitvlakken" defaultOpen={false}>
+					<div className="flex items-center justify-between">
+						<span className="text-sm text-ui-text">Voorvoet uitvlakken</span>
+						<label className="relative inline-flex cursor-pointer items-center">
+							<input
+								type="checkbox"
+								checked={corrections.voorvoetUitvlakken.enabled}
+								onChange={(e) =>
+									updateCorrections({
+										voorvoetUitvlakken: { enabled: e.target.checked },
+									})
+								}
+								className="peer sr-only"
+							/>
+							<div className="peer h-5 w-9 rounded-full bg-gray-600 after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:bg-ui-accent peer-checked:after:translate-x-full" />
+						</label>
+					</div>
+				</CollapsibleSection>
+			)}
 
 			{/* Hiel heffing - Dual select for length + Dual number for value */}
-			<CollapsibleSection title="Hiel heffing" defaultOpen={false}>
+			{isActive('hielHeffing') && (
+				<CollapsibleSection title="Hiel heffing" defaultOpen={false}>
 				<DualSelectInput
 					label="Lengte"
 					options={LENGTH_OPTIONS}
@@ -222,10 +237,12 @@ export function OntwerpPanel({
 					step={0.5}
 					unit="mm"
 				/>
-			</CollapsibleSection>
+				</CollapsibleSection>
+			)}
 
 			{/* Mediale boog correctie - Dual number input */}
-			<CollapsibleSection title="Mediale boog correctie" defaultOpen={false}>
+			{isActive('medialeBoogCorrectie') && (
+				<CollapsibleSection title="Mediale boog correctie" defaultOpen={false}>
 				<DualNumberInput
 					label="Mediale boog correctie"
 					leftValue={corrections.medialeBoogCorrectie.left}
@@ -245,22 +262,26 @@ export function OntwerpPanel({
 					step={0.5}
 					unit="mm"
 				/>
-			</CollapsibleSection>
+				</CollapsibleSection>
+			)}
 
 			{/* Gladstrijken - Single number input for both feet */}
-			<CollapsibleSection title="Gladstrijken" defaultOpen={false}>
-				<StyledNumberField
-					label="Gladstrijken"
-					value={corrections.gladstrijken}
-					onChange={(val) => updateCorrections({ gladstrijken: val })}
-					min={0}
-					max={10}
-					step={1}
-				/>
-			</CollapsibleSection>
+			{isActive('gladstrijken') && (
+				<CollapsibleSection title="Gladstrijken" defaultOpen={false}>
+					<StyledNumberField
+						label="Gladstrijken"
+						value={corrections.gladstrijken}
+						onChange={(val) => updateCorrections({ gladstrijken: val })}
+						min={0}
+						max={10}
+						step={1}
+					/>
+				</CollapsibleSection>
+			)}
 
 			{/* Pronatie - Dual select for regio + Dual number for correctie */}
-			<CollapsibleSection title="Pronatie" defaultOpen={false}>
+			{isActive('pronatie') && (
+				<CollapsibleSection title="Pronatie" defaultOpen={false}>
 				<DualSelectInput
 					label="Regio"
 					options={REGION_OPTIONS}
@@ -308,10 +329,12 @@ export function OntwerpPanel({
 					step={0.5}
 					unit="°"
 				/>
-			</CollapsibleSection>
+				</CollapsibleSection>
+			)}
 
 			{/* Supinatie - Dual select for regio + Dual number for correctie */}
-			<CollapsibleSection title="Supinatie" defaultOpen={false}>
+			{isActive('supinatie') && (
+				<CollapsibleSection title="Supinatie" defaultOpen={false}>
 				<DualSelectInput
 					label="Regio"
 					options={REGION_OPTIONS}
@@ -359,7 +382,8 @@ export function OntwerpPanel({
 					step={0.5}
 					unit="°"
 				/>
-			</CollapsibleSection>
+				</CollapsibleSection>
+			)}
 		</div>
 	);
 }

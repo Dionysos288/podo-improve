@@ -27,6 +27,8 @@ interface ViewOverlayProps {
 	viewSettings: ViewSettings;
 	onToggle: (key: keyof ViewSettings) => void;
 	onView?: (preset: string) => void;
+	analysisHeightMm?: number | null;
+	analysisSide?: 'left' | 'right' | null;
 	className?: string;
 }
 
@@ -45,6 +47,8 @@ export function ViewOverlay({
 	viewSettings,
 	onToggle,
 	onView,
+	analysisHeightMm,
+	analysisSide,
 	className,
 }: ViewOverlayProps) {
 	return (
@@ -255,19 +259,46 @@ export function ViewOverlay({
 				</>
 			) : (
 				<div className="mt-3 space-y-3 text-xs text-(--ui-muted)">
-					<p className="uppercase tracking-wide text-(--ui-text)/70">
-						Analyse (coming soon)
-					</p>
+					<div className="flex items-center justify-between">
+						<p className="uppercase tracking-wide text-(--ui-text)/70">
+							Analyse
+						</p>
+						{analysisSide && (
+							<span className="rounded-full border border-(--ui-border) bg-[rgba(255,255,255,0.04)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-(--ui-text)">
+								{analysisSide === 'left' ? 'Links' : 'Rechts'}
+							</span>
+						)}
+					</div>
+
+					<div className="flex items-start justify-between gap-3 rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] px-3 py-2">
+						<div className="space-y-1">
+							<div className="text-(--ui-text)">Hoogte</div>
+							<div className="text-sm font-semibold text-(--ui-text)">
+								{typeof analysisHeightMm === 'number'
+									? `${analysisHeightMm.toFixed(1)} mm`
+									: '—'}
+							</div>
+							<div className="text-[11px] text-(--ui-muted)">
+								Beweeg je muis over het model.
+							</div>
+						</div>
+						<div className="mt-1 h-10 w-2 rounded-full bg-[rgba(255,255,255,0.12)]">
+							<div
+								className="w-full rounded-full bg-(--ui-accent)"
+								style={{
+									height:
+										typeof analysisHeightMm === 'number'
+											? `${Math.max(6, Math.min(40, analysisHeightMm * 3))}px`
+											: '8px',
+								}}
+							/>
+						</div>
+					</div>
+
 					<p>
-						Overlay plantar plates, compare forefoot/heel loads, and validate
-						corrections before printing.
+						Tip: gebruik <span className="text-(--ui-text)">Achter</span> voor een
+						 stabiele meetweergave.
 					</p>
-					<button
-						type="button"
-						className="rounded-lg bg-[rgba(255,255,255,0.06)] px-3 py-2 text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.1)]"
-					>
-						Import plate data
-					</button>
 				</div>
 			)}
 		</div>

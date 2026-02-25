@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpPanel';
+import type { CorrectionKey } from '@/src/shared/components/design/correctionsCatalog';
 
 /**
  * Smooth interpolation function for creating smooth transitions
@@ -83,6 +84,78 @@ function getMaxForAxis(bbox: THREE.Box3, axis: string): number {
 }
 
 /**
+ * Insoles often arrive with an arbitrary axis direction (length can run min->max or max->min).
+ * Many corrections are defined in heel-to-toe terms, so we infer which end is the heel.
+ *
+ * Heuristic: depending on scan orientation and trimming, the "narrow end" rule can flip.
+ * In this project, we treat the heel end as the end with the larger width span.
+ */
+function createHeelToToeMapper(params: {
+	positions: THREE.BufferAttribute;
+	lengthAxis: string;
+	widthAxis: string;
+	bbox: THREE.Box3;
+	lengthSpan: number;
+}): {
+	heelAtMin: boolean;
+	getT: (lengthVal: number) => number; // 0 = heel, 1 = toe
+} {
+	const { positions, lengthAxis, widthAxis, bbox, lengthSpan } = params;
+
+	const minLength = getMinForAxis(bbox, lengthAxis);
+	const maxLength = getMaxForAxis(bbox, lengthAxis);
+
+	// Sample ~8% of length at each end.
+	const slice = Math.max(lengthSpan * 0.08, 1e-6);
+
+	let minEndMinWidth = Number.POSITIVE_INFINITY;
+	let minEndMaxWidth = Number.NEGATIVE_INFINITY;
+	let minEndCount = 0;
+
+	let maxEndMinWidth = Number.POSITIVE_INFINITY;
+	let maxEndMaxWidth = Number.NEGATIVE_INFINITY;
+	let maxEndCount = 0;
+
+	for (let i = 0; i < positions.count; i++) {
+		const lengthVal = getAxisValue(positions, i, lengthAxis);
+		const widthVal = getAxisValue(positions, i, widthAxis);
+
+		if (lengthVal <= minLength + slice) {
+			minEndMinWidth = Math.min(minEndMinWidth, widthVal);
+			minEndMaxWidth = Math.max(minEndMaxWidth, widthVal);
+			minEndCount++;
+		}
+
+		if (lengthVal >= maxLength - slice) {
+			maxEndMinWidth = Math.min(maxEndMinWidth, widthVal);
+			maxEndMaxWidth = Math.max(maxEndMaxWidth, widthVal);
+			maxEndCount++;
+		}
+	}
+
+	const minEndWidthSpan =
+		minEndCount > 10 ? Math.max(0, minEndMaxWidth - minEndMinWidth) : Number.POSITIVE_INFINITY;
+	const maxEndWidthSpan =
+		maxEndCount > 10 ? Math.max(0, maxEndMaxWidth - maxEndMinWidth) : Number.POSITIVE_INFINITY;
+
+	// If heuristic fails (e.g. degenerate geometry), default to heel at min.
+	// NOTE: We intentionally choose the wider end as heel (see comment above).
+	const heelAtMin =
+		Number.isFinite(minEndWidthSpan) && Number.isFinite(maxEndWidthSpan)
+			? minEndWidthSpan >= maxEndWidthSpan
+			: true;
+
+	return {
+		heelAtMin,
+		getT: (lengthVal: number) => {
+			const raw = (lengthVal - minLength) / lengthSpan; // 0 at min, 1 at max
+			const clamped = Math.max(0, Math.min(1, raw));
+			return heelAtMin ? clamped : 1 - clamped;
+		},
+	};
+}
+
+/**
  * KUIP HOOGTE (Cup Height)
  * Raises the edges/rim of the insole to create a cup shape that holds the foot
  * The effect is strongest at the lateral edges and reduces toward the center
@@ -94,25 +167,35 @@ export function applyKuipHoogte(
 	if (amount === 0) return;
 	
 	const positions = geometry.attributes.position as THREE.BufferAttribute;
-	const { widthAxis, heightAxis, bbox, widthSpan } = getGeometryAxes(geometry);
+	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
+	const heelToToe = createHeelToToeMapper({
+		positions,
+		lengthAxis,
+		widthAxis,
+		bbox,
+		lengthSpan,
+	});
 	
 	const minWidth = getMinForAxis(bbox, widthAxis);
 	const centerWidth = minWidth + widthSpan / 2;
 	
 	for (let i = 0; i < positions.count; i++) {
+		const lengthVal = getAxisValue(positions, i, lengthAxis);
+		const t = heelToToe.getT(lengthVal);
+		// Heel cup should be strongest in the rearfoot and fade toward the forefoot.
+		// 1.0 at heel->~midfoot, then fades to 0 by ~2/3 length.
+		const lengthWeight = smoothstep(0.65, 0.35, t);
+		if (lengthWeight <= 0.001) continue;
+
 		const widthVal = getAxisValue(positions, i, widthAxis);
 		
 		// Calculate distance from center (normalized 0-1 where 1 is at edge)
 		const distFromCenter = Math.abs(widthVal - centerWidth) / (widthSpan / 2);
 		
-		// Cup effect: raise edges more, center stays flat
-		// Use a quadratic curve for natural cup shape
-		const edgeFactor = distFromCenter * distFromCenter;
-		
 		// Only apply to the outer 40% of the width on each side
 		if (distFromCenter > 0.6) {
 			const adjustedFactor = smoothstep(0.6, 1.0, distFromCenter);
-			const heightAdjust = amount * adjustedFactor;
+			const heightAdjust = amount * adjustedFactor * lengthWeight;
 			
 			const currentHeight = getAxisValue(positions, i, heightAxis);
 			setAxisValue(positions, i, heightAxis, currentHeight + heightAdjust);
@@ -135,13 +218,18 @@ export function applyVoorvoetUitvlakken(
 	if (!enabled) return;
 	
 	const positions = geometry.attributes.position as THREE.BufferAttribute;
-	const { lengthAxis, heightAxis, bbox, lengthSpan, heightSpan } = getGeometryAxes(geometry);
+	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan } = getGeometryAxes(geometry);
 	
-	const minLength = getMinForAxis(bbox, lengthAxis);
-	const minHeight = getMinForAxis(bbox, heightAxis);
+	const heelToToe = createHeelToToeMapper({
+		positions,
+		lengthAxis,
+		widthAxis,
+		bbox,
+		lengthSpan,
+	});
 	
 	// Forefoot is roughly the front 40% (0.6 to 1.0)
-	const forefootStart = 0.5;
+	const forefootStart = 0.6;
 	
 	// First pass: find average height in forefoot region
 	let totalHeight = 0;
@@ -149,9 +237,9 @@ export function applyVoorvoetUitvlakken(
 	
 	for (let i = 0; i < positions.count; i++) {
 		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const relativeLength = (lengthVal - minLength) / lengthSpan;
+		const t = heelToToe.getT(lengthVal);
 		
-		if (relativeLength > forefootStart) {
+		if (t > forefootStart) {
 			totalHeight += getAxisValue(positions, i, heightAxis);
 			count++;
 		}
@@ -163,13 +251,13 @@ export function applyVoorvoetUitvlakken(
 	// Second pass: flatten toward average with smooth transition
 	for (let i = 0; i < positions.count; i++) {
 		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const relativeLength = (lengthVal - minLength) / lengthSpan;
+		const t = heelToToe.getT(lengthVal);
 		
-		if (relativeLength > forefootStart) {
+		if (t > forefootStart) {
 			const currentHeight = getAxisValue(positions, i, heightAxis);
 			
 			// Smooth transition from forefoot start
-			const flattenStrength = smoothstep(forefootStart, 0.7, relativeLength) * 0.7;
+			const flattenStrength = smoothstep(forefootStart, 0.75, t) * 0.7;
 			
 			// Blend toward average height
 			const newHeight = currentHeight + (avgHeight - currentHeight) * flattenStrength;
@@ -194,9 +282,14 @@ export function applyHielHeffing(
 	if (amount === 0) return;
 	
 	const positions = geometry.attributes.position as THREE.BufferAttribute;
-	const { lengthAxis, heightAxis, bbox, lengthSpan } = getGeometryAxes(geometry);
-	
-	const minLength = getMinForAxis(bbox, lengthAxis);
+	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan } = getGeometryAxes(geometry);
+	const heelToToe = createHeelToToeMapper({
+		positions,
+		lengthAxis,
+		widthAxis,
+		bbox,
+		lengthSpan,
+	});
 	
 	// Determine how far the lift extends based on length setting
 	let liftEnd: number;
@@ -215,11 +308,11 @@ export function applyHielHeffing(
 	
 	for (let i = 0; i < positions.count; i++) {
 		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const relativeLength = (lengthVal - minLength) / lengthSpan;
+		const t = heelToToe.getT(lengthVal);
 		
-		if (relativeLength < liftEnd) {
+		if (t < liftEnd) {
 			// Full lift at heel (0), tapering to 0 at liftEnd
-			const liftFactor = smoothstep(liftEnd, 0, relativeLength);
+			const liftFactor = smoothstep(liftEnd, 0, t);
 			const heightAdjust = amount * liftFactor;
 			
 			const currentHeight = getAxisValue(positions, i, heightAxis);
@@ -246,18 +339,24 @@ export function applyMedialeBoogCorrectie(
 	const positions = geometry.attributes.position as THREE.BufferAttribute;
 	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
 	
-	const minLength = getMinForAxis(bbox, lengthAxis);
 	const minWidth = getMinForAxis(bbox, widthAxis);
+	const heelToToe = createHeelToToeMapper({
+		positions,
+		lengthAxis,
+		widthAxis,
+		bbox,
+		lengthSpan,
+	});
 	
 	for (let i = 0; i < positions.count; i++) {
 		const lengthVal = getAxisValue(positions, i, lengthAxis);
 		const widthVal = getAxisValue(positions, i, widthAxis);
 		
-		const relativeLength = (lengthVal - minLength) / lengthSpan;
+		const relativeLength = heelToToe.getT(lengthVal);
 		const relativeWidth = (widthVal - minWidth) / widthSpan;
 		
-		// Arch zone: midfoot area (0.2 to 0.6 along length)
-		const lengthInArch = relativeLength > 0.15 && relativeLength < 0.55;
+		// Arch zone: midfoot area (heel->toe)
+		const lengthInArch = relativeLength > 0.18 && relativeLength < 0.62;
 		
 		if (lengthInArch) {
 			// Medial side depends on foot side
@@ -267,7 +366,7 @@ export function applyMedialeBoogCorrectie(
 			
 			if (medialSide) {
 				// Calculate arch influence based on position
-				const lengthWeight = 1 - Math.abs(relativeLength - 0.35) / 0.2;
+				const lengthWeight = 1 - Math.abs(relativeLength - 0.42) / 0.22;
 				const widthWeight = isLeftFoot 
 					? smoothstep(0.5, 0.8, relativeWidth)
 					: smoothstep(0.5, 0.2, relativeWidth);
@@ -459,9 +558,15 @@ export function applyPronatie(
 	const positions = geometry.attributes.position as THREE.BufferAttribute;
 	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
 	
-	const minLength = getMinForAxis(bbox, lengthAxis);
 	const minWidth = getMinForAxis(bbox, widthAxis);
 	const centerWidth = minWidth + widthSpan / 2;
+	const heelToToe = createHeelToToeMapper({
+		positions,
+		lengthAxis,
+		widthAxis,
+		bbox,
+		lengthSpan,
+	});
 	
 	// Convert degrees to radians and calculate height change per mm of width
 	const angleRad = (amount * Math.PI) / 180;
@@ -471,7 +576,7 @@ export function applyPronatie(
 		const lengthVal = getAxisValue(positions, i, lengthAxis);
 		const widthVal = getAxisValue(positions, i, widthAxis);
 		
-		const relativeLength = (lengthVal - minLength) / lengthSpan;
+		const t = heelToToe.getT(lengthVal);
 		
 		// Determine if this vertex is in the affected region
 		let regionWeight = 0;
@@ -480,10 +585,10 @@ export function applyPronatie(
 				regionWeight = 1;
 				break;
 			case 'voorvoet':
-				regionWeight = smoothstep(0.4, 0.6, relativeLength);
+				regionWeight = smoothstep(0.55, 0.75, t);
 				break;
 			case 'hiel':
-				regionWeight = smoothstep(0.3, 0.1, relativeLength);
+				regionWeight = smoothstep(0.28, 0.06, t);
 				break;
 		}
 		
@@ -532,37 +637,83 @@ export function applySupinatie(
 export function applyAllCorrections(
 	geometry: THREE.BufferGeometry,
 	corrections: OntwerpCorrections,
-	side: 'left' | 'right'
+	side: 'left' | 'right',
+	options?: {
+		/**
+		 * Converts millimeters (UI/input space) into geometry/world units.
+		 * Use this when the STL is rescaled for rendering.
+		 */
+		mmToWorld?: number;
+		activeCorrections?: CorrectionKey[];
+	}
 ): void {
 	const isLeft = side === 'left';
+	const mmToWorld = options?.mmToWorld ?? 1;
+	const activeSet = options?.activeCorrections
+		? new Set<CorrectionKey>(options.activeCorrections)
+		: null;
+	const isActive = (key: CorrectionKey) => {
+		if (!activeSet) return true;
+		return activeSet.has(key);
+	};
 	
 	// Apply corrections in a specific order for best results
 	
 	// 1. Heel lift first (changes base height)
-	const heelValue = isLeft ? corrections.hielHeffing.value.left : corrections.hielHeffing.value.right;
-	const heelLength = (isLeft ? corrections.hielHeffing.length.left : corrections.hielHeffing.length.right) as 'lang' | 'kort' | 'midden';
-	applyHielHeffing(geometry, heelValue, heelLength);
+	if (isActive('hielHeffing')) {
+		const heelValue = isLeft
+			? corrections.hielHeffing.value.left
+			: corrections.hielHeffing.value.right;
+		const heelLength = (isLeft
+			? corrections.hielHeffing.length.left
+			: corrections.hielHeffing.length.right) as 'lang' | 'kort' | 'midden';
+		applyHielHeffing(geometry, heelValue * mmToWorld, heelLength);
+	}
 	
 	// 2. Arch correction
-	const archValue = isLeft ? corrections.medialeBoogCorrectie.left : corrections.medialeBoogCorrectie.right;
-	applyMedialeBoogCorrectie(geometry, archValue, isLeft);
+	if (isActive('medialeBoogCorrectie')) {
+		const archValue = isLeft
+			? corrections.medialeBoogCorrectie.left
+			: corrections.medialeBoogCorrectie.right;
+		applyMedialeBoogCorrectie(geometry, archValue * mmToWorld, isLeft);
+	}
 	
 	// 3. Cup height (edge raising)
-	const cupValue = isLeft ? corrections.kuipHoogte.left : corrections.kuipHoogte.right;
-	applyKuipHoogte(geometry, cupValue);
+	if (isActive('kuipHoogte')) {
+		const cupValue = isLeft
+			? corrections.kuipHoogte.left
+			: corrections.kuipHoogte.right;
+		applyKuipHoogte(geometry, cupValue * mmToWorld);
+	}
 	
 	// 4. Forefoot flattening
-	applyVoorvoetUitvlakken(geometry, corrections.voorvoetUitvlakken.enabled);
+	if (isActive('voorvoetUitvlakken')) {
+		applyVoorvoetUitvlakken(geometry, corrections.voorvoetUitvlakken.enabled);
+	}
 	
 	// 5. Pronation/Supination tilts
-	const pronatieValue = isLeft ? corrections.pronatie.correctie.left : corrections.pronatie.correctie.right;
-	const pronatieRegion = (isLeft ? corrections.pronatie.regio.left : corrections.pronatie.regio.right) as 'gehele-zool' | 'voorvoet' | 'hiel';
-	applyPronatie(geometry, pronatieValue, pronatieRegion, isLeft);
+	if (isActive('pronatie')) {
+		const pronatieValue = isLeft
+			? corrections.pronatie.correctie.left
+			: corrections.pronatie.correctie.right;
+		const pronatieRegion = (isLeft
+			? corrections.pronatie.regio.left
+			: corrections.pronatie.regio.right) as 'gehele-zool' | 'voorvoet' | 'hiel';
+		applyPronatie(geometry, pronatieValue, pronatieRegion, isLeft);
+	}
 	
-	const supinatieValue = isLeft ? corrections.supinatie.correctie.left : corrections.supinatie.correctie.right;
-	const supinatieRegion = (isLeft ? corrections.supinatie.regio.left : corrections.supinatie.regio.right) as 'gehele-zool' | 'voorvoet' | 'hiel';
-	applySupinatie(geometry, supinatieValue, supinatieRegion, isLeft);
+	if (isActive('supinatie')) {
+		const supinatieValue = isLeft
+			? corrections.supinatie.correctie.left
+			: corrections.supinatie.correctie.right;
+		const supinatieRegion = (isLeft
+			? corrections.supinatie.regio.left
+			: corrections.supinatie.regio.right) as 'gehele-zool' | 'voorvoet' | 'hiel';
+		applySupinatie(geometry, supinatieValue, supinatieRegion, isLeft);
+	}
 	
 	// 6. Smoothing last (to blend all changes)
-	applyGladstrijken(geometry, corrections.gladstrijken);
+	if (isActive('gladstrijken')) {
+		applyGladstrijken(geometry, corrections.gladstrijken);
+	}
 }
