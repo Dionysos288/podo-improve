@@ -78,6 +78,7 @@ model Organization {
   printers    Printer[]
   backups     Backup[]
   invitations Invitation[]
+  slicingJobs SlicingJob[]
 
   @@map("organizations")
 }
@@ -106,6 +107,7 @@ model User {
   accounts            Account[]
   invitationsSent     Invitation[]  @relation("InvitedBy")
   invitationsAccepted Invitation[]  @relation("AcceptedBy")
+  slicingJobs         SlicingJob[]
 
   @@map("users")
 }
@@ -245,6 +247,44 @@ model Design {
 
   @@index([projectId])
   @@map("designs")
+}
+
+// ============================================
+// Slicing Jobs (Local Print Agent queue)
+// ============================================
+
+enum SlicingJobStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+}
+
+model SlicingJob {
+  id               String           @id @default(uuid())
+  userId           String           @map("user_id")
+  orgId            String           @map("org_id")
+  status           SlicingJobStatus @default(PENDING)
+  stlBase64        String           @map("stl_base64") @db.Text
+  stlFilename      String?          @map("stl_filename")
+  gcodeBase64      String?          @map("gcode_base64") @db.Text
+  gcodeFilename    String?          @map("gcode_filename")
+  printerModel     String?          @map("printer_model")
+  nozzleSize       String?          @map("nozzle_size")
+  material         String?
+  slicerProfileName String?         @map("slicer_profile_name")
+  printerSettings  Json?            @map("printer_settings")
+  slicerMeta       Json?            @map("slicer_meta")
+  errorMessage     String?          @map("error_message") @db.Text
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([orgId, status, createdAt])
+  @@map("slicing_jobs")
 }
 
 // ============================================

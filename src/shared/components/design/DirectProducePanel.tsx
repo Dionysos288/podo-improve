@@ -6,7 +6,7 @@ import { Button } from '@/src/shared/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
 
 interface PrinterConfig {
-	ideaMaker: { configured: boolean };
+	ideaMaker: { configured: boolean; agentOnline?: boolean; agentLastSeenAt?: string | null };
 	raiseCloud: { configured: boolean };
 }
 
@@ -52,14 +52,22 @@ interface DirectProducePanelProps {
 	onBack: () => void;
 	printerSettings: PrinterSettings;
 	onPrinterSettingsChange: (settings: PrinterSettings) => void;
-	onExportSTL: () => void;
+	onExportSTLLeft: () => void;
+	onExportSTLRight: () => void;
+	onExportSTLPair: () => void;
+	onExportGcode?: () => void;
+	gcodeBusy?: boolean;
 }
 
 export function DirectProducePanel({
 	onBack,
 	printerSettings,
 	onPrinterSettingsChange,
-	onExportSTL,
+	onExportSTLLeft,
+	onExportSTLRight,
+	onExportSTLPair,
+	onExportGcode,
+	gcodeBusy = false,
 }: DirectProducePanelProps) {
 	const [printerConfig, setPrinterConfig] = useState<PrinterConfig | null>(
 		null
@@ -94,6 +102,7 @@ export function DirectProducePanel({
 
 	// Configuration status from API
 	const ideaMakerConfigured = printerConfig?.ideaMaker.configured ?? false;
+	const agentOnline = printerConfig?.ideaMaker.agentOnline ?? false;
 	const raiseCloudConfigured = printerConfig?.raiseCloud.configured ?? false;
 
 	return (
@@ -234,21 +243,38 @@ export function DirectProducePanel({
 					<Button
 						className="w-full"
 						variant="outline"
-						onClick={onExportSTL}
+						onClick={onExportSTLLeft}
 					>
-						Exporteer STL
+						Exporteer STL (links)
 					</Button>
 					<Button
 						className="w-full"
 						variant="outline"
-						disabled={!ideaMakerConfigured}
+						onClick={onExportSTLRight}
+					>
+						Exporteer STL (rechts)
+					</Button>
+					<Button
+						className="w-full"
+						variant="outline"
+						onClick={onExportSTLPair}
+					>
+						Exporteer STL (paar)
+					</Button>
+					<Button
+						className="w-full"
+						variant="outline"
+						disabled={!ideaMakerConfigured || !agentOnline || gcodeBusy}
+						onClick={onExportGcode}
 						title={
 							!ideaMakerConfigured
-								? 'ideaMaker is niet geïnstalleerd of geconfigureerd'
-								: undefined
+								? 'ideaMaker pad is niet geconfigureerd'
+								: !agentOnline
+									? 'Print Agent is offline (geen recente heartbeat)'
+									: undefined
 						}
 					>
-						Exporteer gcode bestand
+						{gcodeBusy ? 'G-code genereren...' : 'Exporteer gcode bestand'}
 					</Button>
 				</div>
 

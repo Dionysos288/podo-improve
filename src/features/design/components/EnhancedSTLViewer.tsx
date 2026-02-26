@@ -10,7 +10,7 @@ import {
 	useMemo,
 	useEffect,
 } from 'react';
-import { Canvas, useLoader, useFrame } from '@react-three/fiber';
+import { Canvas, useLoader } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Text } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
@@ -720,7 +720,6 @@ function STLMesh({
 	const rimHeightMm = getSideNumber(generalUnknown?.maxInsoleHeightMm, 10);
 	const applyGeneral = meshRole === 'insole';
 	const meshRef = useRef<THREE.Mesh>(null);
-	const processedRef = useRef(false);
 	const lastCorrectionsRef = useRef<string>('');
 	const pendingSignatureRef = useRef<string>('');
 	const geometryRef = useRef<THREE.BufferGeometry | null>(null);
@@ -1292,6 +1291,7 @@ function STLMesh({
 			}
 			animRafRef.current = null;
 			existing.computeVertexNormals();
+			onGeometryReady?.(existing, { mmToWorld: mmToWorld || 1 });
 			// Keep colors in sync when showing heatmap/zones.
 			if (showZones) applyZoneColors(existing);
 			else if (heatmap) applyHeightmapColors(existing);
@@ -1307,7 +1307,7 @@ function STLMesh({
 		animRafRef.current = requestAnimationFrame(step);
 		// We no longer need the target geometry object.
 		target.dispose();
-	}, [gridEditMode, showZones, heatmap, applyOrientation]);
+	}, [gridEditMode, showZones, heatmap, applyOrientation, onGeometryReady, mmToWorld]);
 
 	const rebuildFinalGeometryFromCorrected = useCallback(() => {
 		const corrected = correctedGeometryRef.current;
@@ -1510,19 +1510,10 @@ function STLMesh({
 
 	// Notify parent about geometry
 	useEffect(() => {
-		if (geometry && !processedRef.current && onGeometryReady) {
-			processedRef.current = true;
+		if (geometry && onGeometryReady) {
 			onGeometryReady(geometry, { mmToWorld: mmToWorld || 1 });
 		}
 	}, [geometry, onGeometryReady, mmToWorld]);
-
-	// Rotate mesh to face up (STL files often need rotation)
-	// Keep useFrame for legacy behavior, but rotation is also set on geometry init.
-	useFrame(() => {
-		if (meshRef.current && !processedRef.current) {
-			applyOrientation(meshRef.current);
-		}
-	});
 
 
 	if (!geometry) {
@@ -1754,6 +1745,12 @@ export interface EnhancedSTLViewerRef {
 	match: () => void;
 	reset: () => void;
 	getInsoleGeometry: () => THREE.BufferGeometry | null;
+	getFinalInsoleGeometry: (side: 'left' | 'right') => THREE.BufferGeometry | null;
+	getExportInsoleGeometryMm: (side: 'left' | 'right') => THREE.BufferGeometry | null;
+	getExportPairGeometryMm: (spacingMm?: number) => THREE.BufferGeometry | null;
+	getInsoleDimensionsMm: (
+		side: 'left' | 'right'
+	) => { lengthMm: number; widthMm: number; heightMm: number } | null;
 	/** Get the right foot scan geometry for external computation */
 	getRightGeometry: () => THREE.BufferGeometry | null;
 	/** Conversion factor from real millimeters to world units for current right mesh */
@@ -2053,13 +2050,114 @@ export const EnhancedSTLViewer = forwardRef<
 			}
 		};
 
+		const getSideGeometry = (side: 'left' | 'right') =>
+			side === 'left' ? leftGeometry : rightGeometry;
+		const getSideMmToWorld = (side: 'left' | 'right') =>
+			side === 'left' ? leftMmToWorld : rightMmToWorld;
+
+		const getDimensionsMm = (
+			geometry: THREE.BufferGeometry,
+			mmToWorld: number
+		) => {
+			const g = geometry.clone();
+			g.computeBoundingBox();
+			const box = g.boundingBox;
+			if (!box) {
+				g.dispose();
+				return null;
+			}
+			const worldToMm = 1 / Math.max(1e-6, mmToWorld || 1);
+			const size = box.getSize(new THREE.Vector3()).multiplyScalar(worldToMm);
+			const dims = [size.x, size.y, size.z].sort((a, b) => a - b);
+			g.dispose();
+			return {
+				lengthMm: dims[2] ?? 0,
+				widthMm: dims[1] ?? 0,
+				heightMm: dims[0] ?? 0,
+			};
+		};
+
+		const toExportGeometryMm = (
+			geometry: THREE.BufferGeometry,
+			mmToWorld: number
+		) => {
+			const g = geometry.clone();
+			const worldToMm = 1 / Math.max(1e-6, mmToWorld || 1);
+			g.applyMatrix4(new THREE.Matrix4().makeScale(worldToMm, worldToMm, worldToMm));
+			// Match visible viewer orientation and keep slicer-friendly pose.
+			g.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+			g.computeBoundingBox();
+			const box = g.boundingBox;
+			if (box) {
+				g.applyMatrix4(new THREE.Matrix4().makeTranslation(0, 0, -box.min.z));
+			}
+			g.computeVertexNormals();
+			return g;
+		};
+
+		const getPairExportGeometryMm = (spacingMm = 15) => {
+			if (!leftGeometry || !rightGeometry) return null;
+			const left = toExportGeometryMm(leftGeometry, leftMmToWorld || 1);
+			const right = toExportGeometryMm(rightGeometry, rightMmToWorld || 1);
+
+			left.computeBoundingBox();
+			right.computeBoundingBox();
+			const leftBox = left.boundingBox;
+			const rightBox = right.boundingBox;
+			if (!leftBox || !rightBox) {
+				left.dispose();
+				right.dispose();
+				return null;
+			}
+
+			const leftShift = -(leftBox.max.x + spacingMm * 0.5);
+			const rightShift = -(rightBox.min.x - spacingMm * 0.5);
+			left.applyMatrix4(new THREE.Matrix4().makeTranslation(leftShift, 0, 0));
+			right.applyMatrix4(new THREE.Matrix4().makeTranslation(rightShift, 0, 0));
+
+			const merged = BufferGeometryUtils.mergeGeometries([left, right], false);
+			left.dispose();
+			right.dispose();
+			if (!merged) return null;
+			merged.computeVertexNormals();
+			return merged;
+		};
+
 		useImperativeHandle(ref, () => ({
 			match: handleMatch,
 			reset: handleReset,
-			getInsoleGeometry: () => generatedInsole,
+			getInsoleGeometry: () => {
+				if (generatedInsole) return generatedInsole;
+				if (selectedSide === 'left') return leftGeometry;
+				if (selectedSide === 'right') return rightGeometry;
+				return rightGeometry ?? leftGeometry;
+			},
+			getFinalInsoleGeometry: (side: 'left' | 'right') =>
+				getSideGeometry(side)?.clone() ?? null,
+			getExportInsoleGeometryMm: (side: 'left' | 'right') => {
+				const geom = getSideGeometry(side);
+				if (!geom) return null;
+				return toExportGeometryMm(geom, getSideMmToWorld(side));
+			},
+			getExportPairGeometryMm: (spacingMm = 15) =>
+				getPairExportGeometryMm(spacingMm),
+			getInsoleDimensionsMm: (side: 'left' | 'right') => {
+				const geom = getSideGeometry(side);
+				if (!geom) return null;
+				return getDimensionsMm(geom, getSideMmToWorld(side));
+			},
 			getRightGeometry: () => rightGeometry,
 			getRightMmToWorld: () => rightMmToWorld || 1,
-		}));
+		}), [
+			handleMatch,
+			handleReset,
+			generatedInsole,
+			selectedSide,
+			leftGeometry,
+			rightGeometry,
+			leftMmToWorld,
+			rightMmToWorld,
+		]);
 
 		useEffect(() => {
 			if (!landmarkPoints || !rightMeshRef.current) {

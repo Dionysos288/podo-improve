@@ -1,6 +1,8 @@
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import * as THREE from 'three';
 
+export type STLFormat = 'binary' | 'ascii';
+
 /**
  * Exports a Three.js geometry or mesh to STL format and triggers a download.
  */
@@ -69,15 +71,16 @@ function downloadSTL(stlString: string, filename: string): void {
  */
 export function exportGeometryToSTLBinary(
 	geometry: THREE.BufferGeometry,
-	filename: string = 'insole.stl'
+	filename: string = 'insole.stl',
+	format: STLFormat = 'binary'
 ): void {
 	const material = new THREE.MeshBasicMaterial();
 	const mesh = new THREE.Mesh(geometry, material);
 
 	const exporter = new STLExporter();
-	const arrayBuffer = exporter.parse(mesh, { binary: true });
+	const payload = exporter.parse(mesh, { binary: format === 'binary' });
 
-	const blob = new Blob([arrayBuffer], { type: 'application/octet-stream' });
+	const blob = new Blob([payload], { type: 'application/octet-stream' });
 	const url = URL.createObjectURL(blob);
 
 	const link = document.createElement('a');
@@ -90,4 +93,34 @@ export function exportGeometryToSTLBinary(
 	document.body.removeChild(link);
 
 	setTimeout(() => URL.revokeObjectURL(url), 100);
+}
+
+/**
+ * Convert geometry to binary STL ArrayBuffer (for API upload / agent jobs).
+ */
+export function geometryToBinarySTLArrayBuffer(
+	geometry: THREE.BufferGeometry
+): ArrayBuffer {
+	const material = new THREE.MeshBasicMaterial();
+	const mesh = new THREE.Mesh(geometry, material);
+	const exporter = new STLExporter();
+	const payload = exporter.parse(mesh, { binary: true });
+	if (payload instanceof ArrayBuffer) return payload;
+	if (payload instanceof DataView) return payload.buffer.slice(0);
+	throw new Error('Unexpected binary STL payload type');
+}
+
+/**
+ * Convert geometry to binary STL base64 string.
+ */
+export function geometryToBinarySTLBase64(
+	geometry: THREE.BufferGeometry
+): string {
+	const arrayBuffer = geometryToBinarySTLArrayBuffer(geometry);
+	const bytes = new Uint8Array(arrayBuffer);
+	let binary = '';
+	for (let i = 0; i < bytes.length; i++) {
+		binary += String.fromCharCode(bytes[i]);
+	}
+	return btoa(binary);
 }

@@ -1,0 +1,83 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
+import { requireOrganization } from '@/src/shared/core/auth/get-session';
+import { prisma } from '@/src/shared/core/db/prisma';
+
+type CreateSlicingJobBody = {
+	stlBase64?: string;
+	filename?: string;
+	printerSettings?: Record<string, unknown>;
+};
+
+export async function POST(req: NextRequest) {
+	try {
+		const { session, orgId } = await requireOrganization();
+		const contentType = (req.headers.get('content-type') ?? '').toLowerCase();
+
+		let stlBase64 = '';
+		let filename = 'insole.stl';
+		let printerSettings: Record<string, unknown> = {};
+
+		if (contentType.includes('application/octet-stream')) {
+			const arr = await req.arrayBuffer();
+			if (!arr || arr.byteLength === 0) {
+				return NextResponse.json({ error: 'Leeg STL-bestand ontvangen.' }, { status: 400 });
+			}
+			stlBase64 = Buffer.from(arr).toString('base64');
+			filename = req.headers.get('x-filename') || filename;
+			const rawSettings = req.headers.get('x-printer-settings');
+			if (rawSettings) {
+				try {
+					printerSettings = JSON.parse(rawSettings) as Record<string, unknown>;
+				} catch {
+					printerSettings = {};
+				}
+			}
+		} else {
+			const body = (await req.json()) as CreateSlicingJobBody;
+			stlBase64 = body.stlBase64?.trim() || '';
+			filename = body.filename || filename;
+			printerSettings = (body.printerSettings ?? {}) as Record<string, unknown>;
+		}
+
+		if (!stlBase64) {
+			return NextResponse.json({ error: 'stlBase64 is verplicht.' }, { status: 400 });
+		}
+
+		const prismaAny = prisma as unknown as {
+			slicingJob: {
+				create: (args: { data: Record<string, unknown> }) => Promise<{ id: string }>;
+			};
+		};
+
+		const job = await prismaAny.slicingJob.create({
+			data: {
+				userId: session.user.id,
+				orgId,
+				status: 'PENDING',
+				stlBase64,
+				stlFilename: filename,
+				printerModel:
+					typeof printerSettings.printer === 'string' ? printerSettings.printer : 'Raise3D Pro3',
+				nozzleSize:
+					typeof printerSettings.nozzle === 'string' ? printerSettings.nozzle : '0.4',
+				material:
+					typeof printerSettings.material === 'string' ? printerSettings.material : 'TPU 95A',
+				slicerProfileName:
+					typeof printerSettings.profileName === 'string'
+						? printerSettings.profileName
+						: 'raise3d-pro3-default',
+				printerSettings: printerSettings as Prisma.InputJsonValue,
+			},
+		});
+
+		return NextResponse.json({ jobId: job.id });
+	} catch (error) {
+		return NextResponse.json(
+			{
+				error: error instanceof Error ? error.message : 'Slicing job aanmaken mislukt.',
+			},
+			{ status: 400 }
+		);
+	}
+}

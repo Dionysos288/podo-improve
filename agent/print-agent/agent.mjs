@@ -91,26 +91,99 @@ function runIdeaMaker(ideamakerPath, stlPath, outputPath, settings) {
 		const ideamaker = spawn(ideamakerPath, args);
 
 		let stderr = '';
+		let stdout = '';
+		const timeoutSec = Number(settings?.slicerTimeoutSec ?? 180);
+		const timeoutMs = Math.max(30, timeoutSec) * 1000;
+		const timer = setTimeout(() => {
+			try {
+				ideamaker.kill('SIGKILL');
+			} catch {
+				// ignore
+			}
+			reject(
+				new Error(
+					`Slicer timeout after ${Math.round(
+						timeoutMs / 1000
+					)}s. ideaMaker likely did not run headless with the current CLI flags. Configure a supported slicer command or verify ideaMaker CLI arguments.`
+				)
+			);
+		}, timeoutMs);
+
+		ideamaker.stdout.on('data', (data) => {
+			stdout += data.toString();
+		});
 
 		ideamaker.stderr.on('data', (data) => {
 			stderr += data.toString();
 		});
 
 		ideamaker.on('close', (code) => {
+			clearTimeout(timer);
 			if (code !== 0) {
-				reject(new Error(`IdeaMaker exited with code ${code}: ${stderr}`));
+				reject(
+					new Error(
+						`IdeaMaker exited with code ${code}. stderr: ${stderr || '(empty)'}. stdout: ${stdout || '(empty)'}`
+					)
+				);
+				return;
+			}
+			if (!fs.existsSync(outputPath)) {
+				reject(
+					new Error(
+						`IdeaMaker process ended but no G-code file was created at ${outputPath}. This usually means the CLI flags are not supported in your installed ideaMaker build.`
+					)
+				);
 				return;
 			}
 			resolve(outputPath);
 		});
 
 		ideamaker.on('error', (err) => {
+			clearTimeout(timer);
 			reject(new Error(`Failed to start IdeaMaker: ${err.message}`));
 		});
 	});
 }
 
-async function processJob(job, ideamakerPath) {
+function createSlicerAdapter(config) {
+	return {
+		name: 'ideaMaker',
+		slice: (stlPath, outputPath, settings) =>
+			runIdeaMaker(config.ideamakerPath, stlPath, outputPath, settings),
+	};
+}
+
+async function completeJob(jobId, gcodeBase64, filename, slicerMeta) {
+	const res = await fetch(`${baseUrl}/api/agent/jobs/${jobId}/complete`, {
+		method: 'POST',
+		headers: {
+			authorization: `Bearer ${token}`,
+			'content-type': 'application/json',
+		},
+		body: JSON.stringify({ gcodeBase64, filename, slicerMeta }),
+	});
+	if (!res.ok) {
+		const text = await res.text();
+		throw new Error(`Complete callback failed (${res.status}): ${text}`);
+	}
+}
+
+async function failJob(jobId, errorMessage) {
+	const res = await fetch(`${baseUrl}/api/agent/jobs/${jobId}/fail`, {
+		method: 'POST',
+		headers: {
+			authorization: `Bearer ${token}`,
+			'content-type': 'application/json',
+		},
+		body: JSON.stringify({ errorMessage: String(errorMessage || 'Unknown slicing error') }),
+	});
+	if (!res.ok) {
+		const text = await res.text();
+		throw new Error(`Fail callback failed (${res.status}): ${text}`);
+	}
+}
+
+async function processJob(job, slicerAdapter) {
 	console.log(`Processing job ${job.jobId}...`);
 
 	// Create temp directory
@@ -123,21 +196,28 @@ async function processJob(job, ideamakerPath) {
 		const stlBuffer = Buffer.from(job.stlData, 'base64');
 		fs.writeFileSync(stlPath, stlBuffer);
 
-		// Run IdeaMaker
-		await runIdeaMaker(ideamakerPath, stlPath, gcodePath, job.printerSettings);
+		// Run slicer
+		await slicerAdapter.slice(stlPath, gcodePath, job.printerSettings);
 
 		// Read generated Gcode
 		const gcodeBuffer = fs.readFileSync(gcodePath);
 		const gcodeBase64 = gcodeBuffer.toString('base64');
 
-		// TODO: Upload Gcode back to server
-		// await fetch(`${baseUrl}/api/agent/jobs/${job.jobId}/complete`, {
-		//   method: 'POST',
-		//   headers: { authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-		//   body: JSON.stringify({ gcodeData: gcodeBase64 })
-		// });
+		await completeJob(
+			job.jobId,
+			gcodeBase64,
+			(job.filename || 'insole.stl').replace(/\.stl$/i, '.gcode'),
+			{ slicer: slicerAdapter.name }
+		);
 
 		console.log(`Job ${job.jobId} completed successfully`);
+	} catch (err) {
+		try {
+			await failJob(job.jobId, err instanceof Error ? err.message : String(err));
+		} catch (callbackErr) {
+			console.error('Failed to report job failure:', callbackErr.message || callbackErr);
+		}
+		throw err;
 	} finally {
 		// Cleanup
 		fs.rmSync(tempDir, { recursive: true, force: true });
@@ -188,6 +268,7 @@ async function main() {
 
 	console.log('✓ IdeaMaker found');
 	console.log('\nAgent is ready. Polling for jobs...\n');
+	const slicerAdapter = createSlicerAdapter(config);
 
 	// Main loop: ping every 30s, poll for jobs every 5s
 	let pingInterval = setInterval(async () => {
@@ -204,7 +285,7 @@ async function main() {
 			if (job) {
 				clearInterval(jobInterval);
 				clearInterval(pingInterval);
-				await processJob(job, config.ideamakerPath);
+				await processJob(job, slicerAdapter);
 				// Restart intervals after job completes
 				main();
 			}

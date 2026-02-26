@@ -36,12 +36,73 @@ export async function GET(req: NextRequest) {
 		return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
 	}
 
-	// TODO: Implement actual job queue (for now, return null = no jobs)
-	// In the future, this would query a jobs table:
-	// const job = await prisma.slicingJob.findFirst({
-	//   where: { userId: user.id, status: 'PENDING' },
-	//   include: { design: true, printer: true }
-	// });
+	const prismaAny = prisma as unknown as {
+		slicingJob: {
+			updateMany: (args: {
+				where: Record<string, unknown>;
+				data: Record<string, unknown>;
+			}) => Promise<{ count: number }>;
+			findFirst: (args: {
+				where: Record<string, unknown>;
+				orderBy?: Record<string, 'asc' | 'desc'>;
+				select: Record<string, boolean>;
+			}) => Promise<
+				| {
+						id: string;
+						stlBase64: string;
+						stlFilename: string | null;
+						printerSettings: Record<string, unknown> | null;
+						status: 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
+					  }
+				| null
+			>;
+		};
+	};
 
-	return NextResponse.json({ job: null });
+	const staleBefore = new Date(Date.now() - 15 * 60 * 1000);
+	await prismaAny.slicingJob.updateMany({
+		where: {
+			orgId: user.orgId,
+			status: 'RUNNING',
+			updatedAt: { lt: staleBefore },
+		},
+		data: {
+			status: 'FAILED',
+			errorMessage: 'Automatisch afgebroken: timeout (agent niet teruggekoppeld).',
+		},
+	});
+
+	const candidate = await prismaAny.slicingJob.findFirst({
+		where: { orgId: user.orgId, status: 'PENDING' },
+		orderBy: { createdAt: 'asc' },
+		select: {
+			id: true,
+			stlBase64: true,
+			stlFilename: true,
+			printerSettings: true,
+			status: true,
+		},
+	});
+
+	if (!candidate) {
+		return NextResponse.json({ job: null });
+	}
+
+	const lock = await prismaAny.slicingJob.updateMany({
+		where: { id: candidate.id, status: 'PENDING' },
+		data: { status: 'RUNNING', errorMessage: null },
+	});
+
+	if (!lock.count) {
+		return NextResponse.json({ job: null });
+	}
+
+	return NextResponse.json({
+		job: {
+			jobId: candidate.id,
+			stlData: candidate.stlBase64,
+			filename: candidate.stlFilename ?? 'insole.stl',
+			printerSettings: candidate.printerSettings ?? {},
+		},
+	});
 }

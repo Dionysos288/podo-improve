@@ -41,7 +41,10 @@ import type {
 	ThreePointLandmarks,
 	CompleteLandmarkSet,
 } from '@/src/features/design/types/types';
-import { exportGeometryToSTLBinary } from '@/src/features/design/utils/stlExport';
+import {
+	exportGeometryToSTLBinary,
+	geometryToBinarySTLArrayBuffer,
+} from '@/src/features/design/utils/stlExport';
 import type {
 	EnhancedSTLViewerRef,
 	BottomTextOverlay,
@@ -392,6 +395,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 	const [step4View, setStep4View] = useState<'export' | 'directProduce'>(
 		'export'
 	);
+	const [gcodeBusy, setGcodeBusy] = useState(false);
 	const [productionMethod, setProductionMethod] = useState('Printer: Solid');
 	const [selectedBaseSTL, setSelectedBaseSTL] = useState<string | null>(null);
 	const [corrections, setCorrections] = useState<OntwerpCorrections | undefined>(undefined);
@@ -845,22 +849,153 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		[workflowStep, pointStepIndex, pointPickFoot, rightPointSelections, leftPointSelections, setThreePointLandmarks, setFootGeometry, setDerivedLandmarks, setCompleteLandmarks, setPlantarData, setIsGeneratingInsole, setParameters, parameters, generalNormalized, targetForefootWidthMm]
 	);
 
+	const patientName = project?.patient
+		? `${project.patient.firstName}_${project.patient.lastName}`
+		: 'insole';
+
+	const validateExportDimensions = useCallback(
+		(side: 'left' | 'right', dims: { lengthMm: number; widthMm: number; heightMm: number } | null) => {
+			if (!dims) return { ok: false, reason: `Geen afmetingen voor ${side} beschikbaar.` };
+			if (!Number.isFinite(dims.lengthMm) || dims.lengthMm < 150 || dims.lengthMm > 350) {
+				return {
+					ok: false,
+					reason: `Onrealistische ${side} lengte (${dims.lengthMm.toFixed(1)} mm). Controleer schaal/export.`,
+				};
+			}
+			return { ok: true as const };
+		},
+		[]
+	);
+
+	const handleExportSTLLeft = useCallback(() => {
+		const geometry = viewerRef.current?.getExportInsoleGeometryMm('left');
+		const dims = viewerRef.current?.getInsoleDimensionsMm('left') ?? null;
+		const check = validateExportDimensions('left', dims);
+		if (!geometry || !check.ok) {
+			alert(check.ok ? 'Geen linker steunzool beschikbaar om te exporteren.' : check.reason);
+			return;
+		}
+		exportGeometryToSTLBinary(geometry, `${patientName}_left_${projectId}.stl`);
+		geometry.dispose();
+	}, [patientName, projectId, validateExportDimensions]);
+
+	const handleExportSTLRight = useCallback(() => {
+		const geometry = viewerRef.current?.getExportInsoleGeometryMm('right');
+		const dims = viewerRef.current?.getInsoleDimensionsMm('right') ?? null;
+		const check = validateExportDimensions('right', dims);
+		if (!geometry || !check.ok) {
+			alert(check.ok ? 'Geen rechter steunzool beschikbaar om te exporteren.' : check.reason);
+			return;
+		}
+		exportGeometryToSTLBinary(geometry, `${patientName}_right_${projectId}.stl`);
+		geometry.dispose();
+	}, [patientName, projectId, validateExportDimensions]);
+
 	const handleExportSTL = useCallback(() => {
-		const geometry = viewerRef.current?.getInsoleGeometry();
-		if (!geometry) {
-			alert(
-				'Geen steunzool beschikbaar om te exporteren. Voltooi eerst het ontwerp.'
-			);
+		const leftDims = viewerRef.current?.getInsoleDimensionsMm('left') ?? null;
+		const rightDims = viewerRef.current?.getInsoleDimensionsMm('right') ?? null;
+		const leftCheck = validateExportDimensions('left', leftDims);
+		const rightCheck = validateExportDimensions('right', rightDims);
+		if (!leftCheck.ok || !rightCheck.ok) {
+			alert(!leftCheck.ok ? leftCheck.reason : rightCheck.reason);
 			return;
 		}
 
-		const patientName = project?.patient
-			? `${project.patient.firstName}_${project.patient.lastName}`
-			: 'insole';
-		const filename = `${patientName}_steunzool_${projectId}.stl`;
+		const geometry = viewerRef.current?.getExportPairGeometryMm(15);
+		if (!geometry) {
+			alert('Geen steunzoolpaar beschikbaar om te exporteren.');
+			return;
+		}
 
-		exportGeometryToSTLBinary(geometry, filename);
-	}, [project, projectId]);
+		exportGeometryToSTLBinary(geometry, `${patientName}_pair_${projectId}.stl`);
+		geometry.dispose();
+	}, [patientName, projectId, validateExportDimensions]);
+
+	const handleExportGcode = useCallback(async () => {
+		const leftDims = viewerRef.current?.getInsoleDimensionsMm('left') ?? null;
+		const rightDims = viewerRef.current?.getInsoleDimensionsMm('right') ?? null;
+		const leftCheck = validateExportDimensions('left', leftDims);
+		const rightCheck = validateExportDimensions('right', rightDims);
+		if (!leftCheck.ok || !rightCheck.ok) {
+			alert(!leftCheck.ok ? leftCheck.reason : rightCheck.reason);
+			return;
+		}
+
+		const pairGeometry = viewerRef.current?.getExportPairGeometryMm(15);
+		if (!pairGeometry) {
+			alert('Geen steunzoolpaar beschikbaar voor G-code generatie.');
+			return;
+		}
+
+		setGcodeBusy(true);
+		try {
+			const stlArrayBuffer = geometryToBinarySTLArrayBuffer(pairGeometry);
+			const createRes = await fetch('/api/slicing/jobs/create', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/octet-stream',
+					'x-filename': `${patientName}_pair_${projectId}.stl`,
+					'x-printer-settings': JSON.stringify(printerSettings),
+				},
+				body: stlArrayBuffer,
+			});
+
+			if (!createRes.ok) {
+				const err = await createRes.json().catch(() => ({}));
+				throw new Error(err?.error || 'Slicing job kon niet aangemaakt worden.');
+			}
+
+			const created = (await createRes.json()) as { jobId: string };
+			if (!created?.jobId) {
+				throw new Error('Geen jobId ontvangen van de server.');
+			}
+
+			const startedAt = Date.now();
+			const timeoutMs = 8 * 60 * 1000;
+			while (Date.now() - startedAt < timeoutMs) {
+				await new Promise((resolve) => setTimeout(resolve, 3000));
+				const statusRes = await fetch(`/api/slicing/jobs/${created.jobId}`);
+				if (!statusRes.ok) continue;
+				const status = (await statusRes.json()) as {
+					status: 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
+					gcodeBase64?: string | null;
+					filename?: string | null;
+					errorMessage?: string | null;
+				};
+
+				if (status.status === 'FAILED') {
+					throw new Error(status.errorMessage || 'Slicer job is mislukt.');
+				}
+				if (status.status === 'DONE') {
+					if (!status.gcodeBase64) {
+						throw new Error('G-code ontbreekt in afgeronde job.');
+					}
+					const binary = atob(status.gcodeBase64);
+					const bytes = new Uint8Array(binary.length);
+					for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+					const blob = new Blob([bytes], { type: 'text/plain' });
+					const url = URL.createObjectURL(blob);
+					const a = document.createElement('a');
+					a.href = url;
+					a.download = status.filename || `${patientName}_pair_${projectId}.gcode`;
+					a.style.display = 'none';
+					document.body.appendChild(a);
+					a.click();
+					document.body.removeChild(a);
+					setTimeout(() => URL.revokeObjectURL(url), 100);
+					alert('G-code gereed en gedownload.');
+					return;
+				}
+			}
+
+			throw new Error('Timeout: slicing duurde te lang. Controleer de Print Agent.');
+		} catch (error) {
+			alert(error instanceof Error ? error.message : 'G-code export mislukt.');
+		} finally {
+			pairGeometry.dispose();
+			setGcodeBusy(false);
+		}
+	}, [patientName, printerSettings, projectId, validateExportDimensions]);
 
 	const handleToggleViewSetting = useCallback(
 		(key: keyof typeof viewSettings) => {
@@ -1389,7 +1524,11 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							onBack={() => setStep4View('export')}
 							printerSettings={printerSettings}
 							onPrinterSettingsChange={setPrinterSettings}
-							onExportSTL={handleExportSTL}
+							onExportSTLLeft={handleExportSTLLeft}
+							onExportSTLRight={handleExportSTLRight}
+							onExportSTLPair={handleExportSTL}
+							onExportGcode={handleExportGcode}
+							gcodeBusy={gcodeBusy}
 						/>
 					);
 				}
@@ -1411,9 +1550,23 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								<Button
 									className="w-full"
 									variant="outline"
+									onClick={handleExportSTLLeft}
+								>
+									Exporteer STL (links)
+								</Button>
+								<Button
+									className="w-full"
+									variant="outline"
+									onClick={handleExportSTLRight}
+								>
+									Exporteer STL (rechts)
+								</Button>
+								<Button
+									className="w-full"
+									variant="outline"
 									onClick={handleExportSTL}
 								>
-									Exporteer STL
+									Exporteer STL (paar)
 								</Button>
 							</div>
 
