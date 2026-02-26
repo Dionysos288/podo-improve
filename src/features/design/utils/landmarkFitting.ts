@@ -8,10 +8,14 @@ import type {
 	FootGeometry,
 } from '../types/types';
 
-export type LandmarkPoints = Record<
-	'meta1' | 'meta5' | 'navicular' | 'calcaneus' | 'heel',
-	[number, number, number]
->;
+export type LandmarkPoints = {
+	meta1: [number, number, number];
+	meta5: [number, number, number];
+	navicular: [number, number, number];
+	calcaneus: [number, number, number];
+	heel: [number, number, number];
+	toeTip?: [number, number, number];
+};
 
 export interface FootReferenceFrame {
 	origin: THREE.Vector3;
@@ -212,6 +216,7 @@ export function completeLandmarksToLegacy(complete: CompleteLandmarkSet): Landma
 		navicular: complete.navicular,
 		calcaneus: complete.calcaneus,
 		heel: complete.heel,
+		toeTip: complete.toeTip,
 	};
 }
 
@@ -226,6 +231,7 @@ export function computeFootReference(
 	const p1 = toVec(points.meta1);
 	const p5 = toVec(points.meta5);
 	const pNav = toVec(points.navicular);
+	const pToe = points.toeTip ? toVec(points.toeTip) : null;
 
 	// Forefoot midpoint and long axis
 	const pFore = new THREE.Vector3().addVectors(p1, p5).multiplyScalar(0.5);
@@ -245,7 +251,11 @@ export function computeFootReference(
 	const archHeight = normal.dot(new THREE.Vector3().subVectors(pNav, pHeel));
 
 	// Foot length and width (project width onto plane)
-	const footLength = new THREE.Vector3().subVectors(pFore, pHeel).length();
+	const forefootLength = new THREE.Vector3().subVectors(pFore, pHeel).length();
+	const toeProjection = pToe
+		? new THREE.Vector3().subVectors(pToe, pHeel).dot(longAxis)
+		: forefootLength;
+	const footLength = Math.max(forefootLength, toeProjection);
 	const widthVec = new THREE.Vector3().subVectors(p1, p5);
 	const widthProjected = widthVec
 		.clone()

@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { useRef, useState, useCallback, useMemo } from 'react';
+import * as THREE from 'three';
 import { Card, CardContent } from '@/src/shared/components/ui/card';
 import { Button } from '@/src/shared/components/ui/button';
 import Link from 'next/link';
@@ -159,6 +160,26 @@ const distance3 = (a: [number, number, number], b: [number, number, number]) =>
 	Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+const roundStep = (value: number, step: number) =>
+	Math.round(value / step) * step;
+
+const estimateEuShoeSizeFromGeometry = (
+	geometry: THREE.BufferGeometry,
+	worldToMm: number
+) => {
+	geometry.computeBoundingBox();
+	const bbox = geometry.boundingBox;
+	if (!bbox) return 40;
+	const size = bbox.getSize(new THREE.Vector3());
+	const dims = [size.x, size.y, size.z].sort((a, b) => a - b);
+	const lengthWorld = dims[2] ?? 0;
+	const footLengthMm = lengthWorld * worldToMm;
+	if (!Number.isFinite(footLengthMm) || footLengthMm < 160 || footLengthMm > 360) {
+		return 40;
+	}
+	const rawEu = ((footLengthMm + 15) * 1.5) / 10;
+	return roundStep(clamp(rawEu, 32, 52), 0.5);
+};
 
 const deriveSeedFromPickedPoints = (
 	points: PickSelections,
@@ -226,11 +247,11 @@ const deriveSeedFromPickedPoints = (
 	const supinationMm = deltaDeg < 0 ? clamp(Math.abs(deltaDeg) * 0.25, 0, 6) : 0;
 
 	return {
-		archMm: Number.isFinite(archMm) ? archMm : clamp(fallbackArchMm, 2, 16),
-		cupMm,
-		shoeSizeEu,
-		pronationMm,
-		supinationMm,
+		archMm: roundStep(Number.isFinite(archMm) ? archMm : clamp(fallbackArchMm, 2, 16), 0.5),
+		cupMm: roundStep(cupMm, 0.5),
+		shoeSizeEu: roundStep(shoeSizeEu, 0.5),
+		pronationMm: roundStep(pronationMm, 0.5),
+		supinationMm: roundStep(supinationMm, 0.5),
 	};
 };
 
@@ -270,6 +291,10 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 	const [leftPointSelections, setLeftPointSelections] = useState<PickSelections>({});
 	const [scansActive, setScansActive] = useState(false);
 	const [showOverlays, setShowOverlays] = useState(false);
+	const [targetForefootWidthMm, setTargetForefootWidthMm] = useState<{
+		left: number | null;
+		right: number | null;
+	}>({ left: null, right: null });
 	const [planWorldToMm, setPlanWorldToMm] = useState(1);
 	const rightFittingRef = useRef<{
 		archHeight: number;
@@ -277,6 +302,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		shoeSize: number;
 		pronation: number;
 		supination: number;
+		forefootWidthMm: number;
 	} | null>(null);
 	const [isFitting, setIsFitting] = useState(false);
 	const [designPlan, setDesignPlan] = useState<{
@@ -538,9 +564,9 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		setPointStepIndex(0);
 		setPointPickFoot('right');
 		setPlanWorldToMm(1);
+		setTargetForefootWidthMm({ left: null, right: null });
 		rightFittingRef.current = null;
 		setShowOverlays(false);
-		viewerRef.current?.setPrecisionInsole?.(null);
 		clearLandmarkPipeline();
 		setWorkflowStep('point-pick');
 	}, [clearLandmarkPipeline]);
@@ -551,8 +577,8 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		setPointStepIndex(0);
 		setPointPickFoot('right');
 		setPlanWorldToMm(1);
+		setTargetForefootWidthMm({ left: null, right: null });
 		rightFittingRef.current = null;
-		viewerRef.current?.setPrecisionInsole?.(null);
 		setWorkflowStep('base');
 	}, []);
 
@@ -591,6 +617,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		setPointStepIndex(0);
 		setPointPickFoot('right');
 		setPlanWorldToMm(1);
+		setTargetForefootWidthMm({ left: null, right: null });
 		rightFittingRef.current = null;
 	}, []);
 
@@ -643,7 +670,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 						setDesignPlan({ plan, points: legacyPoints });
 						setPlanWorldToMm(worldToMm);
 
-						const plantar = extractPlantarSurface(geom, fg, 1.0);
+						const plantar = extractPlantarSurface(geom, fg, 1.0 * mmToWorld);
 						setPlantarData(plantar);
 
 						const seeds = deriveSeedFromPickedPoints(
@@ -651,12 +678,14 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							clamp(fg.archHeight * worldToMm * 0.12, 2, 14),
 							worldToMm
 						);
+						const meshShoeSizeEu = estimateEuShoeSizeFromGeometry(geom, worldToMm);
 						rightFittingRef.current = {
-							archHeight: seeds.archMm,
-							cupHeight: seeds.cupMm,
-							shoeSize: seeds.shoeSizeEu,
-							pronation: seeds.pronationMm,
-							supination: seeds.supinationMm,
+							archHeight: roundStep(clamp(seeds.archMm, 2, 16), 0.5),
+							cupHeight: roundStep(clamp(seeds.cupMm, 1, 10), 0.5),
+							shoeSize: meshShoeSizeEu,
+							pronation: roundStep(clamp(seeds.pronationMm, 0, 6), 0.5),
+							supination: roundStep(clamp(seeds.supinationMm, 0, 6), 0.5),
+							forefootWidthMm: fg.forefootWidth * worldToMm,
 						};
 					} catch (err) {
 						console.error('Right foot fitting failed:', err);
@@ -676,6 +705,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 				let leftShoeSize = generalNormalized.shoeSize.left;
 				let leftPronation = 0;
 				let leftSupination = 0;
+				let leftForefootWidthMm = targetForefootWidthMm.left ?? null;
 
 				const leftGeom = viewerRef.current?.getRightGeometry?.();
 				const leftMmToWorld = viewerRef.current?.getRightMmToWorld?.() ?? 1;
@@ -700,11 +730,13 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							clamp(fg.archHeight * leftWorldToMm * 0.12, 2, 14),
 							leftWorldToMm
 						);
-						leftArchMm = seeds.archMm;
-						leftCupMm = seeds.cupMm;
-						leftShoeSize = seeds.shoeSizeEu;
-						leftPronation = seeds.pronationMm;
-						leftSupination = seeds.supinationMm;
+						const meshShoeSizeEu = estimateEuShoeSizeFromGeometry(leftGeom, leftWorldToMm);
+						leftArchMm = roundStep(clamp(seeds.archMm, 2, 16), 0.5);
+						leftCupMm = roundStep(clamp(seeds.cupMm, 1, 10), 0.5);
+						leftShoeSize = meshShoeSizeEu;
+						leftPronation = roundStep(clamp(seeds.pronationMm, 0, 6), 0.5);
+						leftSupination = roundStep(clamp(seeds.supinationMm, 0, 6), 0.5);
+						leftForefootWidthMm = fg.forefootWidth * leftWorldToMm;
 					} catch (err) {
 						console.error('Left foot fitting failed:', err);
 					}
@@ -717,6 +749,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 				const rightShoeSize = rightFitting?.shoeSize ?? generalNormalized.shoeSize.right;
 				const rightPronation = rightFitting?.pronation ?? 0;
 				const rightSupination = rightFitting?.supination ?? 0;
+				const rightForefootWidthMm = rightFitting?.forefootWidthMm ?? targetForefootWidthMm.right;
 
 				// Seed parameters from both feet
 				setParameters({
@@ -792,7 +825,11 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 					};
 				});
 
-				viewerRef.current?.setPrecisionInsole?.(null);
+				setTargetForefootWidthMm({
+					left: leftForefootWidthMm,
+					right: rightForefootWidthMm,
+				});
+
 				setScansActive(true);
 				setShowOverlays(true);
 				setWorkflowStep('base');
@@ -805,7 +842,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 				setPointStepIndex((prev) => prev + 1);
 			}
 		},
-		[workflowStep, pointStepIndex, pointPickFoot, rightPointSelections, leftPointSelections, setThreePointLandmarks, setFootGeometry, setDerivedLandmarks, setCompleteLandmarks, setPlantarData, setIsGeneratingInsole, setParameters, parameters, generalNormalized]
+		[workflowStep, pointStepIndex, pointPickFoot, rightPointSelections, leftPointSelections, setThreePointLandmarks, setFootGeometry, setDerivedLandmarks, setCompleteLandmarks, setPlantarData, setIsGeneratingInsole, setParameters, parameters, generalNormalized, targetForefootWidthMm]
 	);
 
 	const handleExportSTL = useCallback(() => {
@@ -1609,6 +1646,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								rightUrl={DEFAULT_BASE_RIGHT_STL}
 								leftOverlayUrl={showOverlays ? leftStlUrl : undefined}
 								rightOverlayUrl={showOverlays ? rightStlUrl : undefined}
+								targetForefootWidthMm={targetForefootWidthMm}
 								showGrid={true}
 								showBasePreview={false}
 								lockTopView={false}
