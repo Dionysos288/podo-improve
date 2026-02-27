@@ -2077,6 +2077,61 @@ export const EnhancedSTLViewer = forwardRef<
 			};
 		};
 
+		const estimateSignedVolume = (geometry: THREE.BufferGeometry) => {
+			const pos = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+			const index = geometry.getIndex();
+			if (!pos || !index) return 0;
+			let volume = 0;
+			for (let i = 0; i < index.count; i += 3) {
+				const ia = index.getX(i);
+				const ib = index.getX(i + 1);
+				const ic = index.getX(i + 2);
+				const ax = pos.getX(ia);
+				const ay = pos.getY(ia);
+				const az = pos.getZ(ia);
+				const bx = pos.getX(ib);
+				const by = pos.getY(ib);
+				const bz = pos.getZ(ib);
+				const cx = pos.getX(ic);
+				const cy = pos.getY(ic);
+				const cz = pos.getZ(ic);
+				volume +=
+					(ax * by * cz + bx * cy * az + cx * ay * bz - ax * cy * bz - bx * ay * cz - cx * by * az) /
+					6;
+			}
+			return volume;
+		};
+
+		const repairForSlicing = (geometry: THREE.BufferGeometry) => {
+			let g = BufferGeometryUtils.mergeVertices(geometry, 1e-5);
+			if (!g.getIndex()) {
+				const indexed = BufferGeometryUtils.mergeVertices(g, 1e-5);
+				if (indexed !== g) {
+					g.dispose();
+					g = indexed;
+				}
+			}
+
+			const index = g.getIndex();
+			if (index) {
+				const signedVol = estimateSignedVolume(g);
+				if (signedVol < 0) {
+					for (let i = 0; i < index.count; i += 3) {
+						const b = index.getX(i + 1);
+						const c = index.getX(i + 2);
+						index.setX(i + 1, c);
+						index.setX(i + 2, b);
+					}
+					index.needsUpdate = true;
+				}
+			}
+
+			g.deleteAttribute('normal');
+			g.computeVertexNormals();
+			g.normalizeNormals();
+			return g;
+		};
+
 		const toExportGeometryMm = (
 			geometry: THREE.BufferGeometry,
 			mmToWorld: number
@@ -2091,8 +2146,7 @@ export const EnhancedSTLViewer = forwardRef<
 			if (box) {
 				g.applyMatrix4(new THREE.Matrix4().makeTranslation(0, 0, -box.min.z));
 			}
-			g.computeVertexNormals();
-			return g;
+			return repairForSlicing(g);
 		};
 
 		const getPairExportGeometryMm = (spacingMm = 15) => {
@@ -2119,8 +2173,7 @@ export const EnhancedSTLViewer = forwardRef<
 			left.dispose();
 			right.dispose();
 			if (!merged) return null;
-			merged.computeVertexNormals();
-			return merged;
+			return repairForSlicing(merged);
 		};
 
 		useImperativeHandle(ref, () => ({

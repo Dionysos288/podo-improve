@@ -9,7 +9,7 @@ function getBearerToken(req: NextRequest) {
 
 /**
  * GET /api/agent/config
- * Returns the agent's configuration (ideamakerPath, etc.)
+ * Returns the agent's configuration for local PrusaSlicer slicing.
  * Authenticated via Bearer token
  */
 export async function GET(req: NextRequest) {
@@ -37,10 +37,13 @@ export async function GET(req: NextRequest) {
 	}
 
 	const settings = (user.settings as Record<string, unknown>) ?? {};
-	const ideamakerPath = settings.ideamakerPath as string | undefined;
+	const prusaSlicerPath = settings.prusaSlicerPath as string | undefined;
+	const disableBinaryGcode = settings.disableBinaryGcode !== false;
 
 	return NextResponse.json({
-		ideamakerPath: ideamakerPath || null,
+		slicerEngine: 'prusaslicer',
+		prusaSlicerPath: prusaSlicerPath || null,
+		disableBinaryGcode,
 		userId: user.id,
 	});
 }

@@ -17,7 +17,8 @@ export type OrgSettings = {
 
 export interface UserSettings {
 	// Local Print Agent configuration
-	ideamakerPath?: string;
+	prusaSlicerPath?: string;
+	disableBinaryGcode?: boolean;
 
 	// Token for local agent to authenticate (keep as random string)
 	agentToken?: string;

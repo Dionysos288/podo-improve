@@ -60,23 +60,21 @@ set SCRIPT_DIR=%~dp0
 set STARTUP_DIR=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup
 set AGENT_FILE=%SCRIPT_DIR%agent.mjs
 
-REM Check if agent.mjs exists, if not download it
-if not exist "%AGENT_FILE%" (
-    echo Agent file not found. Downloading from server...
-    echo.
-    
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $response = Invoke-WebRequest -Uri '${webAppUrl}/api/agent/files/agent.mjs' -OutFile '%AGENT_FILE%'; Write-Host 'Downloaded successfully!' } catch { Write-Host 'Download failed:' $_.Exception.Message; exit 1 }"
-    
-    if %ERRORLEVEL% NEQ 0 (
-        echo.
-        echo ERROR: Failed to download agent file.
-        echo Please check your internet connection and try again.
-        pause
-        exit /b 1
-    )
-    
-    echo.
+REM Always refresh agent.mjs so latest slicer logic is used
+echo Updating agent file from server...
+echo.
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $response = Invoke-WebRequest -Uri '${webAppUrl}/api/agent/files/agent.mjs' -OutFile '%AGENT_FILE%'; Write-Host 'Downloaded successfully!' } catch { Write-Host 'Download failed:' $_.Exception.Message; exit 1 }"
+
+if %ERRORLEVEL% NEQ 0 (
+	echo.
+	echo ERROR: Failed to download agent file.
+	echo Please check your internet connection and try again.
+	pause
+	exit /b 1
 )
+
+echo.
 
 echo Creating startup shortcut...
 echo.
@@ -130,24 +128,22 @@ REM Get the directory where this script is located
 set SCRIPT_DIR=%~dp0
 set AGENT_FILE=%SCRIPT_DIR%agent.mjs
 
-REM Check if agent.mjs exists, if not download it
-if not exist "%AGENT_FILE%" (
-    echo Agent file not found. Downloading from server...
-    echo.
-    
-    REM Download agent.mjs from server
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $response = Invoke-WebRequest -Uri '${webAppUrl}/api/agent/files/agent.mjs' -OutFile '%AGENT_FILE%'; Write-Host 'Downloaded successfully!' } catch { Write-Host 'Download failed:' $_.Exception.Message; exit 1 }"
-    
-    if %ERRORLEVEL% NEQ 0 (
-        echo.
-        echo ERROR: Failed to download agent file.
-        echo Please check your internet connection and try again.
-        pause
-        exit /b 1
-    )
-    
-    echo.
+REM Always refresh agent.mjs so latest slicer logic is used
+echo Updating agent file from server...
+echo.
+
+REM Download agent.mjs from server
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $response = Invoke-WebRequest -Uri '${webAppUrl}/api/agent/files/agent.mjs' -OutFile '%AGENT_FILE%'; Write-Host 'Downloaded successfully!' } catch { Write-Host 'Download failed:' $_.Exception.Message; exit 1 }"
+
+if %ERRORLEVEL% NEQ 0 (
+	echo.
+	echo ERROR: Failed to download agent file.
+	echo Please check your internet connection and try again.
+	pause
+	exit /b 1
 )
+
+echo.
 
 REM Start the agent
 echo Starting agent...
@@ -182,31 +178,29 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$$0")" && pwd)"
 AGENT_FILE="$$SCRIPT_DIR/agent.mjs"
 
-# Check if agent.mjs exists, if not download it
-if [ ! -f "$$AGENT_FILE" ]; then
-    echo ""
-    echo "Agent file not found. Downloading from server..."
-    echo ""
-    
-    if command -v curl &> /dev/null; then
-        curl -o "$$AGENT_FILE" "${webAppUrl}/api/agent/files/agent.mjs"
-    elif command -v wget &> /dev/null; then
-        wget -O "$$AGENT_FILE" "${webAppUrl}/api/agent/files/agent.mjs"
-    else
-        echo "ERROR: Neither curl nor wget is installed."
-        echo "Please install curl or wget, or download agent.mjs manually."
-        exit 1
-    fi
-    
-    if [ ! -f "$$AGENT_FILE" ]; then
-        echo "ERROR: Failed to download agent file."
-        exit 1
-    fi
-    
-    chmod +x "$$AGENT_FILE"
-    echo "Downloaded successfully!"
-    echo ""
+# Always refresh agent.mjs so latest slicer logic is used
+echo ""
+echo "Updating agent file from server..."
+echo ""
+
+if command -v curl &> /dev/null; then
+	curl -o "$$AGENT_FILE" "${webAppUrl}/api/agent/files/agent.mjs"
+elif command -v wget &> /dev/null; then
+	wget -O "$$AGENT_FILE" "${webAppUrl}/api/agent/files/agent.mjs"
+else
+	echo "ERROR: Neither curl nor wget is installed."
+	echo "Please install curl or wget, or download agent.mjs manually."
+	exit 1
 fi
+
+if [ ! -f "$$AGENT_FILE" ]; then
+	echo "ERROR: Failed to download agent file."
+	exit 1
+fi
+
+chmod +x "$$AGENT_FILE"
+echo "Downloaded successfully!"
+echo ""
 
 # Start the agent
 cd "$$SCRIPT_DIR"

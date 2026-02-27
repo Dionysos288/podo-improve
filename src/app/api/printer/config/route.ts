@@ -5,7 +5,7 @@ import { prisma } from '@/src/shared/core/db/prisma';
 
 /**
  * GET /api/printer/config
- * Returns the printer configuration status (whether ideaMaker and RaiseCloud are configured)
+ * Returns the printer configuration status (PrusaSlicer + RaiseCloud).
  */
 export async function GET() {
 	const session = await requireSession();
@@ -14,23 +14,21 @@ export async function GET() {
 		select: { settings: true },
 	});
 	const settings = (user?.settings ?? {}) as Record<string, unknown>;
-	const ideaMakerPath =
-		typeof settings.ideamakerPath === 'string' ? settings.ideamakerPath : '';
+	const prusaSlicerPath =
+		typeof settings.prusaSlicerPath === 'string' ? settings.prusaSlicerPath : '';
 	const agentLastSeenAt =
 		typeof settings.agentLastSeenAt === 'string' ? settings.agentLastSeenAt : null;
 	const raiseCloudApiKey = process.env.RAISECLOUD_API_KEY || '';
 	const raiseCloudApiSecret = process.env.RAISECLOUD_API_SECRET || '';
 
-	// Check if ideaMaker executable exists
-	let ideaMakerConfigured = false;
-	if (ideaMakerPath) {
+	let prusaSlicerConfigured = false;
+	if (prusaSlicerPath) {
 		try {
-			ideaMakerConfigured = fs.existsSync(ideaMakerPath);
+			prusaSlicerConfigured = fs.existsSync(prusaSlicerPath);
 		} catch {
-			ideaMakerConfigured = false;
+			prusaSlicerConfigured = false;
 		}
 	}
-
 	// Check if RaiseCloud credentials are set
 	const raiseCloudConfigured = Boolean(raiseCloudApiKey && raiseCloudApiSecret);
 	const lastSeenMs = agentLastSeenAt ? Date.parse(agentLastSeenAt) : NaN;
@@ -39,11 +37,16 @@ export async function GET() {
 		: false;
 
 	return NextResponse.json({
-		ideaMaker: {
-			configured: ideaMakerConfigured,
-			path: ideaMakerPath ? '(configured)' : '(not set)',
+		slicer: {
+			engine: 'prusaslicer',
+			configured: prusaSlicerConfigured,
 			agentOnline,
 			agentLastSeenAt,
+		},
+		prusaSlicer: {
+			configured: prusaSlicerConfigured,
+			path: prusaSlicerPath ? '(configured)' : '(not set)',
+			usingBuiltInDefaultProfile: true,
 		},
 		raiseCloud: {
 			configured: raiseCloudConfigured,

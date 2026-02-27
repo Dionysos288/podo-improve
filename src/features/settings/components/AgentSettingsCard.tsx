@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 import { Button } from '@/src/shared/components/ui/button';
 import { Input } from '@/src/shared/components/ui/input';
 
 type AgentUserSettings = {
-	ideamakerPath?: string;
+	prusaSlicerPath?: string;
+	disableBinaryGcode?: boolean;
 	agentToken?: string;
 	agentLastSeenAt?: string;
 };
@@ -18,15 +19,25 @@ function makeToken() {
 export function AgentSettingsCard() {
 	const [isPending, startTransition] = useTransition();
 	const [loaded, setLoaded] = useState(false);
-	const [ideamakerPath, setIdeamakerPath] = useState('');
+	const [isDirty, setIsDirty] = useState(false);
+	const isDirtyRef = useRef(false);
+	const [prusaSlicerPath, setPrusaSlicerPath] = useState('');
+	const [disableBinaryGcode, setDisableBinaryGcode] = useState(true);
 	const [agentToken, setAgentToken] = useState('');
 	const [agentLastSeenAt, setAgentLastSeenAt] = useState<string | null>(null);
+
+	useEffect(() => {
+		isDirtyRef.current = isDirty;
+	}, [isDirty]);
 
 	const refreshStatus = () => {
 		fetch('/api/settings/user')
 			.then((r) => r.json())
 			.then((settings: AgentUserSettings) => {
-				setIdeamakerPath(settings.ideamakerPath ?? '');
+				if (!isDirtyRef.current) {
+					setPrusaSlicerPath(settings.prusaSlicerPath ?? '');
+					setDisableBinaryGcode(settings.disableBinaryGcode ?? true);
+				}
 				setAgentToken(settings.agentToken ?? '');
 				setAgentLastSeenAt(settings.agentLastSeenAt ?? null);
 			})
@@ -45,14 +56,20 @@ export function AgentSettingsCard() {
 		startTransition(async () => {
 			const nextToken = agentToken || makeToken();
 			setAgentToken(nextToken);
-			await fetch('/api/settings/user', {
+			const res = await fetch('/api/settings/user', {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					ideamakerPath: ideamakerPath.trim() || undefined,
+					prusaSlicerPath: prusaSlicerPath.trim() || undefined,
+					disableBinaryGcode,
 					agentToken: nextToken,
 				}),
 			});
+			if (!res.ok) {
+				console.error('Failed to save agent settings');
+				return;
+			}
+			setIsDirty(false);
 			// Refresh status after save
 			refreshStatus();
 		});
@@ -78,7 +95,7 @@ export function AgentSettingsCard() {
 				Lokale Print Agent
 			</h3>
 			<p className="mt-2 text-sm text-ui-muted">
-				IdeaMaker draait op jouw pc. De webapp kan dit pad niet zelf gebruiken —
+				De slicer draait op jouw pc. De webapp kan dit pad niet zelf gebruiken —
 				de Print Agent leest dit en voert slicing lokaal uit.
 			</p>
 			<p className="mt-2 text-xs text-ui-muted">
@@ -89,15 +106,30 @@ export function AgentSettingsCard() {
 
 			<div className="mt-4 space-y-2">
 				<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
-					IdeaMaker pad (exe)
+					PrusaSlicer pad (console exe)
 				</label>
 				<Input
-					value={ideamakerPath}
-					onChange={(e) => setIdeamakerPath(e.target.value)}
-					placeholder="C:\Program Files\Raise3D\ideaMaker\ideaMaker.exe"
+					value={prusaSlicerPath}
+					onChange={(e) => {
+						setPrusaSlicerPath(e.target.value);
+						setIsDirty(true);
+					}}
+					placeholder="C:\\Program Files\\Prusa3D\\PrusaSlicer\\prusa-slicer-console.exe"
 					className="w-full rounded-xl border border-ui-border bg-ui-card px-4 py-3 text-foreground"
 				/>
 			</div>
+
+			<label className="mt-4 flex items-center gap-2 text-sm text-ui-muted">
+				<input
+					type="checkbox"
+					checked={disableBinaryGcode}
+					onChange={(e) => {
+						setDisableBinaryGcode(e.target.checked);
+						setIsDirty(true);
+					}}
+				/>
+				Forceer ASCII G-code (binary uit)
+			</label>
 
 			<div className="mt-4 space-y-2">
 				<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">

@@ -1,19 +1,20 @@
 ## Podo Improve – Local Print Agent
 
-This agent runs on the **user PC** and handles IdeaMaker slicing locally.
-The web server cannot execute `ideaMaker.exe` on a user machine, so the agent does it.
+This agent runs on the **user PC** and handles PrusaSlicer slicing locally.
+The web server cannot execute local slicer software on a user machine, so the agent does it.
 
 ### What it does
 
-1. **Connects** to the webapp and fetches its configuration (including `ideamakerPath`)
+1. **Connects** to the webapp and fetches its configuration
 2. **Polls** for slicing jobs (STL files that need to be converted to Gcode)
-3. **Runs IdeaMaker** locally to slice STL files
+3. **Runs PrusaSlicer** locally to slice STL files
 4. **Uploads** the generated Gcode back to the server
 
 ### Setup (For End Users)
 
 1. **In the web app**: Go to **Settings → Basis → Lokale Print Agent**
-   - Set your **IdeaMaker pad (exe)** (e.g., `C:\Program Files\Raise3D\ideaMaker-App\ideaMaker.exe`)
+   - Set your **PrusaSlicer pad (console exe)** (e.g., `C:\Program Files\Prusa3D\PrusaSlicer\prusa-slicer-console.exe`)
+   - The agent auto-downloads and uses a default Raise3D E2 bundle profile
    - Click **Opslaan** to generate an **Agent token**
 
 2. **Choose your setup method**:
@@ -34,11 +35,7 @@ The web server cannot execute `ideaMaker.exe` on a user machine, so the agent do
 
 3. **Verify it's working**: Check Settings → the status should show "gekoppeld"
 
-**That's it!** The agent will automatically:
-
-- Fetch your IdeaMaker path from the server
-- Verify IdeaMaker exists
-- Start polling for slicing jobs
+**That's it!** The agent will automatically verify PrusaSlicer and start polling for slicing jobs.
 
 ### Manual Setup (For Developers)
 

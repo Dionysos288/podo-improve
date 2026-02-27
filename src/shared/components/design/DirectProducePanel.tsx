@@ -6,7 +6,13 @@ import { Button } from '@/src/shared/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
 
 interface PrinterConfig {
-	ideaMaker: { configured: boolean; agentOnline?: boolean; agentLastSeenAt?: string | null };
+	slicer?: {
+		engine?: 'prusaslicer';
+		configured?: boolean;
+		agentOnline?: boolean;
+		agentLastSeenAt?: string | null;
+	};
+	prusaSlicer?: { configured?: boolean; usingBuiltInDefaultProfile?: boolean };
 	raiseCloud: { configured: boolean };
 }
 
@@ -81,7 +87,8 @@ export function DirectProducePanel({
 			.catch((err) => {
 				console.error('Failed to fetch printer config:', err);
 				setPrinterConfig({
-					ideaMaker: { configured: false },
+					slicer: { engine: 'prusaslicer', configured: false, agentOnline: false },
+					prusaSlicer: { configured: false, usingBuiltInDefaultProfile: true },
 					raiseCloud: { configured: false },
 				});
 			});
@@ -101,8 +108,14 @@ export function DirectProducePanel({
 	};
 
 	// Configuration status from API
-	const ideaMakerConfigured = printerConfig?.ideaMaker.configured ?? false;
-	const agentOnline = printerConfig?.ideaMaker.agentOnline ?? false;
+	const slicerConfigured =
+		typeof printerConfig?.slicer?.configured === 'boolean'
+			? !!printerConfig.slicer.configured
+			: false;
+	const agentOnline =
+		typeof printerConfig?.slicer?.agentOnline === 'boolean'
+			? !!printerConfig.slicer.agentOnline
+			: false;
 	const raiseCloudConfigured = printerConfig?.raiseCloud.configured ?? false;
 
 	return (
@@ -264,11 +277,11 @@ export function DirectProducePanel({
 					<Button
 						className="w-full"
 						variant="outline"
-						disabled={!ideaMakerConfigured || !agentOnline || gcodeBusy}
+						disabled={!slicerConfigured || !agentOnline || gcodeBusy}
 						onClick={onExportGcode}
 						title={
-							!ideaMakerConfigured
-								? 'ideaMaker pad is niet geconfigureerd'
+							!slicerConfigured
+								? 'PrusaSlicer pad is niet geconfigureerd'
 								: !agentOnline
 									? 'Print Agent is offline (geen recente heartbeat)'
 									: undefined
@@ -307,9 +320,9 @@ export function DirectProducePanel({
 							versturen.
 						</p>
 					)}
-					{!ideaMakerConfigured && (
+					{!slicerConfigured && (
 						<p className="text-xs text-ui-muted">
-							Installeer ideaMaker om gcode te genereren.
+							Configureer PrusaSlicer om gcode te genereren.
 						</p>
 					)}
 				</div>

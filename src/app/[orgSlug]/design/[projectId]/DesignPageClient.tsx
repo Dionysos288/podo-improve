@@ -941,8 +941,21 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 			});
 
 			if (!createRes.ok) {
-				const err = await createRes.json().catch(() => ({}));
-				throw new Error(err?.error || 'Slicing job kon niet aangemaakt worden.');
+				const raw = await createRes.text().catch(() => '');
+				let message = 'Slicing job kon niet aangemaakt worden.';
+				if (raw) {
+					try {
+						const parsed = JSON.parse(raw) as { error?: string };
+						if (parsed?.error) message = parsed.error;
+					} catch {
+						if (createRes.status === 413) {
+							message = 'STL-bestand is te groot voor upload. Probeer een eenvoudiger model.';
+						} else {
+							message = raw.slice(0, 220);
+						}
+					}
+				}
+				throw new Error(message);
 			}
 
 			const created = (await createRes.json()) as { jobId: string };
