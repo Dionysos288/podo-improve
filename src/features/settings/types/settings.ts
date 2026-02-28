@@ -1,3 +1,5 @@
+export type PrinterModel = 'raise3d-e2' | 'ir3-v2';
+
 export type OrgSettings = {
 	// Basis
 	locale?: 'nl-NL' | 'en-US';

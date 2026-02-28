@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useRef, useState, useCallback, useMemo } from 'react';
+import { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import * as THREE from 'three';
 import { Card, CardContent } from '@/src/shared/components/ui/card';
 import { Button } from '@/src/shared/components/ui/button';
@@ -49,6 +49,8 @@ import type {
 	EnhancedSTLViewerRef,
 	BottomTextOverlay,
 } from '@/src/features/design/components/EnhancedSTLViewer';
+import type { HardnessKey } from '@/src/features/printers/types/printers';
+import { getPrinters } from '@/src/features/printers/server/actions';
 
 // Dynamic imports for heavy 3D components - reduces initial bundle by ~200-500KB
 const EnhancedSTLViewer = dynamic(
@@ -382,6 +384,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		[generalNormalized, parameters, setParameters]
 	);
 	const [printerSettings, setPrinterSettings] = useState<PrinterSettings>({
+		printerModel: 'raise3d-e2',
 		brand: 'Raise3D',
 		printer: 'E2',
 		material: 'Footprint3D TPU-95A 2.3KG',
@@ -391,6 +394,75 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		bottomLayers: 2,
 		adhesion: 'Geen',
 	});
+
+	/* ── Step 3 – Print preparation state (per side) ── */
+	type SideHardness = {
+		heelEdgeThicknessMm: number;
+		elementsSplit: boolean;
+		overall: HardnessKey;
+		front: HardnessKey;
+		middle: HardnessKey;
+		back: HardnessKey;
+	};
+	const DEFAULT_SIDE_HARDNESS: SideHardness = {
+		heelEdgeThicknessMm: 1,
+		elementsSplit: false,
+		overall: 'normal',
+		front: 'normal',
+		middle: 'normal',
+		back: 'normal',
+	};
+	const DEFAULT_HARDNESS_PROFILES: Record<HardnessKey, { infillPercent: number }> = useMemo(() => ({
+		extraSoft: { infillPercent: 10 },
+		soft: { infillPercent: 22 },
+		normal: { infillPercent: 26 },
+		hard: { infillPercent: 30 },
+		extraHard: { infillPercent: 36 },
+	}), []);
+	const [step3Left, setStep3Left] = useState<SideHardness>({ ...DEFAULT_SIDE_HARDNESS });
+	const [step3Right, setStep3Right] = useState<SideHardness>({ ...DEFAULT_SIDE_HARDNESS });
+	const [step3Side, setStep3Side] = useState<'left' | 'right'>('left');
+	const [selectedZone, setSelectedZone] = useState<'front' | 'middle' | 'back' | null>(null);
+	const [hardnessProfiles, setHardnessProfiles] = useState<Record<HardnessKey, { infillPercent: number }> | null>(null);
+	const activeProfiles = hardnessProfiles ?? DEFAULT_HARDNESS_PROFILES;
+
+	const step3Current = step3Side === 'left' ? step3Left : step3Right;
+	const setStep3Current = step3Side === 'left' ? setStep3Left : setStep3Right;
+
+	// Fetch hardness profiles from the first printer in the organisation
+	useEffect(() => {
+		let cancelled = false;
+		getPrinters().then((printers) => {
+			if (cancelled) return;
+			const first = printers[0];
+			if (first?.settings?.hardnessProfiles) {
+				setHardnessProfiles(first.settings.hardnessProfiles);
+			}
+		}).catch(() => { /* ignore – use defaults */ });
+		return () => { cancelled = true; };
+	}, []);
+
+	// Keep printerSettings in sync with Step 3 choices
+	useEffect(() => {
+		const buildSide = (s: SideHardness) => {
+			const infillPercent = s.elementsSplit ? undefined : activeProfiles[s.overall]?.infillPercent;
+			return {
+				heelEdgeThicknessMm: s.heelEdgeThicknessMm,
+				elementsSplit: s.elementsSplit,
+				infillPercent,
+				infillFrontPercent: s.elementsSplit ? activeProfiles[s.front]?.infillPercent : undefined,
+				infillMiddlePercent: s.elementsSplit ? activeProfiles[s.middle]?.infillPercent : undefined,
+				infillBackPercent: s.elementsSplit ? activeProfiles[s.back]?.infillPercent : undefined,
+			};
+		};
+		setPrinterSettings((prev) => ({
+			...prev,
+			step3: {
+				left: buildSide(step3Left),
+				right: buildSide(step3Right),
+			},
+		}));
+	}, [step3Left, step3Right, activeProfiles]);
 	const [showScanModal, setShowScanModal] = useState(false);
 	const [step4View, setStep4View] = useState<'export' | 'directProduce'>(
 		'export'
@@ -1449,62 +1521,259 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 					</Card>
 				);
 
-			case 3:
+			case 3: {
+				const HARDNESS_OPTIONS: { key: HardnessKey; label: string; color: string }[] = [
+					{ key: 'extraSoft', label: 'Extra zacht', color: '#6DD5FA' },
+					{ key: 'soft', label: 'Zacht', color: '#4FC3F7' },
+					{ key: 'normal', label: 'Normaal', color: '#29B6F6' },
+					{ key: 'hard', label: 'Hard', color: '#0288D1' },
+					{ key: 'extraHard', label: 'Extra hard', color: '#01579B' },
+				];
+
+				const s = step3Current;
+
+				const getZoneHardness = (zone: 'front' | 'middle' | 'back') => {
+					if (!s.elementsSplit) return s.overall;
+					return s[zone];
+				};
+
+				const setZoneHardness = (zone: 'front' | 'middle' | 'back', h: HardnessKey) => {
+					if (!s.elementsSplit) {
+						setStep3Current((prev) => ({ ...prev, overall: h }));
+						return;
+					}
+					setStep3Current((prev) => ({ ...prev, [zone]: h }));
+				};
+
+				const zoneColor = (zone: 'front' | 'middle' | 'back') => {
+					const h = getZoneHardness(zone);
+					return HARDNESS_OPTIONS.find((o) => o.key === h)?.color ?? '#29B6F6';
+				};
+
+				const zoneLabel = (zone: 'front' | 'middle' | 'back') => {
+					if (zone === 'front') return 'Voorvoet';
+					if (zone === 'middle') return 'Middenvoet';
+					return 'Achtervoet';
+				};
+
+				const activeZone = s.elementsSplit ? selectedZone : null;
+				const activeHardness = activeZone
+					? getZoneHardness(activeZone)
+					: s.overall;
+
+				const sideLabel = step3Side === 'left' ? 'Links' : 'Rechts';
+
 				return (
 					<Card>
-						<CardContent>
-							{[
-								{
-									key: 'brand',
-									label: 'Printer merk',
-									options: ['Vertex', 'Formlabs', 'Raise3D'],
-								},
-								{
-									key: 'printer',
-									label: 'Model',
-									options: [
-										'Vertex Apex Belt V2',
-										'Formlabs Fuse',
-										'Raise3D Pro 3',
-									],
-								},
-								{
-									key: 'material',
-									label: 'Materiaal',
-									options: ['Vertex TPU', 'TPU 95A', 'EVA Powder'],
-								},
-								{
-									key: 'nozzle',
-									label: 'Nozzle',
-									options: ['0.8mm', '0.6mm', '1.0mm'],
-								},
-							].map(({ key, label, options }) => (
-								<label key={key} className="flex flex-col gap-1">
-									<span className="text-xs uppercase tracking-wide text-(--ui-text)/70">
-										{label}
-									</span>
-									<select
-										className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-ui-text"
-										value={printerSettings[key as keyof typeof printerSettings]}
-										onChange={(event) =>
-											setPrinterSettings((prev) => ({
-												...prev,
-												[key]: event.target.value,
-											}))
-										}
+						<CardContent className="space-y-5">
+							{/* ── Left / Right side toggle ── */}
+							<div className="flex rounded-lg border border-ui-border overflow-hidden">
+								{(['left', 'right'] as const).map((side) => (
+									<button
+										key={side}
+										type="button"
+										onClick={() => { setStep3Side(side); setSelectedZone(null); }}
+										className={cn(
+											'flex-1 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors',
+											step3Side === side
+												? 'bg-ui-accent text-slate-900'
+												: 'bg-transparent text-ui-text hover:bg-white/5'
+										)}
 									>
-										{options.map((option) => (
-											<option key={option}>{option}</option>
-										))}
-									</select>
-								</label>
-							))}
-							<Button className="w-full bg-ui-accent text-slate-900 hover:opacity-90">
-								Genereer toolpath preview
-							</Button>
+										{side === 'left' ? 'Links' : 'Rechts'}
+									</button>
+								))}
+							</div>
+
+							{/* ── Hielrand dikte ── */}
+							<div className="space-y-1.5">
+								<span className="text-xs font-medium uppercase tracking-wide text-(--ui-text)/70">
+									Hielrand dikte ({sideLabel})
+								</span>
+								<div className="flex items-center gap-2">
+									<input
+										type="number"
+										min={0}
+										max={10}
+										step={0.1}
+										value={s.heelEdgeThicknessMm}
+										onChange={(e) => {
+											const v = parseFloat(e.target.value);
+											if (!Number.isNaN(v)) setStep3Current((prev) => ({ ...prev, heelEdgeThicknessMm: v }));
+										}}
+										className="w-20 rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-sm text-ui-text text-center focus:outline-none focus:border-ui-accent"
+									/>
+									<span className="text-xs text-ui-muted">mm</span>
+								</div>
+							</div>
+
+							{/* ── Elementen splitsen ── */}
+							<div className="space-y-2">
+								<div className="flex items-center justify-between">
+									<span className="text-xs font-medium uppercase tracking-wide text-(--ui-text)/70">
+										Elementen splitsen
+									</span>
+									<button
+										type="button"
+										role="switch"
+										aria-checked={s.elementsSplit}
+										onClick={() => {
+											setStep3Current((prev) => ({ ...prev, elementsSplit: !prev.elementsSplit }));
+											setSelectedZone(null);
+										}}
+										className={cn(
+											'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+											s.elementsSplit ? 'bg-ui-accent' : 'bg-ui-border'
+										)}
+									>
+										<span
+											className={cn(
+												'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+												s.elementsSplit ? 'translate-x-4' : 'translate-x-0'
+											)}
+										/>
+									</button>
+								</div>
+							</div>
+
+							{/* ── Sole zone visualisation ── */}
+							<div className="space-y-2">
+								<span className="text-xs font-medium uppercase tracking-wide text-(--ui-text)/70">
+									{s.elementsSplit ? 'Zones' : 'Hardheid'}
+								</span>
+								{s.elementsSplit && (
+									<p className="text-xs text-ui-muted">
+										Klik op de {sideLabel.toLowerCase()} zool in de 3D viewer om een zone te selecteren.
+									</p>
+								)}
+
+								{/* SVG sole shape with clickable zones */}
+								<div className="flex justify-center">
+									<svg
+										viewBox="0 0 120 300"
+										className="w-32 select-none"
+										xmlns="http://www.w3.org/2000/svg"
+									>
+										{/* Forefoot zone */}
+										<path
+											d="M30,100 C30,100 15,60 20,30 C25,10 40,2 60,2 C80,2 95,10 100,30 C105,60 90,100 90,100 Z"
+											fill={zoneColor('front')}
+											opacity={!s.elementsSplit || activeZone === 'front' ? 0.85 : 0.45}
+											stroke={activeZone === 'front' ? '#fff' : 'rgba(255,255,255,0.2)'}
+											strokeWidth={activeZone === 'front' ? 2.5 : 1}
+											className="cursor-pointer transition-all"
+											onClick={() => s.elementsSplit && setSelectedZone('front')}
+										/>
+										{s.elementsSplit && (
+											<text x="60" y="55" textAnchor="middle" fontSize="9" fill="#fff" fontWeight="600" className="pointer-events-none">Voor</text>
+										)}
+
+										{/* Midfoot zone */}
+										<path
+											d="M30,100 C28,130 22,150 22,175 C22,195 28,200 35,200 L85,200 C92,200 98,195 98,175 C98,150 92,130 90,100 Z"
+											fill={s.elementsSplit ? zoneColor('middle') : zoneColor('front')}
+											opacity={!s.elementsSplit || activeZone === 'middle' ? 0.85 : 0.45}
+											stroke={activeZone === 'middle' ? '#fff' : 'rgba(255,255,255,0.2)'}
+											strokeWidth={activeZone === 'middle' ? 2.5 : 1}
+											className="cursor-pointer transition-all"
+											onClick={() => s.elementsSplit && setSelectedZone('middle')}
+										/>
+										{s.elementsSplit && (
+											<text x="60" y="155" textAnchor="middle" fontSize="9" fill="#fff" fontWeight="600" className="pointer-events-none">Midden</text>
+										)}
+
+										{/* Heel zone */}
+										<path
+											d="M35,200 C28,210 20,230 20,255 C20,280 35,298 60,298 C85,298 100,280 100,255 C100,230 92,210 85,200 Z"
+											fill={s.elementsSplit ? zoneColor('back') : zoneColor('front')}
+											opacity={!s.elementsSplit || activeZone === 'back' ? 0.85 : 0.45}
+											stroke={activeZone === 'back' ? '#fff' : 'rgba(255,255,255,0.2)'}
+											strokeWidth={activeZone === 'back' ? 2.5 : 1}
+											className="cursor-pointer transition-all"
+											onClick={() => s.elementsSplit && setSelectedZone('back')}
+										/>
+										{s.elementsSplit && (
+											<text x="60" y="255" textAnchor="middle" fontSize="9" fill="#fff" fontWeight="600" className="pointer-events-none">Achter</text>
+										)}
+
+										{/* Single-mode label */}
+										{!s.elementsSplit && (
+											<text x="60" y="155" textAnchor="middle" fontSize="10" fill="#fff" fontWeight="600" className="pointer-events-none">
+												{HARDNESS_OPTIONS.find((o) => o.key === s.overall)?.label ?? 'Normaal'}
+											</text>
+										)}
+									</svg>
+								</div>
+
+								{/* Legend showing zone info when split */}
+								{s.elementsSplit && (
+									<div className="grid grid-cols-3 gap-1 text-center text-[10px] text-ui-muted">
+										{(['front', 'middle', 'back'] as const).map((z) => {
+											const h = getZoneHardness(z);
+											const lbl = HARDNESS_OPTIONS.find((o) => o.key === h)?.label ?? '';
+											const infill = activeProfiles[h]?.infillPercent ?? 0;
+											return (
+												<div key={z} className={cn('rounded px-1 py-0.5', activeZone === z && 'bg-white/10')}>
+													<div className="font-medium text-ui-text">{zoneLabel(z)}</div>
+													<div>{lbl}</div>
+													<div>{infill}%</div>
+												</div>
+											);
+										})}
+									</div>
+								)}
+							</div>
+
+							{/* ── Hardness picker ── */}
+							<div className="space-y-1.5">
+								<span className="text-xs font-medium uppercase tracking-wide text-(--ui-text)/70">
+									{s.elementsSplit && activeZone
+										? `Hardheid — ${zoneLabel(activeZone)}`
+										: 'Hardheid'}
+								</span>
+								{s.elementsSplit && !activeZone ? (
+									<p className="text-xs text-ui-muted italic">
+										Klik op de zool in de 3D viewer om de hardheid aan te passen.
+									</p>
+								) : (
+									<div className="grid grid-cols-1 gap-1">
+										{HARDNESS_OPTIONS.map(({ key, label: optLabel, color }) => {
+											const active = activeHardness === key;
+											const infill = activeProfiles[key]?.infillPercent ?? '–';
+											return (
+												<button
+													key={key}
+													type="button"
+													onClick={() => {
+														if (s.elementsSplit && activeZone) {
+															setZoneHardness(activeZone, key);
+														} else if (!s.elementsSplit) {
+															setStep3Current((prev) => ({ ...prev, overall: key }));
+														}
+													}}
+													className={cn(
+														'flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors',
+														active
+															? 'border-ui-accent bg-ui-accent/10 text-ui-accent'
+															: 'border-ui-border bg-[rgba(255,255,255,0.04)] text-ui-text hover:border-ui-accent/50'
+													)}
+												>
+													<span
+														className="inline-block h-3 w-3 rounded-full shrink-0"
+														style={{ background: color }}
+													/>
+													<span className="flex-1 text-left">{optLabel}</span>
+													<span className="text-xs text-(--ui-text)/50">{infill}%</span>
+												</button>
+											);
+										})}
+									</div>
+								)}
+							</div>
 						</CardContent>
 					</Card>
 				);
+			}
 
 			case 4:
 				// For Frezen: EVA, keep original Step 4 content
@@ -1819,7 +2088,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								hideScans={false}
 								landmarkPoints={designPlan.points ?? undefined}
 								showGeneratedInsole={false}
-								showZones={showZones}
+								showZones={showZones || (activeDesignStep === 3 && step3Current.elementsSplit)}
 								showLeft={viewSettings.showLeft}
 								showRight={viewSettings.showRight}
 								transparent={viewSettings.transparent}
@@ -1834,9 +2103,10 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								activeCorrections={activeCorrections}
 								bottomTextOverlay={bottomTextOverlay}
 								textPlacementEnabled={false}
-								selectedSide={selectedInsoleSide}
-								onSelectSide={(side) => setSelectedInsoleSide(side)}
-								onDeselectSide={() => setSelectedInsoleSide(null)}
+								selectedSide={activeDesignStep === 3 ? null : selectedInsoleSide}
+								onSelectSide={activeDesignStep === 3 ? undefined : (side) => setSelectedInsoleSide(side)}
+								onDeselectSide={activeDesignStep === 3 ? undefined : () => setSelectedInsoleSide(null)}
+								onZoneClick={activeDesignStep === 3 && step3Current.elementsSplit ? (zone, side) => { setSelectedZone(zone); setStep3Side(side); } : undefined}
 								boxEnabled={boxEnabled}
 								gridEditMode={isSelectedGridModeOn}
 							/>

@@ -62,6 +62,7 @@ interface STLMeshProps {
 	}) => void;
 	selected?: boolean;
 	onSelect?: (side: 'left' | 'right') => void;
+	onZoneClick?: (zone: 'front' | 'middle' | 'back', side: 'left' | 'right') => void;
 	showBoxGrid?: boolean;
 	corrections?: OntwerpCorrections;
 	activeCorrections?: CorrectionKey[];
@@ -687,6 +688,7 @@ function STLMesh({
 	onProbe,
 	selected = false,
 	onSelect,
+	onZoneClick,
 	showBoxGrid = false,
 	corrections,
 	activeCorrections,
@@ -1575,6 +1577,21 @@ function STLMesh({
 					onPickPoint(event.point.clone());
 					return;
 				}
+				if (onZoneClick && geometry) {
+					const localPt = event.point.clone();
+					if (meshRef.current) {
+						meshRef.current.worldToLocal(localPt);
+					}
+					geometry.computeBoundingBox();
+					const bbox = geometry.boundingBox!;
+					const minY = bbox.min.y;
+					const maxY = bbox.max.y;
+					const rangeY = maxY - minY || 1;
+					const relY = (localPt.y - minY) / rangeY;
+					const zone: 'front' | 'middle' | 'back' = relY > 0.55 ? 'front' : relY > 0.25 ? 'middle' : 'back';
+					onZoneClick(zone, side);
+					return;
+				}
 				if (onSelect) {
 					onSelect(side);
 				}
@@ -1704,6 +1721,7 @@ interface EnhancedSTLViewerProps {
 	selectedSide?: 'left' | 'right' | null;
 	onSelectSide?: (side: 'left' | 'right') => void;
 	onDeselectSide?: () => void;
+	onZoneClick?: (zone: 'front' | 'middle' | 'back', side: 'left' | 'right') => void;
 	boxEnabled?: { left: boolean; right: boolean };
 	gridEditMode?: boolean;
 }
@@ -1794,6 +1812,7 @@ export const EnhancedSTLViewer = forwardRef<
 			onTextPlace,
 			onSelectSide,
 			onDeselectSide,
+			onZoneClick,
 			boxEnabled = { left: false, right: false },
 			gridEditMode = false,
 			corrections,
@@ -2494,6 +2513,7 @@ export const EnhancedSTLViewer = forwardRef<
 									}}
 									selected={selectedSide === 'left'}
 									onSelect={onSelectSide}
+									onZoneClick={onZoneClick}
 									showBoxGrid={showGrid && boxEnabled.left}
 									gridEditMode={gridEditMode}
 									corrections={corrections}
@@ -2546,6 +2566,7 @@ export const EnhancedSTLViewer = forwardRef<
 									}}
 									selected={selectedSide === 'right'}
 									onSelect={onSelectSide}
+									onZoneClick={onZoneClick}
 									showBoxGrid={showGrid && boxEnabled.right}
 									gridEditMode={gridEditMode}
 									corrections={corrections}

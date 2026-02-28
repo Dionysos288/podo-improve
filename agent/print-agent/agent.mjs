@@ -546,6 +546,7 @@ function runPrusaSlicer(prusaSlicerPath, configPaths, stlPath, outputPath, setti
 function createSlicerAdapter(config, bundleSections) {
 	return {
 		name: 'prusaslicer',
+		printerModel: 'raise3d-e2',
 		slice: (stlPath, outputPath, settings) => {
 			const { configPath, bedCenter, bedSize, maxPrintHeight } =
 				generateFlatConfig(bundleSections, settings, path.dirname(outputPath));
@@ -568,6 +569,355 @@ function createSlicerAdapter(config, bundleSections) {
 				settings,
 				config.disableBinaryGcode !== false
 			);
+		},
+	};
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  IR3 V2 Belt Printer — G-code Coordinate Transform (inlined)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Parse G-code motion line parameters (X, Y, Z, E, F).
+ * Returns an object with only the parameters present in the line.
+ */
+function parseGcodeLine(line) {
+	const result = {};
+	const code = line.includes(';') ? line.slice(0, line.indexOf(';')) : line;
+	for (const axis of ['X', 'Y', 'Z', 'E', 'F']) {
+		const match = code.match(new RegExp(`${axis}(-?\\d+\\.?\\d*)`, 'i'));
+		if (match) result[axis] = parseFloat(match[1]);
+	}
+	return result;
+}
+
+/** Format a number for G-code output: up to 4 decimals, no trailing zeros */
+function formatNum(val) {
+	return parseFloat(val.toFixed(4)).toString();
+}
+
+/**
+ * Transform standard PrusaSlicer G-code into IR3 V2 belt coordinates.
+ *
+ * Rotation around the X axis by tilt angle θ:
+ *   IR3_Y =  slicer_Y · cos(θ) + slicer_Z · sin(θ)
+ *   IR3_Z = -slicer_Y · sin(θ) + slicer_Z · cos(θ) + beltNormalOffset
+ */
+function transformForIR3(gcodeText, opts = {}) {
+	const tiltDeg = opts.tiltAngleDeg ?? 45;
+	const beltOffset = opts.beltNormalOffsetMm ?? -0.15;
+	const maxBelt = opts.ir3MaxBeltLengthMm ?? 1000;
+
+	const tiltRad = (tiltDeg * Math.PI) / 180;
+	const cosT = Math.cos(tiltRad);
+	const sinT = Math.sin(tiltRad);
+
+	const lines = gcodeText.split('\n');
+	const output = [];
+	let curX = 0, curY = 0, curZ = 0;
+	let absolute = true;
+	let linesTransformed = 0;
+	let maxBeltTravel = 0;
+
+	for (const line of lines) {
+		const stripped = line.trimStart();
+		if (/^G90\b/i.test(stripped)) { absolute = true; output.push(line); continue; }
+		if (/^G91\b/i.test(stripped)) { absolute = false; output.push(line); continue; }
+
+		const motionMatch = stripped.match(/^G[01]\b/i);
+		if (!motionMatch) { output.push(line); continue; }
+
+		const params = parseGcodeLine(stripped);
+		const cmd = motionMatch[0].toUpperCase();
+
+		let targetX, targetY, targetZ;
+		if (absolute) {
+			targetX = params.X ?? curX;
+			targetY = params.Y ?? curY;
+			targetZ = params.Z ?? curZ;
+		} else {
+			targetX = curX + (params.X ?? 0);
+			targetY = curY + (params.Y ?? 0);
+			targetZ = curZ + (params.Z ?? 0);
+		}
+
+		const ir3X = targetX;
+		const ir3Y = targetY * cosT + targetZ * sinT;
+		const ir3Z = -targetY * sinT + targetZ * cosT + beltOffset;
+
+		if (!Number.isFinite(ir3X) || !Number.isFinite(ir3Y) || !Number.isFinite(ir3Z)) {
+			output.push(`; IR3_TRANSFORM_ERROR: NaN/Inf – original: ${line}`);
+			continue;
+		}
+		if (Math.abs(ir3Y) > maxBelt) {
+			output.push(`; IR3_TRANSFORM_ERROR: belt travel ${ir3Y.toFixed(2)}mm exceeds limit ${maxBelt}mm – original: ${line}`);
+			continue;
+		}
+
+		if (Math.abs(ir3Y) > maxBeltTravel) maxBeltTravel = Math.abs(ir3Y);
+
+		let rebuilt = cmd;
+		if (params.X != null) rebuilt += ` X${formatNum(ir3X)}`;
+		if (params.Y != null) rebuilt += ` Y${formatNum(ir3Y)}`;
+		if (params.Z != null) rebuilt += ` Z${formatNum(ir3Z)}`;
+		if (params.E != null) rebuilt += ` E${formatNum(params.E)}`;
+		if (params.F != null) rebuilt += ` F${Math.round(params.F)}`;
+
+		const commentIdx = stripped.indexOf(';');
+		if (commentIdx > 0) rebuilt += ' ' + stripped.slice(commentIdx);
+
+		output.push(rebuilt);
+		linesTransformed++;
+		curX = targetX; curY = targetY; curZ = targetZ;
+	}
+
+	return {
+		gcode: output.join('\n'),
+		stats: { linesTotal: lines.length, linesTransformed, maxBeltTravel: Math.round(maxBeltTravel * 100) / 100 },
+	};
+}
+
+/** Generate IR3 V2 start G-code (Klipper firmware). */
+function ir3StartGcode(opts = {}) {
+	const nozzleTemp = opts.nozzleTemp ?? 220;
+	const bedTemp = opts.bedTemp ?? 50;
+	const offset = opts.beltNormalOffsetMm ?? -0.15;
+	return [
+		'; === IR3 V2 Start G-code (Klipper) ===',
+		'G21                ; mm units',
+		'G90                ; absolute positioning',
+		'M83                ; relative extrusion',
+		'',
+		`M104 S${Math.max(0, nozzleTemp - 30)}   ; pre-warm nozzle`,
+		`M140 S${bedTemp}            ; set belt heater`,
+		'',
+		'G28                ; home all axes',
+		'; BED_MESH_PROFILE LOAD=default   ; uncomment if Klipper mesh configured',
+		'',
+		`M190 S${bedTemp}            ; wait belt heater`,
+		`M109 S${nozzleTemp}          ; wait nozzle`,
+		'',
+		`; Belt-normal offset: ${offset} mm`,
+		`SET_GCODE_OFFSET Z=${offset} MOVE=1`,
+		'',
+		'; Prime line',
+		'G92 E0',
+		'G1 X5 Y5 F6000',
+		'G1 X200 Y5 E15 F1200  ; prime',
+		'G92 E0',
+		'; === End start G-code ===',
+		'',
+	].join('\n');
+}
+
+/** Generate IR3 V2 end G-code. */
+function ir3EndGcode() {
+	return [
+		'',
+		'; === IR3 V2 End G-code ===',
+		'M104 S0            ; nozzle off',
+		'M140 S0            ; bed off',
+		'M107               ; fan off',
+		'',
+		'G92 E0',
+		'G1 E-3 F1800       ; retract',
+		'',
+		'G1 X0 Y0 F6000     ; park',
+		'M84                ; motors off',
+		'; === End ===',
+	].join('\n');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  IdeaFormer IR3 V2 — belt printer adapter
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * IR3 V2 virtual bed profile for PrusaSlicer.
+ *
+ * The IR3 has a 250×250mm belt surface.  We create a "tall" virtual bed so
+ * that PrusaSlicer slices the part using conventional planar layers.  The
+ * belt post-processor then rotates the toolpath into IR3 coordinates.
+ */
+function generateIR3FlatConfig(settings, outputDir) {
+	const nozzle = settings?.nozzle || '0.4';
+	const material = (settings?.material || '').toLowerCase();
+
+	// Nozzle temp defaults per material
+	let nozzleTemp = 220;
+	let bedTemp = 50;
+	if (material.includes('tpu') || material.includes('flex')) { nozzleTemp = 230; bedTemp = 40; }
+	else if (material.includes('pla'))  { nozzleTemp = 210; bedTemp = 50; }
+	else if (material.includes('petg')) { nozzleTemp = 240; bedTemp = 70; }
+	else if (material.includes('abs'))  { nozzleTemp = 250; bedTemp = 100; }
+
+	// The IR3 belt is 250×250mm; virtual Z can be very tall because the belt
+	// axis is "infinite".  We use 500mm to give PrusaSlicer room.
+	const bedW = 250;
+	const bedD = 250;
+	const virtualZ = 500;
+
+	const merged = {
+		// Bed
+		bed_shape: `0x0,${bedW}x0,${bedW}x${bedD},0x${bedD}`,
+		max_print_height: String(virtualZ),
+
+		// Nozzle
+		nozzle_diameter: nozzle,
+
+		// Speeds (IR3 V2 can do 400mm/s but TPU is much slower)
+		max_print_speed: material.includes('tpu') || material.includes('flex') ? '60' : '150',
+		max_volumetric_speed: '0',
+
+		// Layers
+		layer_height: '0.2',
+		first_layer_height: '0.25',
+
+		// Temperatures
+		temperature: String(nozzleTemp),
+		first_layer_temperature: String(nozzleTemp),
+		bed_temperature: String(bedTemp),
+		first_layer_bed_temperature: String(bedTemp),
+
+		// Retraction (Klipper direct drive typical)
+		retract_length: '1',
+		retract_speed: '40',
+		deretract_speed: '40',
+		retract_lift: '0',
+		retract_before_travel: '2',
+
+		// Extrusion
+		extrusion_multiplier: '1',
+		filament_diameter: '1.75',
+
+		// Single extruder
+		extruders_count: '1',
+		wipe_tower: '0',
+
+		// Firmware
+		gcode_flavor: 'reprap',
+
+		// No supports by default (belt printers handle overhangs in belt direction)
+		support_material: '0',
+
+		// Infill
+		fill_density: '20%',
+		fill_pattern: 'gyroid',
+
+		// Cooling
+		fan_always_on: '1',
+		min_fan_speed: '100',
+		max_fan_speed: '100',
+		bridge_fan_speed: '100',
+	};
+
+	// Apply user overrides
+	const adhesion = (settings?.adhesion || '').toLowerCase();
+	if (adhesion === 'geen' || adhesion === 'none') {
+		merged.brim_width = '0';
+		merged.skirts = '0';
+	} else if (adhesion === 'brim') {
+		merged.brim_width = '4';
+		merged.skirts = '0';
+	} else if (adhesion === 'skirt') {
+		merged.skirts = '2';
+		merged.skirt_distance = '6';
+	}
+
+	const topLayers = Number.isFinite(Number(settings?.topLayers)) ? Number(settings.topLayers) : 3;
+	const bottomLayers = Number.isFinite(Number(settings?.bottomLayers)) ? Number(settings.bottomLayers) : 3;
+	merged.top_solid_layers = String(topLayers);
+	merged.bottom_solid_layers = String(bottomLayers);
+
+	const bedCenter = { x: Math.round(bedW / 2), y: Math.round(bedD / 2) };
+	const bedSize = { x: bedW, y: bedD };
+
+	console.log(`  IR3 V2 virtual bed: ${bedW}×${bedD}mm, virtual Z=${virtualZ}mm`);
+	console.log(`  IR3 V2 temps: nozzle=${nozzleTemp}°C, bed=${bedTemp}°C, material="${settings?.material}"`);
+
+	const lines = ['# Auto-generated IdeaFormer IR3 V2 flat config'];
+	for (const [k, v] of Object.entries(merged)) lines.push(`${k} = ${v}`);
+
+	const flatPath = path.join(outputDir, 'ir3-v2.ini');
+	fs.writeFileSync(flatPath, lines.join('\n'), 'utf8');
+	console.log(`  Wrote IR3 flat config (${Object.keys(merged).length} keys) → ${flatPath}`);
+
+	return { configPath: flatPath, bedCenter, bedSize, maxPrintHeight: virtualZ, nozzleTemp, bedTemp };
+}
+
+/**
+ * Create a slicer adapter for the IdeaFormer IR3 V2 belt printer.
+ *
+ * Pipeline:
+ *   1. Generate a virtual-bed PrusaSlicer config
+ *   2. Auto-orient + center STL
+ *   3. Run PrusaSlicer to get conventional G-code
+ *   4. Apply belt coordinate transform (45° rotation)
+ *   5. Inject IR3-specific start/end G-code
+ */
+function createIR3SlicerAdapter(config) {
+	return {
+		name: 'prusaslicer-ir3v2',
+		printerModel: 'ir3-v2',
+		slice: async (stlPath, outputPath, settings) => {
+			const outputDir = path.dirname(outputPath);
+			const { configPath, bedCenter, bedSize, maxPrintHeight, nozzleTemp, bedTemp } =
+				generateIR3FlatConfig(settings, outputDir);
+
+			// Auto-orient + center
+			if (bedCenter && bedSize) {
+				try {
+					centerSTLOnBed(stlPath, stlPath, bedCenter, bedSize, maxPrintHeight);
+				} catch (err) {
+					console.warn(`  ⚠ Failed to auto-orient/center STL for IR3: ${err.message}`);
+				}
+			}
+
+			// Run PrusaSlicer to get standard G-code
+			const sliceResult = await runPrusaSlicer(
+				config.prusaSlicerPath,
+				[configPath],
+				stlPath,
+				outputPath,
+				settings,
+				true // always ASCII for IR3 (we need to post-process the text)
+			);
+
+			// Read the standard G-code
+			const standardGcodePath =
+				sliceResult && typeof sliceResult.outputPath === 'string'
+					? sliceResult.outputPath
+					: outputPath;
+			const standardGcode = fs.readFileSync(standardGcodePath, 'utf8');
+
+			// Apply IR3 belt coordinate transform
+			const tiltAngleDeg = settings?.beltAngleDeg ?? 45;
+			const beltNormalOffsetMm = settings?.beltNormalOffsetMm ?? -0.15;
+			const ir3MaxBeltLengthMm = settings?.ir3MaxBeltLengthMm ?? 1000;
+
+			console.log(`  IR3 transform: tilt=${tiltAngleDeg}°, offset=${beltNormalOffsetMm}mm, maxBelt=${ir3MaxBeltLengthMm}mm`);
+
+			const { gcode: transformedGcode, stats } = transformForIR3(standardGcode, {
+				tiltAngleDeg,
+				beltNormalOffsetMm,
+				ir3MaxBeltLengthMm,
+			});
+
+			console.log(`  IR3 transform stats: ${stats.linesTransformed}/${stats.linesTotal} lines transformed, max belt travel=${stats.maxBeltTravel}mm`);
+
+			// Inject start / end G-code
+			const startGcode = ir3StartGcode({ nozzleTemp, bedTemp, beltNormalOffsetMm });
+			const endGcode = ir3EndGcode();
+
+			// Remove PrusaSlicer's own start/end blocks and wrap with IR3 ones
+			const finalGcode = startGcode + '\n' + transformedGcode + '\n' + endGcode;
+
+			// Write final G-code back
+			const ir3OutputPath = standardGcodePath.replace(/\.gcode$/i, '_ir3.gcode');
+			fs.writeFileSync(ir3OutputPath, finalGcode, 'utf8');
+			console.log(`  IR3 final G-code: ${(finalGcode.length / 1024).toFixed(0)} KB → ${ir3OutputPath}`);
+
+			return { outputPath: ir3OutputPath, stdout: sliceResult?.stdout, stderr: sliceResult?.stderr, args: sliceResult?.args, ir3Stats: stats };
 		},
 	};
 }
@@ -685,6 +1035,8 @@ async function main() {
 		console.error(`ERROR: PrusaSlicer not found at: ${config.prusaSlicerPath}`);
 		process.exit(1);
 	}
+
+	// Load Raise3D E2 config bundle (non-fatal — IR3 jobs don't need it)
 	let bundleSections = {};
 	try {
 		const bundlePath = await ensureDefaultE2Bundle();
@@ -693,14 +1045,37 @@ async function main() {
 		const sectionCount = Object.keys(bundleSections).length;
 		console.log(`✓ Raise3D E2 config bundle loaded (${sectionCount} profiles): ${bundlePath}`);
 	} catch (err) {
-		console.error(
-			`ERROR: Failed to load Raise3D E2 profile bundle. ${err.message}`
+		console.warn(
+			`⚠ Failed to load Raise3D E2 profile bundle (IR3 jobs will still work). ${err.message}`
 		);
-		process.exit(1);
 	}
+
 	console.log('✓ PrusaSlicer found');
+
+	// Create slicer adapters for both printers
+	const raise3dAdapter = createSlicerAdapter(config, bundleSections);
+	const ir3Adapter = createIR3SlicerAdapter(config);
+
+	console.log('✓ Slicer adapters ready: Raise3D E2, IdeaFormer IR3 V2');
 	console.log('\nAgent is ready. Polling for jobs...\n');
-	const slicerAdapter = createSlicerAdapter(config, bundleSections);
+
+	/**
+	 * Select the correct slicer adapter based on the job's printerSettings.
+	 * The printerModel field is set by the UI when the user selects a printer.
+	 */
+	function selectAdapter(job) {
+		const model = (job.printerSettings?.printerModel || '').toLowerCase();
+		if (model === 'ir3-v2') {
+			console.log(`  → Using IR3 V2 belt printer adapter`);
+			return ir3Adapter;
+		}
+		// Default: Raise3D E2
+		if (model && model !== 'raise3d-e2') {
+			console.warn(`  ⚠ Unknown printer model "${model}", falling back to Raise3D E2`);
+		}
+		console.log(`  → Using Raise3D E2 adapter`);
+		return raise3dAdapter;
+	}
 
 	// Main loop: ping every 30s, poll for jobs every 5s
 	let pingInterval = setInterval(async () => {
@@ -717,7 +1092,8 @@ async function main() {
 			if (job) {
 				clearInterval(jobInterval);
 				clearInterval(pingInterval);
-				await processJob(job, slicerAdapter);
+				const adapter = selectAdapter(job);
+				await processJob(job, adapter);
 				// Restart intervals after job completes
 				main();
 			}

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Card, CardContent } from '@/src/shared/components/ui/card';
 import { Button } from '@/src/shared/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
+import type { PrinterModel } from '@/src/features/settings/types/settings';
 
 interface PrinterConfig {
 	slicer?: {
@@ -17,6 +18,7 @@ interface PrinterConfig {
 }
 
 export interface PrinterSettings {
+	printerModel: PrinterModel;
 	brand: string;
 	printer: string;
 	material: string;
@@ -25,10 +27,29 @@ export interface PrinterSettings {
 	topLayers?: number;
 	bottomLayers?: number;
 	adhesion?: string;
+	// IR3 V2 specific
+	beltAngleDeg?: number;
+	beltNormalOffsetMm?: number;
+	ir3MaxBeltLengthMm?: number;
+	// Step 3 – print preparation (per-side)
+	step3?: {
+		left: Step3SideSettings;
+		right: Step3SideSettings;
+	};
 }
 
-// Raise3D E2 defaults
+export interface Step3SideSettings {
+	heelEdgeThicknessMm: number;
+	elementsSplit: boolean;
+	infillPercent?: number;
+	infillFrontPercent?: number;
+	infillMiddlePercent?: number;
+	infillBackPercent?: number;
+}
+
+// ---------- Raise3D E2 defaults ----------
 const DEFAULT_RAISE3D_SETTINGS: PrinterSettings = {
+	printerModel: 'raise3d-e2',
 	brand: 'Raise3D',
 	printer: 'E2',
 	material: 'Footprint3D TPU-95A 2.3KG',
@@ -39,7 +60,27 @@ const DEFAULT_RAISE3D_SETTINGS: PrinterSettings = {
 	adhesion: 'Geen',
 };
 
-const MATERIAL_OPTIONS = [
+// ---------- IdeaFormer IR3 V2 defaults ----------
+const DEFAULT_IR3_SETTINGS: PrinterSettings = {
+	printerModel: 'ir3-v2',
+	brand: 'IdeaFormer',
+	printer: 'IR3 V2',
+	material: 'TPU 95A',
+	nozzle: '0.4',
+	topLayers: 3,
+	bottomLayers: 3,
+	adhesion: 'Geen',
+	beltAngleDeg: 45,
+	beltNormalOffsetMm: -0.15,
+	ir3MaxBeltLengthMm: 1000,
+};
+
+const PRINTER_MODEL_OPTIONS: { value: PrinterModel; label: string }[] = [
+	{ value: 'raise3d-e2', label: 'Raise3D E2' },
+	{ value: 'ir3-v2', label: 'IdeaFormer IR3 V2' },
+];
+
+const MATERIAL_OPTIONS_RAISE3D = [
 	'Footprint3D TPU-95A 2.3KG',
 	'TPU 95A',
 	'TPU 85A',
@@ -48,7 +89,17 @@ const MATERIAL_OPTIONS = [
 	'Custom',
 ];
 
-const NOZZLE_OPTIONS = ['0.4', '0.6', '0.8', '1.0'];
+const MATERIAL_OPTIONS_IR3 = [
+	'TPU 95A',
+	'TPU 85A',
+	'PLA',
+	'PETG',
+	'ABS',
+	'Custom',
+];
+
+const NOZZLE_OPTIONS_RAISE3D = ['0.4', '0.6', '0.8', '1.0'];
+const NOZZLE_OPTIONS_IR3 = ['0.4', '0.6', '0.8'];
 
 const EXTRUDER_OPTIONS = ['Links', 'Rechts'];
 
@@ -94,17 +145,30 @@ export function DirectProducePanel({
 			});
 	}, []);
 
-	// Merge with Raise3D defaults
+	const currentModel: PrinterModel = printerSettings.printerModel || 'raise3d-e2';
+	const defaults = currentModel === 'ir3-v2' ? DEFAULT_IR3_SETTINGS : DEFAULT_RAISE3D_SETTINGS;
+	const isIR3 = currentModel === 'ir3-v2';
+
+	// Merge with appropriate defaults
 	const settings: PrinterSettings = {
-		...DEFAULT_RAISE3D_SETTINGS,
+		...defaults,
 		...printerSettings,
 	};
+
+	const materialOptions = isIR3 ? MATERIAL_OPTIONS_IR3 : MATERIAL_OPTIONS_RAISE3D;
+	const nozzleOptions = isIR3 ? NOZZLE_OPTIONS_IR3 : NOZZLE_OPTIONS_RAISE3D;
 
 	const handleChange = (key: keyof PrinterSettings, value: string | number) => {
 		onPrinterSettingsChange({
 			...settings,
 			[key]: value,
 		});
+	};
+
+	const handlePrinterModelChange = (model: PrinterModel) => {
+		// Reset to defaults for the chosen printer
+		const newDefaults = model === 'ir3-v2' ? DEFAULT_IR3_SETTINGS : DEFAULT_RAISE3D_SETTINGS;
+		onPrinterSettingsChange({ ...newDefaults });
 	};
 
 	// Configuration status from API
@@ -136,13 +200,20 @@ export function DirectProducePanel({
 				{/* Basis section header */}
 				<h4 className="text-sm font-semibold text-ui-accent">Basis</h4>
 
-				{/* Printer info row */}
-				<div className="flex items-center justify-between text-sm">
-					<span className="text-ui-text">3D Printer</span>
-					<div className="flex items-center gap-2">
-						<span className="text-ui-muted">Change printer</span>
-						<span className="text-ui-accent">✓</span>
-					</div>
+				{/* Printer model selector */}
+				<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2 text-sm">
+					<span className="text-ui-muted">Printer model</span>
+					<select
+						className="bg-transparent text-ui-text text-right cursor-pointer outline-none"
+						value={currentModel}
+						onChange={(e) => handlePrinterModelChange(e.target.value as PrinterModel)}
+					>
+						{PRINTER_MODEL_OPTIONS.map((opt) => (
+							<option key={opt.value} value={opt.value} className="bg-ui-panel">
+								{opt.label}
+							</option>
+						))}
+					</select>
 				</div>
 
 				{/* Printer settings */}
@@ -164,7 +235,7 @@ export function DirectProducePanel({
 							value={settings.material}
 							onChange={(e) => handleChange('material', e.target.value)}
 						>
-							{MATERIAL_OPTIONS.map((opt) => (
+							{materialOptions.map((opt) => (
 								<option key={opt} value={opt} className="bg-ui-panel">
 									{opt}
 								</option>
@@ -180,7 +251,7 @@ export function DirectProducePanel({
 							value={settings.nozzle}
 							onChange={(e) => handleChange('nozzle', e.target.value)}
 						>
-							{NOZZLE_OPTIONS.map((opt) => (
+							{nozzleOptions.map((opt) => (
 								<option key={opt} value={opt} className="bg-ui-panel">
 									{opt}
 								</option>
@@ -188,21 +259,23 @@ export function DirectProducePanel({
 						</select>
 					</div>
 
-					{/* Extruder - editable */}
-					<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
-						<span className="text-ui-muted">Extruder</span>
-						<select
-							className="bg-transparent text-ui-text text-right cursor-pointer outline-none"
-							value={settings.extruder}
-							onChange={(e) => handleChange('extruder', e.target.value)}
-						>
-							{EXTRUDER_OPTIONS.map((opt) => (
-								<option key={opt} value={opt} className="bg-ui-panel">
-									{opt}
-								</option>
-							))}
-						</select>
-					</div>
+					{/* Extruder - only for Raise3D E2 (dual extruder) */}
+					{!isIR3 && (
+						<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
+							<span className="text-ui-muted">Extruder</span>
+							<select
+								className="bg-transparent text-ui-text text-right cursor-pointer outline-none"
+								value={settings.extruder}
+								onChange={(e) => handleChange('extruder', e.target.value)}
+							>
+								{EXTRUDER_OPTIONS.map((opt) => (
+									<option key={opt} value={opt} className="bg-ui-panel">
+										{opt}
+									</option>
+								))}
+							</select>
+						</div>
+					)}
 
 					{/* Top layers - editable */}
 					<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
@@ -249,6 +322,72 @@ export function DirectProducePanel({
 							))}
 						</select>
 					</div>
+
+					{/* IR3 V2 specific settings */}
+					{isIR3 && (
+						<>
+							<div className="pt-2 pb-1">
+								<h4 className="text-xs font-semibold text-ui-accent uppercase tracking-wide">
+									Belt printer (IR3 V2)
+								</h4>
+							</div>
+							<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
+								<span className="text-ui-muted">Nozzle kantelhoek</span>
+								<div className="flex items-center gap-1">
+									<input
+										type="number"
+										min={30}
+										max={60}
+										step={0.5}
+										value={settings.beltAngleDeg ?? 45}
+										onChange={(e) =>
+											handleChange('beltAngleDeg', parseFloat(e.target.value) || 45)
+										}
+										className="w-14 bg-transparent text-ui-text text-right outline-none"
+									/>
+									<span className="text-ui-muted">°</span>
+								</div>
+							</div>
+							<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
+								<span className="text-ui-muted">Belt normaal offset</span>
+								<div className="flex items-center gap-1">
+									<input
+										type="number"
+										min={-2}
+										max={2}
+										step={0.05}
+										value={settings.beltNormalOffsetMm ?? -0.15}
+										onChange={(e) =>
+											handleChange('beltNormalOffsetMm', parseFloat(e.target.value) || 0)
+										}
+										className="w-16 bg-transparent text-ui-text text-right outline-none"
+									/>
+									<span className="text-ui-muted">mm</span>
+								</div>
+							</div>
+							<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
+								<span className="text-ui-muted">Max. bandlengte</span>
+								<div className="flex items-center gap-1">
+									<input
+										type="number"
+										min={100}
+										max={5000}
+										step={50}
+										value={settings.ir3MaxBeltLengthMm ?? 1000}
+										onChange={(e) =>
+											handleChange('ir3MaxBeltLengthMm', parseInt(e.target.value, 10) || 1000)
+										}
+										className="w-16 bg-transparent text-ui-text text-right outline-none"
+									/>
+									<span className="text-ui-muted">mm</span>
+								</div>
+							</div>
+							<p className="text-xs text-ui-muted px-1">
+								De IR3 V2 is een bandprinter met Klipper firmware.
+								Toolpaths worden automatisch getransformeerd naar belt-coördinaten.
+							</p>
+						</>
+					)}
 				</div>
 
 				{/* Export buttons */}
