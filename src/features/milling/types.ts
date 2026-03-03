@@ -51,6 +51,23 @@ export const DEFAULT_EVA_SETTINGS: EvaPreparationSettings = {
 };
 
 // ──────────────────────────────────────────────
+// Fixture dimensions (shared with CncFixtureView)
+// ──────────────────────────────────────────────
+
+/** Vertical EVA block width in mm */
+export const BLOCK_W = 130;
+/** Vertical EVA block length in mm */
+export const BLOCK_H = 280;
+/** EVA block thickness (Z) in mm */
+export const BLOCK_DEPTH = 30;
+/** Gap between blocks in mm */
+export const BLOCK_GAP = 24;
+/** Horizontal EVA block width (= BLOCK_H rotated) */
+export const HBLOCK_W = BLOCK_H; // 280
+/** Horizontal EVA block length (= BLOCK_W rotated) */
+export const HBLOCK_H = BLOCK_W; // 130
+
+// ──────────────────────────────────────────────
 // Fixture / slot system (8 workholding slots)
 // ──────────────────────────────────────────────
 
@@ -93,14 +110,36 @@ export interface FixtureLayout {
 	assignments: SlotAssignment[];
 }
 
-export const DEFAULT_SLOT_OFFSETS: SlotOffset[] = Array.from(
-	{ length: SLOT_COUNT },
-	(_, i) => ({
-		x: (i % 4) * 120, // 4 columns, 120mm apart
-		y: Math.floor(i / 4) * 300, // 2 rows, 300mm apart
-		z: 0,
-	})
-);
+/**
+ * Default slot offsets for the 3+3+2 fixture layout.
+ * Values are the work origin (lower-left corner) of each block
+ * relative to the fixture datum (slot 1 origin).
+ *
+ * Layout (viewed from above, Y increasing toward back of machine):
+ *   Top row:    [7] [8]         ← 2 horizontal blocks (280×130mm)
+ *   Middle row: [4] [5] [6]     ← 3 vertical blocks   (130×280mm)
+ *   Bottom row: [1] [2] [3]     ← 3 vertical blocks   (130×280mm)
+ */
+export const DEFAULT_SLOT_OFFSETS: SlotOffset[] = (() => {
+	const step = BLOCK_W + BLOCK_GAP; // 154mm between vertical block origins
+	const rowStep = BLOCK_H + BLOCK_GAP; // 304mm between row origins
+	const hStep = HBLOCK_W + BLOCK_GAP; // 304mm between horizontal block origins
+
+	return [
+		// Bottom row: slots 1-3 (vertical blocks)
+		{ x: 0, y: 0, z: 0 },
+		{ x: step, y: 0, z: 0 },
+		{ x: step * 2, y: 0, z: 0 },
+		// Middle row: slots 4-6 (vertical blocks)
+		{ x: 0, y: rowStep, z: 0 },
+		{ x: step, y: rowStep, z: 0 },
+		{ x: step * 2, y: rowStep, z: 0 },
+		// Top row: slots 7-8 (horizontal blocks)
+		// NOTE: horizontal blocks have rotated local coordinate space
+		{ x: 0, y: rowStep * 2, z: 0 },
+		{ x: hStep, y: rowStep * 2, z: 0 },
+	];
+})();
 
 export function createDefaultFixtureLayout(): FixtureLayout {
 	return {

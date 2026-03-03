@@ -44,6 +44,11 @@ export interface GenerateNcOptions {
 	projectId: string;
 	/** Heightfield data per part (keyed by partId). If absent, generates contour-based toolpath. */
 	heightfields?: Record<string, HeightfieldData>;
+	/** Dynamic contour points extracted from STL files. Overrides hardcoded fallback contours. */
+	contours?: {
+		left?: [number, number][];
+		right?: [number, number][];
+	};
 }
 
 export interface HeightfieldData {
@@ -224,12 +229,16 @@ export function generateNcFile(options: GenerateNcOptions): string {
 	}
 
 	for (const assignment of sortedAssignments) {
+		const slotContour = assignment.partId === 'left'
+			? (options.contours?.left ?? INSOLE_CONTOUR_LEFT)
+			: (options.contours?.right ?? INSOLE_CONTOUR_RIGHT);
 		emitSlotProgram(
 			lines,
 			assignment,
 			toolSettings,
 			millingMode,
-			heightfields?.[assignment.partId] ?? null
+			heightfields?.[assignment.partId] ?? null,
+			slotContour,
 		);
 	}
 
@@ -248,15 +257,18 @@ export function generateNcFile(options: GenerateNcOptions): string {
 
 		emit('(--- Bottom side passes ---)');
 		for (const assignment of sortedAssignments) {
-			emitSlotProgram(lines, assignment, toolSettings, millingMode, null, 'bottom');
+			const slotContour = assignment.partId === 'left'
+				? (options.contours?.left ?? INSOLE_CONTOUR_LEFT)
+				: (options.contours?.right ?? INSOLE_CONTOUR_RIGHT);
+			emitSlotProgram(lines, assignment, toolSettings, millingMode, null, slotContour, 'bottom');
 		}
 	}
 
 	// ── Program end ──
 	emit('');
 	emit('(--- Program end ---)');
-	emit(`G0 Z${fmt(toolSettings.safeZMm)} (Retract to safe Z)`);
-	emit('G0 X0 Y0 (Return to origin)');
+	emit(`G53 G0 Z0 (Retract Z to machine zero)`);
+	emit('G53 G0 X0 Y0 (Return to machine origin)');
 	emit('M5 (Spindle OFF)');
 	emit(`${postSettings.programEnd} (Program end)`);
 	emit('%');
@@ -290,11 +302,11 @@ function emitSlotProgram(
 	tool: CncToolSettings,
 	_millingMode: MillingMode,
 	heightfield: HeightfieldData | null,
+	contour: [number, number][],
 	side: 'top' | 'bottom' = 'top'
 ): void {
 	const emit = (line: string) => lines.push(line);
 	const coordSys = SLOT_COORDINATE_SYSTEMS[assignment.slotIndex] ?? 'G54';
-	const contour = assignment.partId === 'left' ? INSOLE_CONTOUR_LEFT : INSOLE_CONTOUR_RIGHT;
 
 	emit('');
 	emit(`(==== Slot ${assignment.slotIndex + 1} - ${assignment.label} [${side}] ====)`);
@@ -303,10 +315,12 @@ function emitSlotProgram(
 	emit('G0 X0 Y0 (Rapid to slot origin)');
 	emit('');
 
-	if (heightfield) {
-		emitRasterFinishPass(lines, heightfield, tool);
+	if (heightfield && heightfield.cols > 0 && heightfield.rows > 0) {
+		// Full 3D toolpath: roughing pocket + 3D surface finish from heightfield
+		emitInsoleContourRoughing(lines, contour, tool, heightfield, side);
+		emitRasterFinishPass(lines, heightfield, tool, contour);
 	} else {
-		// Generate real insole contour toolpath
+		// Fallback: flat contour-only toolpath (roughing + flat finish)
 		emitInsoleContourToolpath(lines, contour, tool, side);
 	}
 
@@ -314,7 +328,88 @@ function emitSlotProgram(
 }
 
 /**
- * Generate a full insole milling toolpath from contour points.
+ * Roughing-only passes (used when a heightfield is available for 3D finish).
+ * Clears the pocket down to just above the deepest point of the heightfield,
+ * leaving a finish allowance for the 3D surface pass.
+ */
+function emitInsoleContourRoughing(
+	lines: string[],
+	contour: [number, number][],
+	tool: CncToolSettings,
+	heightfield: HeightfieldData,
+	side: 'top' | 'bottom',
+): void {
+	const emit = (line: string) => lines.push(line);
+
+	// Compute bounding box from the actual contour
+	let minY = Infinity, maxY = -Infinity;
+	for (const [, cy] of contour) {
+		if (cy < minY) minY = cy;
+		if (cy > maxY) maxY = cy;
+	}
+
+	// Find the deepest Z value in the heightfield to know how deep to rough
+	let minZ = 0;
+	for (let i = 0; i < heightfield.zValues.length; i++) {
+		const z = heightfield.zValues[i];
+		if (typeof z === 'number' && z < minZ) minZ = z;
+	}
+	const totalDepth = Math.abs(minZ);
+	if (totalDepth < 0.5) return; // Nothing to rough
+
+	const depthPerPass = tool.depthOfCutMm;
+	const finishAllowance = 0.5; // Leave 0.5mm for the 3D surface finish pass
+	const stepover = (tool.toolDiameterMm * tool.stepoverPercent) / 100;
+	const roughDepth = totalDepth - finishAllowance;
+	if (roughDepth <= 0) return;
+
+	const numRoughPasses = Math.ceil(roughDepth / depthPerPass);
+
+	emit(`(--- Roughing: ${numRoughPasses} passes, DOC=${depthPerPass}mm, total=${roughDepth.toFixed(1)}mm ---)`);
+
+	for (let pass = 1; pass <= numRoughPasses; pass++) {
+		const zDepth = -Math.min(pass * depthPerPass, roughDepth);
+		emit(`(Rough pass ${pass}/${numRoughPasses} at Z=${fmt(zDepth)})`);
+		emit(`G0 Z${fmt(tool.safeZMm)}`);
+
+		let zigzag = false;
+		let firstLine = true;
+		const margin = tool.toolDiameterMm / 2 + 1;
+
+		for (let y = minY + margin; y < maxY - margin; y += stepover) {
+			const xRange = getContourXRange(contour, y, margin);
+			if (!xRange) continue;
+			const [xMin, xMax] = xRange;
+
+			if (firstLine) {
+				if (!zigzag) {
+					emit(`G0 X${fmt(xMin)} Y${fmt(y)}`);
+					emit(`G1 Z${fmt(zDepth)} F${tool.feedRateZMmMin}`);
+					emit(`G1 X${fmt(xMax)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+				} else {
+					emit(`G0 X${fmt(xMax)} Y${fmt(y)}`);
+					emit(`G1 Z${fmt(zDepth)} F${tool.feedRateZMmMin}`);
+					emit(`G1 X${fmt(xMin)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+				}
+				firstLine = false;
+			} else {
+				if (!zigzag) {
+					emit(`G1 X${fmt(xMin)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+					emit(`G1 X${fmt(xMax)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+				} else {
+					emit(`G1 X${fmt(xMax)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+					emit(`G1 X${fmt(xMin)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+				}
+			}
+			zigzag = !zigzag;
+		}
+		emit(`G0 Z${fmt(tool.safeZMm)}`);
+	}
+}
+
+/**
+ * Generate a full insole milling toolpath from contour points (FLAT fallback).
+ * Used when no heightfield is available.
  * 1. Roughing passes — zigzag raster pocket clearing at incremental Z depths
  * 2. Finish contour pass at final depth
  * 3. Spring pass — repeat contour for surface quality
@@ -351,6 +446,7 @@ function emitInsoleContourToolpath(
 		emit(`G0 Z${fmt(tool.safeZMm)}`);
 
 		let zigzag = false;
+		let firstLine = true;
 		const margin = tool.toolDiameterMm / 2 + 1;
 
 		for (let y = minY + margin; y < maxY - margin; y += stepover) {
@@ -358,14 +454,28 @@ function emitInsoleContourToolpath(
 			if (!xRange) continue;
 			const [xMin, xMax] = xRange;
 
-			if (!zigzag) {
-				emit(`G0 X${fmt(xMin)} Y${fmt(y)}`);
-				emit(`G1 Z${fmt(zDepth)} F${tool.feedRateZMmMin}`);
-				emit(`G1 X${fmt(xMax)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+			if (firstLine) {
+				// First line of pass: rapid to position at safe Z, then plunge
+				if (!zigzag) {
+					emit(`G0 X${fmt(xMin)} Y${fmt(y)}`);
+					emit(`G1 Z${fmt(zDepth)} F${tool.feedRateZMmMin}`);
+					emit(`G1 X${fmt(xMax)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+				} else {
+					emit(`G0 X${fmt(xMax)} Y${fmt(y)}`);
+					emit(`G1 Z${fmt(zDepth)} F${tool.feedRateZMmMin}`);
+					emit(`G1 X${fmt(xMin)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+				}
+				firstLine = false;
 			} else {
-				emit(`G0 X${fmt(xMax)} Y${fmt(y)}`);
-				emit(`G1 Z${fmt(zDepth)} F${tool.feedRateZMmMin}`);
-				emit(`G1 X${fmt(xMin)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+				// Subsequent lines: link at cutting depth using G1 feed moves
+				// (NOT G0 rapid — tool is at Z depth, rapid would gouge material)
+				if (!zigzag) {
+					emit(`G1 X${fmt(xMin)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+					emit(`G1 X${fmt(xMax)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+				} else {
+					emit(`G1 X${fmt(xMax)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+					emit(`G1 X${fmt(xMin)} Y${fmt(y)} F${tool.feedRateXYMmMin}`);
+				}
 			}
 			zigzag = !zigzag;
 		}
@@ -428,41 +538,88 @@ function getContourXRange(
 
 /**
  * Emit a raster finishing pass from heightfield data.
+ * Follows the actual 3D surface of the insole for each raster line.
+ * Only cuts within the insole contour boundary.
  */
 function emitRasterFinishPass(
 	lines: string[],
 	hf: HeightfieldData,
-	tool: CncToolSettings
+	tool: CncToolSettings,
+	contour?: [number, number][],
 ): void {
 	const emit = (line: string) => lines.push(line);
 	const stepoverMm = (tool.toolDiameterMm * tool.stepoverPercent) / 100;
+	const finishStepover = stepoverMm * 0.5; // Finer stepover for finish pass
 	const ballNoseRadius = tool.toolType === 'ball-nose' ? tool.toolDiameterMm / 2 : 0;
+	const finishFeed = Math.round(tool.feedRateXYMmMin * 0.6);
 
-	emit(`(Raster finish: ${hf.cols}x${hf.rows} grid, cell=${hf.cellSizeMm}mm, stepover=${stepoverMm.toFixed(2)}mm)`);
+	emit('');
+	emit(`(--- 3D surface finish pass ---)`);
+	emit(`(Raster finish: ${hf.cols}x${hf.rows} grid, cell=${hf.cellSizeMm}mm, stepover=${finishStepover.toFixed(2)}mm)`);
 
-	const rowStep = Math.max(1, Math.round(stepoverMm / hf.cellSizeMm));
+	const rowStep = Math.max(1, Math.round(finishStepover / hf.cellSizeMm));
 	let zigzag = false;
 
 	for (let row = 0; row < hf.rows; row += rowStep) {
 		const y = hf.originOffsetMm.y + row * hf.cellSizeMm;
-		const startCol = zigzag ? hf.cols - 1 : 0;
+
+		// Find the column range that's inside the contour for this row
+		let colMin = 0;
+		let colMax = hf.cols - 1;
+		if (contour && contour.length > 2) {
+			const margin = tool.toolDiameterMm / 2;
+			const xRange = getContourXRange(contour, y, margin);
+			if (!xRange) {
+				zigzag = !zigzag;
+				continue; // This row is outside the insole
+			}
+			colMin = Math.max(0, Math.floor((xRange[0] - hf.originOffsetMm.x) / hf.cellSizeMm));
+			colMax = Math.min(hf.cols - 1, Math.ceil((xRange[1] - hf.originOffsetMm.x) / hf.cellSizeMm));
+		}
+
+		if (colMin >= colMax) {
+			zigzag = !zigzag;
+			continue;
+		}
+
+		const startCol = zigzag ? colMax : colMin;
 		const startX = hf.originOffsetMm.x + startCol * hf.cellSizeMm;
+		emit(`G0 Z${fmt(tool.safeZMm)}`);
 		emit(`G0 X${fmt(startX)} Y${fmt(y)}`);
 
 		const firstZ = getHeightfieldZ(hf, row, startCol) + ballNoseRadius;
 		emit(`G1 Z${fmt(firstZ)} F${tool.feedRateZMmMin}`);
 
-		const colStart = zigzag ? hf.cols - 2 : 1;
-		const colEnd = zigzag ? -1 : hf.cols;
+		const colStart = zigzag ? colMax - 1 : colMin + 1;
+		const colEnd = zigzag ? colMin - 1 : colMax + 1;
 		const colDir = zigzag ? -1 : 1;
 
 		for (let col = colStart; col !== colEnd; col += colDir) {
 			const x = hf.originOffsetMm.x + col * hf.cellSizeMm;
 			const z = getHeightfieldZ(hf, row, col) + ballNoseRadius;
-			emit(`G1 X${fmt(x)} Y${fmt(y)} Z${fmt(z)} F${tool.feedRateXYMmMin}`);
+			emit(`G1 X${fmt(x)} Y${fmt(y)} Z${fmt(z)} F${finishFeed}`);
 		}
 		emit(`G0 Z${fmt(tool.safeZMm)}`);
 		zigzag = !zigzag;
+	}
+
+	// Spring pass along contour at the surface edge
+	if (contour && contour.length > 2) {
+		emit('');
+		emit('(--- Contour spring pass ---)');
+		emit(`G0 Z${fmt(tool.safeZMm)}`);
+		const [sx, sy] = contour[0];
+		const szStart = sampleHeightfieldAt(hf, sx, sy) + ballNoseRadius;
+		emit(`G0 X${fmt(sx)} Y${fmt(sy)}`);
+		emit(`G1 Z${fmt(szStart)} F${tool.feedRateZMmMin}`);
+
+		for (let i = 1; i < contour.length; i++) {
+			const [cx, cy] = contour[i];
+			const cz = sampleHeightfieldAt(hf, cx, cy) + ballNoseRadius;
+			emit(`G1 X${fmt(cx)} Y${fmt(cy)} Z${fmt(cz)} F${finishFeed}`);
+		}
+		emit(`G1 X${fmt(sx)} Y${fmt(sy)} Z${fmt(szStart)} F${finishFeed} (Close contour)`);
+		emit(`G0 Z${fmt(tool.safeZMm)}`);
 	}
 }
 
@@ -470,6 +627,37 @@ function getHeightfieldZ(hf: HeightfieldData, row: number, col: number): number 
 	const idx = row * hf.cols + col;
 	const val = hf.zValues[idx];
 	return typeof val === 'number' && Number.isFinite(val) ? val : 0;
+}
+
+/**
+ * Sample the heightfield at an arbitrary XY position using bilinear interpolation.
+ * Used for contour spring pass where points don't align to the grid.
+ */
+function sampleHeightfieldAt(hf: HeightfieldData, x: number, y: number): number {
+	if (hf.cols === 0 || hf.rows === 0) return 0;
+
+	const col = (x - hf.originOffsetMm.x) / hf.cellSizeMm;
+	const row = (y - hf.originOffsetMm.y) / hf.cellSizeMm;
+
+	const c0 = Math.floor(col);
+	const r0 = Math.floor(row);
+	const c1 = Math.min(c0 + 1, hf.cols - 1);
+	const r1 = Math.min(r0 + 1, hf.rows - 1);
+	const ct = col - c0;
+	const rt = row - r0;
+
+	const cc0 = Math.max(0, Math.min(c0, hf.cols - 1));
+	const rr0 = Math.max(0, Math.min(r0, hf.rows - 1));
+
+	const z00 = getHeightfieldZ(hf, rr0, cc0);
+	const z10 = getHeightfieldZ(hf, rr0, c1);
+	const z01 = getHeightfieldZ(hf, r1, cc0);
+	const z11 = getHeightfieldZ(hf, r1, c1);
+
+	// Bilinear interpolation
+	const z0 = z00 + (z10 - z00) * ct;
+	const z1 = z01 + (z11 - z01) * ct;
+	return z0 + (z1 - z0) * rt;
 }
 
 function coordinateSystemToPNumber(slotIndex: number): number {

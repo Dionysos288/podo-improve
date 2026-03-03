@@ -5,6 +5,8 @@ import { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import * as THREE from 'three';
 import { Card, CardContent } from '@/src/shared/components/ui/card';
 import { Button } from '@/src/shared/components/ui/button';
+import { Select, InlineSelect } from '@/src/shared/components/ui/select';
+import { CircleCheck, Plus } from 'lucide-react';
 import Link from 'next/link';
 import { useDesignStore } from '@/src/shared/core/store/designStore';
 import { ViewOverlay } from '@/src/shared/components/design/ViewOverlay';
@@ -70,6 +72,7 @@ import {
 	createDefaultCncState,
 	generateNcFile,
 	downloadNcFile,
+	extractStlContour,
 	DEFAULT_CNC_POST_SETTINGS,
 } from '@/src/features/milling';
 import { EvaPreparationPanel } from '@/src/shared/components/design/EvaPreparationPanel';
@@ -508,11 +511,18 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		setCncPlanningActive(true);
 	}, []);
 
-	const handleExportNcFile = useCallback(() => {
+	const handleExportNcFile = useCallback(async () => {
 		if (!cncState.millingMode) return;
 		const name = project?.patient
 			? `${project.patient.firstName}_${project.patient.lastName}`
 			: 'patient';
+
+		// Extract real contours + 3D heightfields from STL files
+		const [leftResult, rightResult] = await Promise.all([
+			extractStlContour(DEFAULT_BASE_LEFT_STL, 'left'),
+			extractStlContour(DEFAULT_BASE_RIGHT_STL, 'right'),
+		]);
+
 		const ncContent = generateNcFile({
 			millingMode: cncState.millingMode,
 			fixture: cncState.fixture,
@@ -520,6 +530,14 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 			postSettings: cncState.postSettings,
 			patientName: name,
 			projectId,
+			contours: {
+				left: leftResult.contour.length > 0 ? leftResult.contour : undefined,
+				right: rightResult.contour.length > 0 ? rightResult.contour : undefined,
+			},
+			heightfields: {
+				left: leftResult.heightfield,
+				right: rightResult.heightfield,
+			},
 		});
 		const filename = `${name}_${cncState.millingMode}_${new Date().getFullYear()}_top.nc`;
 		downloadNcFile(ncContent, filename);
@@ -1192,63 +1210,29 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 				return (
 					<Card>
 						<CardContent>
-							<label className="flex flex-col gap-1">
-								<span className="text-xs uppercase tracking-wide text-ui-text/70">
-									Patroon
-								</span>
-								<select
-									className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-ui-text"
-									value={selectedTemplate ?? 'classic'}
-									onChange={(event) => setSelectedTemplate(event.target.value)}
-								>
-									{[
-										'classic',
-										'dunes',
-										'finncomfort',
-										'man',
-										'woman',
-										'3quarter',
-									].map((option) => (
-										<option key={option} value={option}>
-											{option}
-										</option>
-									))}
-								</select>
-							</label>
+							<Select
+								label="Patroon"
+								value={selectedTemplate ?? 'classic'}
+								onChange={(val) => setSelectedTemplate(val)}
+								options={[
+									{ value: 'classic', label: 'Classic' },
+									{ value: 'dunes', label: 'Dunes' },
+									{ value: 'finncomfort', label: 'Finncomfort' },
+									{ value: 'man', label: 'Man' },
+									{ value: 'woman', label: 'Woman' },
+									{ value: '3quarter', label: '3 Quarter' },
+								]}
+							/>
 
-							<label className="flex flex-col gap-1">
-								<span className="text-xs uppercase tracking-wide text-(--ui-text)/70">
-									Productiemethode
-								</span>
-								<select
-									className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-ui-text"
-									value={productionMethod}
-									onChange={(event) => setProductionMethod(event.target.value)}
-								>
-									<option value="Printer: Solid">Printer: Solid</option>
-									<option value="Frezen: EVA">Frezen: EVA</option>
-								</select>
-							</label>
-
-							<label className="flex flex-col gap-1">
-								<span className="text-xs uppercase tracking-wide text-ui-text/70">
-									3D Printer
-								</span>
-								<select
-									className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-ui-text"
-									value={printerSettings.printer}
-									onChange={(event) =>
-										setPrinterSettings((prev) => ({
-											...prev,
-											printer: event.target.value,
-										}))
-									}
-								>
-									<option>Vertex Apex Belt V2</option>
-									<option>Formlabs Fuse</option>
-									<option>Raise3D Pro 3</option>
-								</select>
-							</label>
+							<Select
+								label="Productiemethode"
+								value={productionMethod}
+								onChange={(val) => setProductionMethod(val)}
+								options={[
+									{ value: 'Printer: Solid', label: 'Printer: Solid' },
+									{ value: 'Frezen: EVA', label: 'Frezen: EVA' },
+								]}
+							/>
 
 							<div className="space-y-2">
 								<p className="text-xs uppercase tracking-wide text-ui-text/70">
@@ -1329,20 +1313,18 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 									Algemeen
 								</h4>
 								<div className="mt-3 space-y-2 text-sm">
-									<label className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
+									<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
 										<span>Maatlabel</span>
-										<select
-											className="rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-2 py-1 text-sm text-ui-text"
+										<InlineSelect
 											value={generalNormalized.sizeLabel}
-											onChange={(e) =>
-												updateGeneral({ sizeLabel: e.target.value as 'EU' | 'US' | 'UK' })
-											}
-										>
-											<option value="EU">EU</option>
-											<option value="US">US</option>
-											<option value="UK">UK</option>
-										</select>
-									</label>
+											onChange={(val) => updateGeneral({ sizeLabel: val as 'EU' | 'US' | 'UK' })}
+											options={[
+												{ value: 'EU', label: 'EU' },
+												{ value: 'US', label: 'US' },
+												{ value: 'UK', label: 'UK' },
+											]}
+										/>
+									</div>
 									<div className="rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
 										<div className="flex items-center justify-between">
 											<span>Schoenmaat</span>
@@ -1352,7 +1334,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 											<input
 												type="number"
 												inputMode="decimal"
-												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-2 py-1 text-right text-sm text-ui-text"
+												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
 												value={generalNormalized.shoeSize.left}
 												onChange={(e) =>
 													updateGeneral({
@@ -1369,7 +1351,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 											<input
 												type="number"
 												inputMode="decimal"
-												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-2 py-1 text-right text-sm text-ui-text"
+												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
 												value={generalNormalized.shoeSize.right}
 												onChange={(e) =>
 													updateGeneral({
@@ -1394,7 +1376,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 											<input
 												type="number"
 												inputMode="decimal"
-												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-2 py-1 text-right text-sm text-ui-text"
+												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
 												value={generalNormalized.soleThicknessMm.left}
 												onChange={(e) =>
 													updateGeneral({
@@ -1411,7 +1393,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 											<input
 												type="number"
 												inputMode="decimal"
-												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-2 py-1 text-right text-sm text-ui-text"
+												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
 												value={generalNormalized.soleThicknessMm.right}
 												onChange={(e) =>
 													updateGeneral({
@@ -1436,7 +1418,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 											<input
 												type="number"
 												inputMode="decimal"
-												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-2 py-1 text-right text-sm text-ui-text"
+												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
 												value={generalNormalized.maxInsoleHeightMm.left}
 												onChange={(e) =>
 													updateGeneral({
@@ -1453,7 +1435,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 											<input
 												type="number"
 												inputMode="decimal"
-												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-2 py-1 text-right text-sm text-ui-text"
+												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
 												value={generalNormalized.maxInsoleHeightMm.right}
 												onChange={(e) =>
 													updateGeneral({
@@ -1479,10 +1461,10 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								<span className="text-ui-text">Correctie toevoegen</span>
 								<button
 									type="button"
-									className="h-7 w-7 rounded-full bg-ui-accent text-slate-900"
+									className="flex h-7 w-7 items-center justify-center rounded-full bg-ui-accent text-slate-900"
 									onClick={() => setAddCorrectionOpen(true)}
 								>
-									+
+									<Plus size={14} strokeWidth={2.5} />
 								</button>
 							</div>
 
@@ -1606,41 +1588,6 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 										onShowZonesChange={setShowZones}
 									/>
 
-									{/* ── Orthotic Elements ── */}
-									<div className="mt-4 space-y-2">
-										<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm">
-											<span className="text-ui-text font-semibold">Elementen</span>
-											<button
-												type="button"
-												className="h-7 w-7 rounded-full bg-ui-accent text-slate-900"
-												onClick={() => setElementsModalOpen(true)}
-											>
-												+
-											</button>
-										</div>
-										<div className="flex items-center gap-1 rounded-lg bg-[rgba(255,255,255,0.03)] p-1">
-											{(['left', 'right'] as const).map((s) => (
-												<button
-													key={s}
-													type="button"
-													onClick={() => setElementsModalSide(s)}
-													className={cn(
-														'flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition',
-														elementsModalSide === s
-															? 'bg-ui-accent text-slate-900'
-															: 'text-ui-text hover:bg-[rgba(255,255,255,0.06)]'
-													)}
-												>
-													{s === 'left' ? 'Links' : 'Rechts'}
-													{' '}
-													<span className="text-[10px] opacity-70">
-														({placedElements.filter((el) => el.side === s).length})
-													</span>
-												</button>
-											))}
-										</div>
-										<PlacedElementsList side={elementsModalSide} />
-									</div>
 								</>
 							)}
 						</CardContent>
@@ -1948,7 +1895,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								{/* Exporteren section */}
 								<div className="space-y-2">
 									<h4 className="text-sm font-semibold text-ui-accent flex items-center gap-2">
-										<span className="text-ui-accent">✓</span>
+										<CircleCheck size={14} strokeWidth={2.5} />
 										Exporteren
 									</h4>
 									<p className="text-xs text-ui-muted">
@@ -1981,7 +1928,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								{/* Frezen section */}
 								<div className="space-y-2">
 									<h4 className="text-sm font-semibold text-ui-accent flex items-center gap-2">
-										<span className="text-ui-accent">✓</span>
+										<CircleCheck size={14} strokeWidth={2.5} />
 										Frezen
 									</h4>
 									<div className="space-y-1 text-sm">
@@ -2028,7 +1975,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							{/* Exporteren section */}
 							<div className="space-y-2">
 								<h4 className="text-sm font-semibold text-ui-accent flex items-center gap-2">
-									<span className="text-ui-accent">✓</span>
+									<CircleCheck size={14} strokeWidth={2.5} />
 									Exporteren
 								</h4>
 								<p className="text-xs text-ui-muted">
@@ -2059,18 +2006,10 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								</Button>
 							</div>
 
-							{/* Bestellen section (collapsed) */}
-							<div className="space-y-2">
-								<h4 className="text-sm font-semibold text-ui-muted flex items-center gap-2">
-									<span>^</span>
-									Bestellen
-								</h4>
-							</div>
-
 							{/* Produceren section */}
 							<div className="space-y-2">
 								<h4 className="text-sm font-semibold text-ui-accent flex items-center gap-2">
-									<span className="text-ui-accent">✓</span>
+									<CircleCheck size={14} strokeWidth={2.5} />
 									Produceren
 								</h4>
 								<p className="text-xs text-ui-muted">

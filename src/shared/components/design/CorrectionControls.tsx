@@ -6,6 +6,7 @@ import { Switch } from '@base-ui/react/switch';
 import { Slider } from '@base-ui/react/slider';
 import { NumberField } from '@base-ui/react/number-field';
 import { Select } from '@base-ui/react/select';
+import { ChevronRight, Heart, ChevronDown, Check, Minus, Plus } from 'lucide-react';
 import { cn } from '@/src/shared/lib/cn';
 
 // Types for correction options
@@ -57,14 +58,14 @@ export function CollapsibleSection({
 			<div className="rounded-lg border border-ui-border bg-background/5">
 				<Collapsible.Trigger className="flex w-full items-center justify-between px-3 py-2 text-left">
 					<div className="flex items-center gap-2 text-ui-text">
-						<span
+						<ChevronRight
+							size={14}
+							strokeWidth={2.5}
 							className={cn(
-								'text-ui-accent transition-transform',
-								open ? 'rotate-90' : ''
+								'text-ui-accent transition-transform shrink-0',
+								open && 'rotate-90'
 							)}
-						>
-							▸
-						</span>
+						/>
 						<span className="font-semibold text-sm">{title}</span>
 					</div>
 					{onFavorite && (
@@ -79,7 +80,7 @@ export function CollapsibleSection({
 								isFavorite && 'text-red-400'
 							)}
 						>
-							♥
+							<Heart size={14} fill={isFavorite ? 'currentColor' : 'none'} />
 						</button>
 					)}
 				</Collapsible.Trigger>
@@ -128,12 +129,12 @@ export function StyledNumberField({
 				</NumberField.ScrubArea>
 			)}
 			<NumberField.Group className="flex items-center rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)]">
-				<NumberField.Decrement className="px-2 py-1 text-ui-muted hover:text-ui-text transition">
-					−
+				<NumberField.Decrement className="flex items-center justify-center px-2.5 py-1.5 text-ui-muted hover:text-ui-text transition">
+					<Minus size={12} strokeWidth={2.5} />
 				</NumberField.Decrement>
-				<NumberField.Input className="w-12 bg-transparent text-center text-sm text-ui-text outline-none" />
-				<NumberField.Increment className="px-2 py-1 text-ui-muted hover:text-ui-text transition">
-					+
+				<NumberField.Input className="w-14 bg-transparent text-center text-sm text-ui-text outline-none px-1" />
+				<NumberField.Increment className="flex items-center justify-center px-2.5 py-1.5 text-ui-muted hover:text-ui-text transition">
+					<Plus size={12} strokeWidth={2.5} />
 				</NumberField.Increment>
 			</NumberField.Group>
 			{unit && <span className="text-xs text-ui-muted">{unit}</span>}
@@ -251,21 +252,23 @@ export function StyledSelect({
 					if (val !== null) onChange(val);
 				}}
 			>
-				<Select.Trigger className="flex w-full items-center justify-between rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-sm text-ui-text hover:bg-[rgba(255,255,255,0.08)] transition cursor-pointer">
+				<Select.Trigger className="flex w-full items-center justify-between rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-sm text-ui-text hover:bg-[rgba(255,255,255,0.08)] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ui-accent/50">
 					<Select.Value placeholder={placeholder} />
-					<Select.Icon className="text-ui-muted text-xs">▼</Select.Icon>
+					<Select.Icon className="ml-2 text-ui-muted/70 shrink-0">
+						<ChevronDown size={14} strokeWidth={2} />
+					</Select.Icon>
 				</Select.Trigger>
 				<Select.Portal>
-					<Select.Positioner className="z-[100]">
-						<Select.Popup className="max-h-60 overflow-auto rounded-lg border border-ui-border bg-ui-panel py-1 shadow-xl">
+					<Select.Positioner className="z-[100]" sideOffset={4} alignItemWithTrigger={false}>
+						<Select.Popup className="max-h-60 overflow-auto rounded-lg border border-ui-border bg-ui-panel py-1 shadow-xl shadow-black/30 animate-in fade-in-0 zoom-in-95 duration-100">
 							{options.map((opt) => (
 								<Select.Item
 									key={opt.value}
 									value={opt.value}
-									className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm text-ui-text outline-none hover:bg-[rgba(255,255,255,0.08)] data-[highlighted]:bg-[rgba(255,255,255,0.08)]"
+									className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm text-ui-text outline-none transition-colors hover:bg-[rgba(255,255,255,0.06)] data-[highlighted]:bg-[rgba(255,255,255,0.06)]"
 								>
-									<Select.ItemIndicator className="text-ui-accent">
-										✓
+									<Select.ItemIndicator className="w-4 shrink-0 text-ui-accent">
+										<Check size={14} strokeWidth={2.5} />
 									</Select.ItemIndicator>
 									<Select.ItemText>{opt.label}</Select.ItemText>
 								</Select.Item>

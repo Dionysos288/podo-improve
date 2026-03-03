@@ -7,7 +7,15 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 import { cn } from '@/src/shared/lib/cn';
 import type { FixtureLayout, SlotAssignment } from '@/src/features/milling/types';
-import { SLOT_COORDINATE_SYSTEMS } from '@/src/features/milling/types';
+import {
+	SLOT_COORDINATE_SYSTEMS,
+	BLOCK_W,
+	BLOCK_H,
+	BLOCK_DEPTH,
+	BLOCK_GAP,
+	HBLOCK_W,
+	HBLOCK_H,
+} from '@/src/features/milling/types';
 
 // ──────────────────────────────────────────────
 // 3D CNC Fixture View — EVA blocks with real STL insoles
@@ -17,15 +25,8 @@ import { SLOT_COORDINATE_SYSTEMS } from '@/src/features/milling/types';
 //   Bottom row: [1] [2] [3]     ← 3 vertical blocks
 // ──────────────────────────────────────────────
 
-// ── Block dimensions (scene units ≈ mm) ──
-const BLOCK_W = 130; // vertical block width
-const BLOCK_H = 280; // vertical block height (depth in Z)
-const BLOCK_DEPTH = 30; // EVA block thickness (Y axis)
-const GAP = 24;
-
-// Horizontal block: rotated 90° → width becomes height and vice versa
-const HBLOCK_W = BLOCK_H; // 280
-const HBLOCK_H = BLOCK_W; // 130
+// ── Derived layout dimensions ──
+const GAP = BLOCK_GAP;
 
 // Row widths
 const VERT_ROW_W = 3 * BLOCK_W + 2 * GAP; // 438

@@ -5,5 +5,5 @@ export { Card } from './card';
 export { Input, type InputProps } from './input';
 export { BaseModal as Modal } from './modal';
 export { SectionCard, SectionHeader, StatCard } from './section-card';
-export { Select, type SelectProps, type SelectOption, SelectPrimitive } from './select';
+export { Select, type SelectProps, type SelectOption, InlineSelect, type InlineSelectProps, SelectPrimitive } from './select';
 export { Slider, RangeSlider, type SliderProps, type RangeSliderProps, SliderPrimitive } from './slider';

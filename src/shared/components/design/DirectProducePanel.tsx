@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import { Card, CardContent } from '@/src/shared/components/ui/card';
 import { Button } from '@/src/shared/components/ui/button';
-import { ArrowLeft } from 'lucide-react';
+import { InlineSelect } from '@/src/shared/components/ui/select';
+import { ArrowLeft, ChevronDown } from 'lucide-react';
 import type { PrinterModel } from '@/src/features/settings/types/settings';
 
 interface PrinterConfig {
@@ -203,17 +204,11 @@ export function DirectProducePanel({
 				{/* Printer model selector */}
 				<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2 text-sm">
 					<span className="text-ui-muted">Printer model</span>
-					<select
-						className="bg-transparent text-ui-text text-right cursor-pointer outline-none"
+					<InlineSelect
 						value={currentModel}
-						onChange={(e) => handlePrinterModelChange(e.target.value as PrinterModel)}
-					>
-						{PRINTER_MODEL_OPTIONS.map((opt) => (
-							<option key={opt.value} value={opt.value} className="bg-ui-panel">
-								{opt.label}
-							</option>
-						))}
-					</select>
+						onChange={(val) => handlePrinterModelChange(val as PrinterModel)}
+						options={PRINTER_MODEL_OPTIONS}
+					/>
 				</div>
 
 				{/* Printer settings */}
@@ -230,50 +225,32 @@ export function DirectProducePanel({
 					{/* Material - editable */}
 					<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
 						<span className="text-ui-muted">Materiaal</span>
-						<select
-							className="bg-transparent text-ui-text text-right cursor-pointer outline-none"
+						<InlineSelect
 							value={settings.material}
-							onChange={(e) => handleChange('material', e.target.value)}
-						>
-							{materialOptions.map((opt) => (
-								<option key={opt} value={opt} className="bg-ui-panel">
-									{opt}
-								</option>
-							))}
-						</select>
+							onChange={(val) => handleChange('material', val)}
+							options={materialOptions.map((opt) => ({ value: opt, label: opt }))}
+						/>
 					</div>
 
 					{/* Nozzle - editable */}
 					<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
 						<span className="text-ui-muted">Nozzle afmeting</span>
-						<select
-							className="bg-transparent text-ui-text text-right cursor-pointer outline-none"
+						<InlineSelect
 							value={settings.nozzle}
-							onChange={(e) => handleChange('nozzle', e.target.value)}
-						>
-							{nozzleOptions.map((opt) => (
-								<option key={opt} value={opt} className="bg-ui-panel">
-									{opt}
-								</option>
-							))}
-						</select>
+							onChange={(val) => handleChange('nozzle', val)}
+							options={nozzleOptions.map((opt) => ({ value: opt, label: opt }))}
+						/>
 					</div>
 
 					{/* Extruder - only for Raise3D E2 (dual extruder) */}
 					{!isIR3 && (
 						<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
 							<span className="text-ui-muted">Extruder</span>
-							<select
-								className="bg-transparent text-ui-text text-right cursor-pointer outline-none"
-								value={settings.extruder}
-								onChange={(e) => handleChange('extruder', e.target.value)}
-							>
-								{EXTRUDER_OPTIONS.map((opt) => (
-									<option key={opt} value={opt} className="bg-ui-panel">
-										{opt}
-									</option>
-								))}
-							</select>
+							<InlineSelect
+								value={settings.extruder ?? 'Links'}
+								onChange={(val) => handleChange('extruder', val)}
+								options={EXTRUDER_OPTIONS.map((opt) => ({ value: opt, label: opt }))}
+							/>
 						</div>
 					)}
 
@@ -310,17 +287,11 @@ export function DirectProducePanel({
 					{/* Adhesion - editable */}
 					<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
 						<span className="text-ui-muted">Adhesion</span>
-						<select
-							className="bg-transparent text-ui-text text-right cursor-pointer outline-none"
-							value={settings.adhesion}
-							onChange={(e) => handleChange('adhesion', e.target.value)}
-						>
-							{ADHESION_OPTIONS.map((opt) => (
-								<option key={opt} value={opt} className="bg-ui-panel">
-									{opt}
-								</option>
-							))}
-						</select>
+						<InlineSelect
+							value={settings.adhesion ?? 'Geen'}
+							onChange={(val) => handleChange('adhesion', val)}
+							options={ADHESION_OPTIONS.map((opt) => ({ value: opt, label: opt }))}
+						/>
 					</div>
 
 					{/* IR3 V2 specific settings */}
@@ -439,7 +410,7 @@ export function DirectProducePanel({
 						<span className="text-ui-muted">Printer</span>
 						<span className="text-ui-text flex items-center gap-1">
 							Onder (192.168.0.128)
-							<span className="text-ui-accent">▼</span>
+						<ChevronDown size={14} strokeWidth={2} className="text-ui-accent" />
 						</span>
 					</div>
 					<Button

@@ -1,6 +1,7 @@
 'use client';
 
 import { cn } from '@/src/shared/lib/cn';
+import { X } from 'lucide-react';
 import {
 	MILLING_MODE_OPTIONS,
 	type MillingMode,
@@ -36,7 +37,7 @@ export function MillingModeSelector({
 						onClick={onClose}
 						className="h-7 w-7 rounded-full text-ui-muted hover:bg-white/10 hover:text-ui-text transition flex items-center justify-center"
 					>
-						✕
+						<X size={16} strokeWidth={2} />
 					</button>
 				</div>
 

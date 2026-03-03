@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useState, type RefObject } from 'react';
 import { cn } from '@/src/shared/lib/cn';
+import { Plus, Minus } from 'lucide-react';
 import {
 	CORRECTION_OPTIONS,
 	type CorrectionCategory,
@@ -150,13 +151,13 @@ export function AddCorrectionModal({
 									</div>
 									<div
 										className={cn(
-											'flex h-8 w-8 items-center justify-center rounded-full border border-ui-border text-ui-text',
+											'flex h-8 w-8 items-center justify-center rounded-full border border-ui-border',
 											isActive
-												? 'bg-[rgba(255,255,255,0.06)]'
+												? 'bg-[rgba(255,255,255,0.06)] text-ui-text'
 												: 'bg-ui-accent text-slate-900'
 										)}
 									>
-										{isActive ? '−' : '+'}
+										{isActive ? <Minus size={14} strokeWidth={2.5} /> : <Plus size={14} strokeWidth={2.5} />}
 									</div>
 								</button>
 							);

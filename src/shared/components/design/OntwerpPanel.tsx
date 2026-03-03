@@ -4,6 +4,7 @@ import { useState, useCallback } from 'react';
 import {
 	CollapsibleSection,
 	StyledNumberField,
+	StyledSwitch,
 	DualNumberInput,
 	DualSelectInput,
 } from './CorrectionControls';
@@ -108,15 +109,10 @@ export function OntwerpPanel({
 			<div className="rounded-lg bg-[rgba(255,255,255,0.04)] px-3 py-2">
 				<div className="flex items-center justify-between">
 					<span className="text-sm text-ui-text">Zones weergeven</span>
-					<label className="relative inline-flex cursor-pointer items-center">
-						<input
-							type="checkbox"
-							checked={showZones}
-							onChange={(e) => onShowZonesChange?.(e.target.checked)}
-							className="peer sr-only"
-						/>
-						<div className="peer h-5 w-9 rounded-full bg-gray-600 after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:bg-ui-accent peer-checked:after:translate-x-full" />
-					</label>
+					<StyledSwitch
+						checked={showZones}
+						onChange={(checked) => onShowZonesChange?.(checked)}
+					/>
 				</div>
 				{showZones && (
 					<div className="mt-2 grid grid-cols-2 gap-1 text-xs">
@@ -170,19 +166,14 @@ export function OntwerpPanel({
 				<CollapsibleSection title="Voorvoet uitvlakken" defaultOpen={false}>
 					<div className="flex items-center justify-between">
 						<span className="text-sm text-ui-text">Voorvoet uitvlakken</span>
-						<label className="relative inline-flex cursor-pointer items-center">
-							<input
-								type="checkbox"
-								checked={corrections.voorvoetUitvlakken.enabled}
-								onChange={(e) =>
-									updateCorrections({
-										voorvoetUitvlakken: { enabled: e.target.checked },
-									})
-								}
-								className="peer sr-only"
-							/>
-							<div className="peer h-5 w-9 rounded-full bg-gray-600 after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:bg-ui-accent peer-checked:after:translate-x-full" />
-						</label>
+						<StyledSwitch
+							checked={corrections.voorvoetUitvlakken.enabled}
+							onChange={(checked) =>
+								updateCorrections({
+									voorvoetUitvlakken: { enabled: checked },
+								})
+							}
+						/>
 					</div>
 				</CollapsibleSection>
 			)}
