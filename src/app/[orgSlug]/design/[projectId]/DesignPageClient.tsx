@@ -51,6 +51,31 @@ import type {
 } from '@/src/features/design/components/EnhancedSTLViewer';
 import type { HardnessKey } from '@/src/features/printers/types/printers';
 import { getPrinters } from '@/src/features/printers/server/actions';
+import {
+	useElementsStore,
+	ElementsModal,
+	ElementInspector,
+	ElementActionsPanel,
+	PlacedElementsList,
+} from '@/src/features/design/elements';
+import {
+	type MillingMode,
+	type EvaPreparationSettings,
+	type FixtureLayout,
+	type CncToolSettings,
+	type CncProductionState,
+	DEFAULT_EVA_SETTINGS,
+	DEFAULT_CNC_TOOL_SETTINGS,
+	createDefaultFixtureLayout,
+	createDefaultCncState,
+	generateNcFile,
+	downloadNcFile,
+	DEFAULT_CNC_POST_SETTINGS,
+} from '@/src/features/milling';
+import { EvaPreparationPanel } from '@/src/shared/components/design/EvaPreparationPanel';
+import { CncProducePanel } from '@/src/shared/components/design/CncProducePanelSimple';
+import { CncFixtureView } from '@/src/shared/components/design/CncFixtureView';
+import { MillingModeSelector } from '@/src/shared/components/design/MillingModeSelector';
 
 // Dynamic imports for heavy 3D components - reduces initial bundle by ~200-500KB
 const EnhancedSTLViewer = dynamic(
@@ -469,11 +494,57 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 	);
 	const [gcodeBusy, setGcodeBusy] = useState(false);
 	const [productionMethod, setProductionMethod] = useState('Printer: Solid');
+
+	/* ── CNC / Frezen EVA state ── */
+	const [cncState, setCncState] = useState<CncProductionState>(createDefaultCncState);
+	const [showMillingModeSelector, setShowMillingModeSelector] = useState(false);
+	const [cncPlanningActive, setCncPlanningActive] = useState(false);
+
+	const isEvaMethod = productionMethod === 'Frezen: EVA';
+
+	const handleSelectMillingMode = useCallback((mode: MillingMode) => {
+		setCncState((prev) => ({ ...prev, millingMode: mode }));
+		setShowMillingModeSelector(false);
+		setCncPlanningActive(true);
+	}, []);
+
+	const handleExportNcFile = useCallback(() => {
+		if (!cncState.millingMode) return;
+		const name = project?.patient
+			? `${project.patient.firstName}_${project.patient.lastName}`
+			: 'patient';
+		const ncContent = generateNcFile({
+			millingMode: cncState.millingMode,
+			fixture: cncState.fixture,
+			toolSettings: cncState.toolSettings,
+			postSettings: cncState.postSettings,
+			patientName: name,
+			projectId,
+		});
+		const filename = `${name}_${cncState.millingMode}_${new Date().getFullYear()}_top.nc`;
+		downloadNcFile(ncContent, filename);
+	}, [cncState, projectId, project?.patient]);
+
 	const [selectedBaseSTL, setSelectedBaseSTL] = useState<string | null>(null);
 	const [corrections, setCorrections] = useState<OntwerpCorrections | undefined>(undefined);
 	const [showZones, setShowZones] = useState(false);
 	const [addCorrectionOpen, setAddCorrectionOpen] = useState(false);
 	const addCorrectionAnchorRef = useRef<HTMLDivElement | null>(null);
+	const [elementsModalOpen, setElementsModalOpen] = useState(false);
+	const [elementsModalSide, setElementsModalSide] = useState<'left' | 'right'>('left');
+	const { placedElements, addElement: addPlacedElement, selectedElementId, selectElement: selectPlacedElement } = useElementsStore();
+	const selectedPlacedElement = useMemo(
+		() => placedElements.find((el) => el.id === selectedElementId) ?? null,
+		[placedElements, selectedElementId]
+	);
+	const leftPlacedElements = useMemo(
+		() => placedElements.filter((el) => el.side === 'left'),
+		[placedElements]
+	);
+	const rightPlacedElements = useMemo(
+		() => placedElements.filter((el) => el.side === 'right'),
+		[placedElements]
+	);
 	const [activeCorrections, setActiveCorrections] = useState<CorrectionKey[]>(
 		DEFAULT_ACTIVE_CORRECTIONS
 	);
@@ -1213,18 +1284,37 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								<p className="text-xs uppercase tracking-wide text-ui-text/70">
 									Elementen
 								</p>
-								<div className="flex items-center gap-2">
-									<span className="ui-chip rounded-full px-3 py-1 text-xs font-semibold">
-										Steunzool
-									</span>
-									<Button
-										variant="outline"
-										size="sm"
-										onClick={() => setActiveDesignStep(2)}
-									>
-										Toevoegen
-									</Button>
+								{/* Side toggle for elements */}
+								<div className="flex items-center gap-1 rounded-lg bg-[rgba(255,255,255,0.03)] p-1">
+									{(['left', 'right'] as const).map((s) => (
+										<button
+											key={s}
+											type="button"
+											onClick={() => setElementsModalSide(s)}
+											className={cn(
+												'flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition',
+												elementsModalSide === s
+													? 'bg-ui-accent text-slate-900'
+													: 'text-ui-text hover:bg-[rgba(255,255,255,0.06)]'
+											)}
+										>
+											{s === 'left' ? 'Links' : 'Rechts'}
+											{' '}
+											<span className="text-[10px] opacity-70">
+												({placedElements.filter((el) => el.side === s).length})
+											</span>
+										</button>
+									))}
 								</div>
+								<PlacedElementsList side={elementsModalSide} />
+								<Button
+									variant="outline"
+									size="sm"
+									className="w-full"
+									onClick={() => setElementsModalOpen(true)}
+								>
+									+ Element toevoegen
+								</Button>
 							</div>
 						</CardContent>
 					</Card>
@@ -1515,6 +1605,42 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 										showZones={showZones}
 										onShowZonesChange={setShowZones}
 									/>
+
+									{/* ── Orthotic Elements ── */}
+									<div className="mt-4 space-y-2">
+										<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm">
+											<span className="text-ui-text font-semibold">Elementen</span>
+											<button
+												type="button"
+												className="h-7 w-7 rounded-full bg-ui-accent text-slate-900"
+												onClick={() => setElementsModalOpen(true)}
+											>
+												+
+											</button>
+										</div>
+										<div className="flex items-center gap-1 rounded-lg bg-[rgba(255,255,255,0.03)] p-1">
+											{(['left', 'right'] as const).map((s) => (
+												<button
+													key={s}
+													type="button"
+													onClick={() => setElementsModalSide(s)}
+													className={cn(
+														'flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition',
+														elementsModalSide === s
+															? 'bg-ui-accent text-slate-900'
+															: 'text-ui-text hover:bg-[rgba(255,255,255,0.06)]'
+													)}
+												>
+													{s === 'left' ? 'Links' : 'Rechts'}
+													{' '}
+													<span className="text-[10px] opacity-70">
+														({placedElements.filter((el) => el.side === s).length})
+													</span>
+												</button>
+											))}
+										</div>
+										<PlacedElementsList side={elementsModalSide} />
+									</div>
 								</>
 							)}
 						</CardContent>
@@ -1522,6 +1648,23 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 				);
 
 			case 3: {
+				/* ── EVA panel when Frezen: EVA is selected ── */
+				if (isEvaMethod) {
+					return (
+						<Card>
+							<CardContent className="space-y-5">
+								<EvaPreparationPanel
+									settings={cncState.evaSettings}
+									onSettingsChange={(evaSettings) =>
+										setCncState((prev) => ({ ...prev, evaSettings }))
+									}
+								/>
+							</CardContent>
+						</Card>
+					);
+				}
+
+				/* ── Print panel (existing behaviour) ── */
 				const HARDNESS_OPTIONS: { key: HardnessKey; label: string; color: string }[] = [
 					{ key: 'extraSoft', label: 'Extra zacht', color: '#6DD5FA' },
 					{ key: 'soft', label: 'Zacht', color: '#4FC3F7' },
@@ -1776,24 +1919,88 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 			}
 
 			case 4:
-				// For Frezen: EVA, keep original Step 4 content
-				if (productionMethod === 'Frezen: EVA') {
+				// ── Frezen: EVA – full CNC flow ──
+				if (isEvaMethod) {
+					// CNC planning view (after milling mode is selected)
+					if (cncPlanningActive && cncState.millingMode) {
+						return (
+							<CncProducePanel
+								millingMode={cncState.millingMode}
+								fixture={cncState.fixture}
+								onFixtureChange={(fixture) =>
+									setCncState((prev) => ({ ...prev, fixture }))
+								}
+								patientName={
+									project?.patient
+										? `${project.patient.firstName} ${project.patient.lastName}`
+										: 'patient'
+								}
+								onExportNc={handleExportNcFile}
+								onBack={() => setCncPlanningActive(false)}
+							/>
+						);
+					}
+
+					// Default EVA export view with STL export + direct produce
 					return (
 						<Card>
-							<CardContent className="space-y-3">
-								<Button className="w-full" variant="outline">
-									Export STL
-								</Button>
-								<Button className="w-full" variant="outline">
-									Export multi-density STL
-								</Button>
-								<Button className="w-full bg-ui-accent text-slate-900 hover:opacity-90">
-									Verzenden naar printer
-								</Button>
-								<p className="text-xs text-ui-muted">
-									Exports bevatten shore-hardness metadata voor multi-density
-									printen.
-								</p>
+							<CardContent className="space-y-4">
+								{/* Exporteren section */}
+								<div className="space-y-2">
+									<h4 className="text-sm font-semibold text-ui-accent flex items-center gap-2">
+										<span className="text-ui-accent">✓</span>
+										Exporteren
+									</h4>
+									<p className="text-xs text-ui-muted">
+										Exporteer het ontwerp als STL voor gebruik in externe CAM
+										software of voor archivering.
+									</p>
+									<Button
+										className="w-full"
+										variant="outline"
+										onClick={handleExportSTLLeft}
+									>
+										Exporteer STL (links)
+									</Button>
+									<Button
+										className="w-full"
+										variant="outline"
+										onClick={handleExportSTLRight}
+									>
+										Exporteer STL (rechts)
+									</Button>
+									<Button
+										className="w-full"
+										variant="outline"
+										onClick={handleExportSTL}
+									>
+										Exporteer STL (paar)
+									</Button>
+								</div>
+
+								{/* Frezen section */}
+								<div className="space-y-2">
+									<h4 className="text-sm font-semibold text-ui-accent flex items-center gap-2">
+										<span className="text-ui-accent">✓</span>
+										Frezen
+									</h4>
+									<div className="space-y-1 text-sm">
+										<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
+											<span className="text-ui-muted">Productie</span>
+											<span className="text-ui-text">Toevoegen</span>
+										</div>
+										<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
+											<span className="text-ui-muted">Tafel vervangen</span>
+											<span className="text-ui-text">Open</span>
+										</div>
+									</div>
+									<Button
+										className="w-full bg-ui-accent text-slate-900 hover:opacity-90"
+										onClick={() => setShowMillingModeSelector(true)}
+									>
+										Exporteren
+									</Button>
+								</div>
 							</CardContent>
 						</Card>
 					);
@@ -2075,6 +2282,16 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 
 					{workflowStep === 'base' && (
 						<div className="relative h-full w-full">
+							{/* When CNC planning is active, show fixture layout */}
+							{isEvaMethod && cncPlanningActive ? (
+								<CncFixtureView
+									fixture={cncState.fixture}
+									className="h-full w-full"
+									leftStlUrl={DEFAULT_BASE_LEFT_STL}
+									rightStlUrl={DEFAULT_BASE_RIGHT_STL}
+								/>
+							) : (
+							<>
 							<EnhancedSTLViewer
 								ref={viewerRef}
 								leftUrl={DEFAULT_BASE_LEFT_STL}
@@ -2109,6 +2326,9 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								onZoneClick={activeDesignStep === 3 && step3Current.elementsSplit ? (zone, side) => { setSelectedZone(zone); setStep3Side(side); } : undefined}
 								boxEnabled={boxEnabled}
 								gridEditMode={isSelectedGridModeOn}
+								leftPlacedElements={leftPlacedElements}
+								rightPlacedElements={rightPlacedElements}
+								evaBlockMode={isEvaMethod}
 							/>
 							{isFitting && (
 								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel px-4 py-2 text-xs font-semibold text-ui-text shadow-lg">
@@ -2130,6 +2350,13 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								analysisSide={analysisProbe?.side ?? null}
 								className="absolute left-6 top-6 z-20"
 							/>
+							{/* Element action panel – shown below ViewOverlay when editing an element */}
+							{selectedPlacedElement && !selectedInsoleSide && (
+								<ElementActionsPanel
+									element={selectedPlacedElement}
+									className="absolute left-6 top-[340px] z-20 w-[220px]"
+								/>
+							)}
 							{selectedInsoleSide && !isSelectedGridModeOn && (
 								<GeneratedInsoleOverlay
 									selectedSide={selectedInsoleSide}
@@ -2166,7 +2393,18 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 									{(designPlan.plan.frame.archHeight * planWorldToMm).toFixed(1)} mm
 								</div>
 							)}
-							{!selectedInsoleSide && (
+							</>
+							)}
+							{!selectedInsoleSide && selectedPlacedElement && (
+								<div className="absolute right-4 top-4 z-20 flex h-auto max-h-[85vh] w-[320px] flex-col rounded-2xl border border-ui-border bg-ui-panel text-ui-text overflow-hidden">
+									<ElementInspector
+										element={selectedPlacedElement}
+										standalone
+										onAddElement={() => setElementsModalOpen(true)}
+									/>
+								</div>
+							)}
+							{!selectedInsoleSide && !selectedPlacedElement && (
 								<div className="absolute right-4 top-4 z-20 flex h-[85vh] w-[420px] flex-col rounded-2xl border border-ui-border bg-ui-panel text-ui-text overflow-hidden">
 									<StepRail
 										activeStep={activeDesignStep}
@@ -2273,6 +2511,25 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 					</div>
 				</div>
 			</BaseModal>
+
+			{/* Elements modal */}
+			<ElementsModal
+				open={elementsModalOpen}
+				onClose={() => setElementsModalOpen(false)}
+				side={elementsModalSide}
+				onAdd={(libraryKey) => {
+					addPlacedElement(libraryKey, elementsModalSide);
+				}}
+			/>
+
+			{/* Milling mode selector modal (Frezen: EVA) */}
+			{showMillingModeSelector && (
+				<MillingModeSelector
+					selectedMode={cncState.millingMode}
+					onSelect={handleSelectMillingMode}
+					onClose={() => setShowMillingModeSelector(false)}
+				/>
+			)}
 		</>
 	);
 }

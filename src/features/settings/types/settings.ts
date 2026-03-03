@@ -15,6 +15,26 @@ export type OrgSettings = {
 	introParagraph?: string;
 	outroParagraph?: string;
 	disclaimerParagraph?: string;
+
+	// CNC / Frezen EVA settings (Mekanika CNC Pro + PlanetCNC)
+	cnc?: {
+		/** Default tool diameter in mm */
+		toolDiameterMm?: number;
+		/** Default tool type */
+		toolType?: 'ball-nose' | 'flat-end' | 'bull-nose';
+		/** Default spindle speed in RPM */
+		spindleSpeedRpm?: number;
+		/** Default XY feed rate in mm/min */
+		feedRateXYMmMin?: number;
+		/** Default Z feed rate in mm/min */
+		feedRateZMmMin?: number;
+		/** Default stepover percentage */
+		stepoverPercent?: number;
+		/** Safe Z height in mm */
+		safeZMm?: number;
+		/** Fixture slot offsets — array of 8 { x, y, z } positions in mm */
+		fixtureSlotOffsets?: Array<{ x: number; y: number; z: number }>;
+	};
 };
 
 export interface UserSettings {

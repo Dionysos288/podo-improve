@@ -32,6 +32,8 @@ import {
 	moveSelectedGridPoints,
 	type GridPoint,
 } from '@/src/features/design/utils/gridPointInteraction';
+import { applyElements, applyElementColors } from '@/src/features/design/elements/applyElements';
+import type { PlacedElement } from '@/src/features/design/elements/types';
 
 interface STLMeshProps {
 	url: string;
@@ -75,6 +77,9 @@ interface STLMeshProps {
 		point: [number, number, number];
 		normal: [number, number, number];
 	}) => void;
+	placedElements?: PlacedElement[];
+	/** When true, render a solid rectangular block around the insole (EVA milling mode) */
+	evaBlockMode?: boolean;
 }
 
 export type TextAnnotation = {
@@ -697,6 +702,8 @@ function STLMesh({
 	textPlacementEnabled = false,
 	textPlacementText = '',
 	onTextPlace,
+	placedElements,
+	evaBlockMode = false,
 }: STLMeshProps) {
 	const rawGeometry = useLoader(STLLoader, url);
 	const { parameters } = useDesignStore();
@@ -1147,6 +1154,100 @@ function STLMesh({
 	useEffect(() => {
 		geometryRef.current = geometry;
 	}, [geometry]);
+
+	// EVA block: contour-following solid block (side walls + bottom cap, no top)
+	const evaBlock = useMemo(() => {
+		if (!evaBlockMode || !geometry) return null;
+
+		geometry.computeBoundingBox();
+		const bb = geometry.boundingBox!;
+		const sz = bb.getSize(new THREE.Vector3());
+
+		// Detect axes: height = smallest, then width, then length
+		const dimArr: Array<{ i: number; v: number }> = [
+			{ i: 0, v: sz.x },
+			{ i: 1, v: sz.y },
+			{ i: 2, v: sz.z },
+		];
+		dimArr.sort((a, b) => a.v - b.v);
+		const hI = dimArr[0].i; // height axis index (0=x, 1=y, 2=z)
+		const uI = dimArr[1].i; // width axis
+		const vI = dimArr[2].i; // length axis
+
+		const pos = geometry.getAttribute('position') as THREE.BufferAttribute;
+		if (!pos || pos.count < 3) return null;
+
+		const g = (idx: number, axis: number) =>
+			axis === 0 ? pos.getX(idx) : axis === 1 ? pos.getY(idx) : pos.getZ(idx);
+
+		// Centroid in the UV plane
+		let cu = 0, cv = 0;
+		for (let i = 0; i < pos.count; i++) { cu += g(i, uI); cv += g(i, vI); }
+		cu /= pos.count;
+		cv /= pos.count;
+
+		// Radial sweep: 180 angular bins → outermost vertex per bin
+		const BINS = 180;
+		const best = new Array<{ u: number; v: number; h: number; d: number } | null>(BINS).fill(null);
+
+		for (let i = 0; i < pos.count; i++) {
+			const u = g(i, uI);
+			const v = g(i, vI);
+			const h = g(i, hI);
+			const du = u - cu, dv = v - cv;
+			const d = Math.sqrt(du * du + dv * dv);
+			const a = Math.atan2(dv, du);
+			const bin = ((Math.floor(((a + Math.PI) / (2 * Math.PI)) * BINS) % BINS) + BINS) % BINS;
+			const cur = best[bin];
+			if (!cur || d > cur.d) best[bin] = { u, v, h, d };
+		}
+
+		// Collect valid outline points (skip empty bins)
+		const contour = best.filter((p): p is NonNullable<typeof p> => p !== null);
+		if (contour.length < 3) return null;
+
+		// Height bounds
+		const hMin = hI === 0 ? bb.min.x : hI === 1 ? bb.min.y : bb.min.z;
+		const hMax = hI === 0 ? bb.max.x : hI === 1 ? bb.max.y : bb.max.z;
+		const hSpan = hMax - hMin;
+		const bottomH = hMin - hSpan * 0.08;
+
+		// Helper: create xyz in correct axis order
+		const v3 = (u: number, v: number, h: number): [number, number, number] => {
+			const r: [number, number, number] = [0, 0, 0];
+			r[uI] = u; r[vI] = v; r[hI] = h;
+			return r;
+		};
+
+		const verts: number[] = [];
+		const n = contour.length;
+
+		// ── Side walls: quad per consecutive pair, from edge vertex height → bottom ──
+		for (let i = 0; i < n; i++) {
+			const a = contour[i];
+			const b = contour[(i + 1) % n];
+			const tA = v3(a.u, a.v, a.h);
+			const tB = v3(b.u, b.v, b.h);
+			const bA = v3(a.u, a.v, bottomH);
+			const bB = v3(b.u, b.v, bottomH);
+			verts.push(...tA, ...bA, ...tB);
+			verts.push(...tB, ...bA, ...bB);
+		}
+
+		// ── Bottom cap: triangle fan from centroid ──
+		const cB = v3(cu, cv, bottomH);
+		for (let i = 0; i < n; i++) {
+			const pA = v3(contour[i].u, contour[i].v, bottomH);
+			const pB = v3(contour[(i + 1) % n].u, contour[(i + 1) % n].v, bottomH);
+			verts.push(...cB, ...pB, ...pA);
+		}
+
+		const blockGeom = new THREE.BufferGeometry();
+		blockGeom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+		blockGeom.computeVertexNormals();
+
+		return { geometry: blockGeom };
+	}, [evaBlockMode, geometry]);
 	
 	// Debounced corrections application to prevent UI blocking
 	const pendingCorrectionsRef = useRef<OntwerpCorrections | undefined>(undefined);
@@ -1294,9 +1395,10 @@ function STLMesh({
 			animRafRef.current = null;
 			existing.computeVertexNormals();
 			onGeometryReady?.(existing, { mmToWorld: mmToWorld || 1 });
-			// Keep colors in sync when showing heatmap/zones.
+			// Keep colors in sync when showing heatmap/zones/elements.
 			if (showZones) applyZoneColors(existing);
 			else if (heatmap) applyHeightmapColors(existing);
+			else if (placedElements && placedElements.length > 0) applyElementColors(existing, placedElements, { mmToWorld: mmToWorld || 1 });
 			else existing.deleteAttribute('color');
 			// Update analysis baseline after geometry changes
 			if (meshRef.current) {
@@ -1309,7 +1411,7 @@ function STLMesh({
 		animRafRef.current = requestAnimationFrame(step);
 		// We no longer need the target geometry object.
 		target.dispose();
-	}, [gridEditMode, showZones, heatmap, applyOrientation, onGeometryReady, mmToWorld]);
+	}, [gridEditMode, showZones, heatmap, placedElements, applyOrientation, onGeometryReady, mmToWorld]);
 
 	const rebuildFinalGeometryFromCorrected = useCallback(() => {
 		const corrected = correctedGeometryRef.current;
@@ -1327,7 +1429,8 @@ function STLMesh({
 		if (!baseGeometry) return;
 
 		const correctionsKey = corrections ? JSON.stringify(corrections) : '';
-		const signature = `${baseGeometry.uuid}|${mmToWorld || 1}|${side}|${correctionsKey}`;
+		const elementsKey = placedElements ? JSON.stringify(placedElements) : '';
+		const signature = `${baseGeometry.uuid}|${mmToWorld || 1}|${side}|${correctionsKey}|${elementsKey}`;
 		pendingSignatureRef.current = signature;
 
 		// Only recompute corrected geometry if base/corrections/side are unchanged
@@ -1361,6 +1464,15 @@ function STLMesh({
 				}
 			}
 
+			// Apply orthotic elements (additive pads / engravings)
+			if (placedElements && placedElements.length > 0) {
+				try {
+					applyElements(workingGeometry, placedElements, { mmToWorld });
+				} catch (err) {
+					console.error('Error applying elements:', err);
+				}
+			}
+
 			// Cache corrected geometry and rebuild final (thickness/rim) immediately.
 			if (correctedGeometryRef.current) {
 				try {
@@ -1384,6 +1496,7 @@ function STLMesh({
 		baseGeometry,
 		corrections,
 		activeCorrections,
+		placedElements,
 		side,
 		mmToWorld,
 			applyGeneral,
@@ -1409,7 +1522,7 @@ function STLMesh({
 		};
 	}, [applyGeneral, soleThicknessMm, rimHeightMm, rebuildFinalGeometryFromCorrected]);
 	
-	// Apply zone colors whenever showZones changes
+	// Apply zone / element colors whenever visual mode changes
 	useEffect(() => {
 		if (!geometry) return;
 		if (showZones) {
@@ -1420,8 +1533,12 @@ function STLMesh({
 			applyHeightmapColors(geometry);
 			return;
 		}
+		if (placedElements && placedElements.length > 0) {
+			applyElementColors(geometry, placedElements, { mmToWorld: mmToWorld || 1 });
+			return;
+		}
 		geometry.deleteAttribute('color');
-	}, [geometry, showZones, heatmap]);
+	}, [geometry, showZones, heatmap, placedElements, mmToWorld]);
 
 	const probeRafRef = useRef<number | null>(null);
 	const pendingProbeRef = useRef<{
@@ -1598,9 +1715,9 @@ function STLMesh({
 			} : undefined}
 		>
 			<meshStandardMaterial
-				key={showZones || heatmap ? 'colored' : 'normal'}
-				color={showZones ? '#ffffff' : pointPickMode ? '#d9b5a1' : color}
-				vertexColors={showZones || heatmap}
+				key={showZones || heatmap || (placedElements && placedElements.length > 0) ? 'colored' : 'normal'}
+				color={showZones || (placedElements && placedElements.length > 0) ? '#ffffff' : pointPickMode ? '#d9b5a1' : color}
+				vertexColors={showZones || heatmap || !!(placedElements && placedElements.length > 0)}
 				side={THREE.DoubleSide}
 				shadowSide={THREE.DoubleSide}
 				roughness={0.3}
@@ -1629,6 +1746,18 @@ function STLMesh({
 						/>
 					</mesh>
 				</>
+			)}
+
+			{/* EVA block — contour-following walls + bottom cap */}
+			{evaBlockMode && evaBlock && (
+				<mesh geometry={evaBlock.geometry}>
+					<meshStandardMaterial
+						color={color}
+						side={THREE.DoubleSide}
+						roughness={0.3}
+						metalness={0.0}
+					/>
+				</mesh>
 			)}
 
 			{/* Interactive Box grid overlay */}
@@ -1724,6 +1853,10 @@ interface EnhancedSTLViewerProps {
 	onZoneClick?: (zone: 'front' | 'middle' | 'back', side: 'left' | 'right') => void;
 	boxEnabled?: { left: boolean; right: boolean };
 	gridEditMode?: boolean;
+	leftPlacedElements?: PlacedElement[];
+	rightPlacedElements?: PlacedElement[];
+	/** When true, render insoles inside a solid EVA block (Frezen: EVA mode) */
+	evaBlockMode?: boolean;
 }
 
 function BaseInsolePreview({
@@ -1821,6 +1954,9 @@ export const EnhancedSTLViewer = forwardRef<
 			onRightBBox,
 			landmarkPoints,
 			showGeneratedInsole = false,
+			leftPlacedElements,
+			rightPlacedElements,
+			evaBlockMode = false,
 		},
 		ref
 	) => {
@@ -2522,6 +2658,8 @@ export const EnhancedSTLViewer = forwardRef<
 									textPlacementText={textPlacementText}
 									onTextPlace={onTextPlace}
 									side="left"
+									placedElements={leftPlacedElements}
+									evaBlockMode={evaBlockMode}
 								/>
 							</group>
 						)}
@@ -2575,6 +2713,8 @@ export const EnhancedSTLViewer = forwardRef<
 									textPlacementText={textPlacementText}
 									onTextPlace={onTextPlace}
 									side="right"
+									placedElements={rightPlacedElements}
+									evaBlockMode={evaBlockMode}
 								/>
 							</group>
 						)}
