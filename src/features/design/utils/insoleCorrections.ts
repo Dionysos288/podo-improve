@@ -632,6 +632,330 @@ export function applySupinatie(
 }
 
 /**
+ * MEDIAAL VLAK (Medial Flange)
+ * Vertical extension of the medial arch region for pronatory control.
+ * Raises the medial edge of the insole along the midfoot to create a wall-like support.
+ * Height setting (laag/midden/hoog) controls how far inward the flange extends.
+ */
+export function applyMediaalVlak(
+	geometry: THREE.BufferGeometry,
+	amount: number, // mm of height increase
+	hoogte: 'laag' | 'midden' | 'hoog',
+	isLeftFoot: boolean
+): void {
+	if (amount === 0) return;
+
+	const positions = geometry.attributes.position as THREE.BufferAttribute;
+	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
+
+	const minWidth = getMinForAxis(bbox, widthAxis);
+	const heelToToe = createHeelToToeMapper({ positions, lengthAxis, widthAxis, bbox, lengthSpan });
+
+	// How far inward the flange extends (fraction of half-width from edge)
+	const flangeDepth = hoogte === 'laag' ? 0.12 : hoogte === 'midden' ? 0.2 : 0.3;
+
+	for (let i = 0; i < positions.count; i++) {
+		const lengthVal = getAxisValue(positions, i, lengthAxis);
+		const widthVal = getAxisValue(positions, i, widthAxis);
+		const t = heelToToe.getT(lengthVal);
+
+		// Flange zone: midfoot + rearfoot (0.1 – 0.65 heel-to-toe)
+		const lengthWeight = smoothstep(0.08, 0.15, t) * smoothstep(0.68, 0.60, t);
+		if (lengthWeight <= 0.001) continue;
+
+		const relativeWidth = (widthVal - minWidth) / widthSpan;
+
+		// Medial side: left foot → high relativeWidth, right foot → low relativeWidth
+		const edgeDist = isLeftFoot
+			? smoothstep(1.0 - flangeDepth, 1.0, relativeWidth)
+			: smoothstep(flangeDepth, 0.0, relativeWidth);
+
+		if (edgeDist > 0.001) {
+			const heightAdjust = amount * edgeDist * lengthWeight;
+			const currentHeight = getAxisValue(positions, i, heightAxis);
+			setAxisValue(positions, i, heightAxis, currentHeight + heightAdjust);
+		}
+	}
+
+	positions.needsUpdate = true;
+	geometry.computeVertexNormals();
+}
+
+/**
+ * LATERAAL VLAK (Lateral Flange)
+ * Vertical extension of the lateral arch region for supinatory control.
+ * Mirror of medial flange, but on the outer side.
+ */
+export function applyLateraalVlak(
+	geometry: THREE.BufferGeometry,
+	amount: number,
+	hoogte: 'laag' | 'midden' | 'hoog',
+	isLeftFoot: boolean
+): void {
+	if (amount === 0) return;
+
+	// Lateral is the opposite side of medial – flip the foot reference
+	applyMediaalVlak(geometry, amount, hoogte, !isLeftFoot);
+}
+
+/**
+ * VERPLAATS APEX MIDDENVOET (Shift Midfoot Arch Apex)
+ * Shifts the peak of the medial arch forward or backward along the length axis.
+ * Positive = toward toes, negative = toward heel.
+ * Works by re-distributing the existing arch correction with an offset center.
+ */
+export function applyApexMiddenvoet(
+	geometry: THREE.BufferGeometry,
+	shiftMm: number, // mm of shift (negative=heel, positive=toe)
+	isLeftFoot: boolean
+): void {
+	if (shiftMm === 0) return;
+
+	const positions = geometry.attributes.position as THREE.BufferAttribute;
+	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
+
+	const minWidth = getMinForAxis(bbox, widthAxis);
+	const heelToToe = createHeelToToeMapper({ positions, lengthAxis, widthAxis, bbox, lengthSpan });
+
+	// Convert mm shift to t-space offset
+	const tShift = shiftMm / lengthSpan;
+	// Default arch center is 0.42; shift it
+	const archCenter = Math.max(0.22, Math.min(0.58, 0.42 + tShift));
+	const archHalfWidth = 0.22;
+
+	for (let i = 0; i < positions.count; i++) {
+		const lengthVal = getAxisValue(positions, i, lengthAxis);
+		const widthVal = getAxisValue(positions, i, widthAxis);
+		const t = heelToToe.getT(lengthVal);
+		const relativeWidth = (widthVal - minWidth) / widthSpan;
+
+		// Only affect the arch zone
+		const inArch = t > (archCenter - archHalfWidth) && t < (archCenter + archHalfWidth);
+		if (!inArch) continue;
+
+		// Medial side
+		const medialSide = isLeftFoot ? relativeWidth > 0.5 : relativeWidth < 0.5;
+		if (!medialSide) continue;
+
+		const lengthWeight = 1 - Math.abs(t - archCenter) / archHalfWidth;
+		const widthWeight = isLeftFoot
+			? smoothstep(0.5, 0.8, relativeWidth)
+			: smoothstep(0.5, 0.2, relativeWidth);
+
+		const weight = Math.max(0, lengthWeight) * widthWeight;
+		if (weight > 0.01) {
+			// The shift effect: positive shift pushes the peak forward,
+			// effectively raising the front of the arch and lowering the back
+			// relative to the original position. We create a differential:
+			const origCenter = 0.42;
+			const origWeight = 1 - Math.abs(t - origCenter) / archHalfWidth;
+			const delta = (Math.max(0, lengthWeight) - Math.max(0, origWeight)) * widthWeight;
+
+			if (Math.abs(delta) > 0.001) {
+				// Scale the redistribution effect (a moderate push of ~2mm per mm shift)
+				const heightAdjust = delta * Math.abs(shiftMm) * 0.3;
+				const currentHeight = getAxisValue(positions, i, heightAxis);
+				setAxisValue(positions, i, heightAxis, currentHeight + heightAdjust);
+			}
+		}
+	}
+
+	positions.needsUpdate = true;
+	geometry.computeVertexNormals();
+}
+
+/**
+ * VERPLAATS APEX HIEL (Shift Heel Apex)
+ * Shifts the peak of the heel lift forward or backward.
+ * Positive = toward toes (peak moves forward), negative = toward heel (steeper).
+ */
+export function applyApexHiel(
+	geometry: THREE.BufferGeometry,
+	shiftMm: number,
+	_isLeftFoot: boolean
+): void {
+	if (shiftMm === 0) return;
+
+	const positions = geometry.attributes.position as THREE.BufferAttribute;
+	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan } = getGeometryAxes(geometry);
+
+	const heelToToe = createHeelToToeMapper({ positions, lengthAxis, widthAxis, bbox, lengthSpan });
+
+	// Convert mm to t-space; the default heel peak is at t=0
+	const tShift = shiftMm / lengthSpan;
+	const peakT = Math.max(0, Math.min(0.25, tShift));
+	const fadeEnd = Math.max(peakT + 0.08, 0.15);
+
+	for (let i = 0; i < positions.count; i++) {
+		const lengthVal = getAxisValue(positions, i, lengthAxis);
+		const t = heelToToe.getT(lengthVal);
+
+		if (t > fadeEnd + 0.05) continue;
+
+		// Create a peaked profile around peakT instead of monotone from 0
+		let weight: number;
+		if (t <= peakT) {
+			weight = peakT > 0.001 ? smoothstep(0, peakT, t) : 1;
+		} else {
+			weight = smoothstep(fadeEnd, peakT, t);
+		}
+
+		if (weight > 0.001) {
+			// Redistribute: raise around new peak, lower at old peak (t=0)
+			const origWeight = smoothstep(fadeEnd, 0, t);
+			const delta = weight - origWeight;
+
+			if (Math.abs(delta) > 0.001) {
+				const heightAdjust = delta * Math.abs(shiftMm) * 0.2;
+				const currentHeight = getAxisValue(positions, i, heightAxis);
+				setAxisValue(positions, i, heightAxis, currentHeight + heightAdjust);
+			}
+		}
+	}
+
+	positions.needsUpdate = true;
+	geometry.computeVertexNormals();
+}
+
+/**
+ * HIELBEENCORRECTIE (Heel Clip / Calcaneus Alignment)
+ * A vertical extension on the medial or lateral side of the heel cup
+ * to align the calcaneus and improve rearfoot control.
+ */
+export function applyHielbeenCorrectie(
+	geometry: THREE.BufferGeometry,
+	amount: number,
+	zijde: 'mediaal' | 'lateraal',
+	isLeftFoot: boolean
+): void {
+	if (amount === 0) return;
+
+	const positions = geometry.attributes.position as THREE.BufferAttribute;
+	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
+
+	const minWidth = getMinForAxis(bbox, widthAxis);
+	const heelToToe = createHeelToToeMapper({ positions, lengthAxis, widthAxis, bbox, lengthSpan });
+
+	for (let i = 0; i < positions.count; i++) {
+		const lengthVal = getAxisValue(positions, i, lengthAxis);
+		const t = heelToToe.getT(lengthVal);
+
+		// Only affect heel zone (0 – 0.25)
+		const lengthWeight = smoothstep(0.28, 0.12, t);
+		if (lengthWeight <= 0.001) continue;
+
+		const widthVal = getAxisValue(positions, i, widthAxis);
+		const relativeWidth = (widthVal - minWidth) / widthSpan;
+
+		// Determine which edge to raise
+		let isTargetSide: boolean;
+		if (zijde === 'mediaal') {
+			isTargetSide = isLeftFoot ? relativeWidth > 0.65 : relativeWidth < 0.35;
+		} else {
+			isTargetSide = isLeftFoot ? relativeWidth < 0.35 : relativeWidth > 0.65;
+		}
+
+		if (isTargetSide) {
+			// Edge factor: stronger at the very edge
+			const edgeFactor = isLeftFoot
+				? (zijde === 'mediaal'
+					? smoothstep(0.65, 1.0, relativeWidth)
+					: smoothstep(0.35, 0.0, relativeWidth))
+				: (zijde === 'mediaal'
+					? smoothstep(0.35, 0.0, relativeWidth)
+					: smoothstep(0.65, 1.0, relativeWidth));
+
+			const heightAdjust = amount * edgeFactor * lengthWeight;
+			if (heightAdjust > 0.001) {
+				const currentHeight = getAxisValue(positions, i, heightAxis);
+				setAxisValue(positions, i, heightAxis, currentHeight + heightAdjust);
+			}
+		}
+	}
+
+	positions.needsUpdate = true;
+	geometry.computeVertexNormals();
+}
+
+/**
+ * HIELBREEDTE CORRECTIE (Heel Width Correction)
+ * Expands the heel cup by pushing vertices outward along the width axis
+ * in the heel zone, providing a broader base of support.
+ */
+export function applyHielbreedteCorrectie(
+	geometry: THREE.BufferGeometry,
+	amount: number // mm of expansion per side
+): void {
+	if (amount === 0) return;
+
+	const positions = geometry.attributes.position as THREE.BufferAttribute;
+	const { lengthAxis, widthAxis, heightAxis: _h, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
+
+	const minWidth = getMinForAxis(bbox, widthAxis);
+	const centerWidth = minWidth + widthSpan / 2;
+	const heelToToe = createHeelToToeMapper({ positions, lengthAxis, widthAxis, bbox, lengthSpan });
+
+	for (let i = 0; i < positions.count; i++) {
+		const lengthVal = getAxisValue(positions, i, lengthAxis);
+		const t = heelToToe.getT(lengthVal);
+
+		// Heel zone (0 – 0.22)
+		const lengthWeight = smoothstep(0.25, 0.10, t);
+		if (lengthWeight <= 0.001) continue;
+
+		const widthVal = getAxisValue(positions, i, widthAxis);
+		const distFromCenter = widthVal - centerWidth;
+		const normalizedDist = Math.abs(distFromCenter) / (widthSpan / 2);
+
+		// Only expand the outer portions (>50% from center)
+		if (normalizedDist > 0.5) {
+			const edgeFactor = smoothstep(0.5, 1.0, normalizedDist);
+			const sign = distFromCenter > 0 ? 1 : -1;
+			const shift = sign * amount * edgeFactor * lengthWeight;
+			setAxisValue(positions, i, widthAxis, widthVal + shift);
+		}
+	}
+
+	positions.needsUpdate = true;
+	geometry.computeVertexNormals();
+}
+
+/**
+ * ZOOLBREEDTE (Sole Width / Horizontal Expansion)
+ * Expands the entire insole width by pushing edge vertices outward,
+ * similar to a Medial Arch Platform (MAP) technique.
+ */
+export function applyZoolbreedte(
+	geometry: THREE.BufferGeometry,
+	amount: number // mm of expansion per side
+): void {
+	if (amount === 0) return;
+
+	const positions = geometry.attributes.position as THREE.BufferAttribute;
+	const { widthAxis, bbox, widthSpan } = getGeometryAxes(geometry);
+
+	const minWidth = getMinForAxis(bbox, widthAxis);
+	const centerWidth = minWidth + widthSpan / 2;
+
+	for (let i = 0; i < positions.count; i++) {
+		const widthVal = getAxisValue(positions, i, widthAxis);
+		const distFromCenter = widthVal - centerWidth;
+		const normalizedDist = Math.abs(distFromCenter) / (widthSpan / 2);
+
+		// Gradual expansion: stronger at edges
+		if (normalizedDist > 0.3) {
+			const factor = smoothstep(0.3, 1.0, normalizedDist);
+			const sign = distFromCenter > 0 ? 1 : -1;
+			const shift = sign * amount * factor;
+			setAxisValue(positions, i, widthAxis, widthVal + shift);
+		}
+	}
+
+	positions.needsUpdate = true;
+	geometry.computeVertexNormals();
+}
+
+/**
  * Apply all corrections to a geometry
  */
 export function applyAllCorrections(
@@ -712,7 +1036,72 @@ export function applyAllCorrections(
 		applySupinatie(geometry, supinatieValue, supinatieRegion, isLeft);
 	}
 	
-	// 6. Smoothing last (to blend all changes)
+	// 6. Medial flange
+	if (isActive('mediaalVlak')) {
+		const flangeValue = isLeft
+			? corrections.mediaalVlak.waarde.left
+			: corrections.mediaalVlak.waarde.right;
+		const flangeHoogte = (isLeft
+			? corrections.mediaalVlak.hoogte.left
+			: corrections.mediaalVlak.hoogte.right) as 'laag' | 'midden' | 'hoog';
+		applyMediaalVlak(geometry, flangeValue * mmToWorld, flangeHoogte, isLeft);
+	}
+
+	// 7. Lateral flange
+	if (isActive('lateraalVlak')) {
+		const flangeValue = isLeft
+			? corrections.lateraalVlak.waarde.left
+			: corrections.lateraalVlak.waarde.right;
+		const flangeHoogte = (isLeft
+			? corrections.lateraalVlak.hoogte.left
+			: corrections.lateraalVlak.hoogte.right) as 'laag' | 'midden' | 'hoog';
+		applyLateraalVlak(geometry, flangeValue * mmToWorld, flangeHoogte, isLeft);
+	}
+
+	// 8. Apex midfoot shift
+	if (isActive('apexMiddenvoet')) {
+		const shiftValue = isLeft
+			? corrections.apexMiddenvoet.left
+			: corrections.apexMiddenvoet.right;
+		applyApexMiddenvoet(geometry, shiftValue * mmToWorld, isLeft);
+	}
+
+	// 9. Apex heel shift
+	if (isActive('apexHiel')) {
+		const shiftValue = isLeft
+			? corrections.apexHiel.left
+			: corrections.apexHiel.right;
+		applyApexHiel(geometry, shiftValue * mmToWorld, isLeft);
+	}
+
+	// 10. Heel clip (calcaneus alignment)
+	if (isActive('hielbeenCorrectie')) {
+		const clipValue = isLeft
+			? corrections.hielbeenCorrectie.waarde.left
+			: corrections.hielbeenCorrectie.waarde.right;
+		const clipZijde = (isLeft
+			? corrections.hielbeenCorrectie.zijde.left
+			: corrections.hielbeenCorrectie.zijde.right) as 'mediaal' | 'lateraal';
+		applyHielbeenCorrectie(geometry, clipValue * mmToWorld, clipZijde, isLeft);
+	}
+
+	// 11. Heel width expansion
+	if (isActive('hielbreedteCorrectie')) {
+		const widthValue = isLeft
+			? corrections.hielbreedteCorrectie.left
+			: corrections.hielbreedteCorrectie.right;
+		applyHielbreedteCorrectie(geometry, widthValue * mmToWorld);
+	}
+
+	// 12. Sole width expansion
+	if (isActive('zoolbreedte')) {
+		const soleWidthValue = isLeft
+			? corrections.zoolbreedte.left
+			: corrections.zoolbreedte.right;
+		applyZoolbreedte(geometry, soleWidthValue * mmToWorld);
+	}
+
+	// 13. Smoothing last (to blend all changes)
 	if (isActive('gladstrijken')) {
 		applyGladstrijken(geometry, corrections.gladstrijken);
 	}

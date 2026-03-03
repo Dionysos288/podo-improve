@@ -950,6 +950,22 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							regio: { left: 'hiel', right: 'hiel' },
 							correctie: { left: 0, right: 0 },
 						},
+						mediaalVlak: {
+							hoogte: { left: 'midden', right: 'midden' },
+							waarde: { left: 0, right: 0 },
+						},
+						lateraalVlak: {
+							hoogte: { left: 'midden', right: 'midden' },
+							waarde: { left: 0, right: 0 },
+						},
+						apexMiddenvoet: { left: 0, right: 0 },
+						apexHiel: { left: 0, right: 0 },
+						hielbeenCorrectie: {
+							zijde: { left: 'mediaal', right: 'mediaal' },
+							waarde: { left: 0, right: 0 },
+						},
+						hielbreedteCorrectie: { left: 0, right: 0 },
+						zoolbreedte: { left: 0, right: 0 },
 					};
 					return {
 						...next,

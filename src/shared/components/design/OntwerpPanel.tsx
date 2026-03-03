@@ -24,6 +24,19 @@ const LENGTH_OPTIONS = [
 	{ value: 'midden', label: 'Midden' },
 ];
 
+// Height options for Mediaal/Lateraal vlak
+const FLANGE_HEIGHT_OPTIONS = [
+	{ value: 'laag', label: 'Laag' },
+	{ value: 'midden', label: 'Midden' },
+	{ value: 'hoog', label: 'Hoog' },
+];
+
+// Side options for Hielbeencorrectie
+const HEEL_CLIP_SIDE_OPTIONS = [
+	{ value: 'mediaal', label: 'Mediaal' },
+	{ value: 'lateraal', label: 'Lateraal' },
+];
+
 export interface OntwerpCorrections {
 	kuipHoogte: { left: number; right: number };
 	voorvoetUitvlakken: { enabled: boolean };
@@ -41,6 +54,22 @@ export interface OntwerpCorrections {
 		regio: { left: string; right: string };
 		correctie: { left: number; right: number };
 	};
+	mediaalVlak: {
+		hoogte: { left: string; right: string };
+		waarde: { left: number; right: number };
+	};
+	lateraalVlak: {
+		hoogte: { left: string; right: string };
+		waarde: { left: number; right: number };
+	};
+	apexMiddenvoet: { left: number; right: number };
+	apexHiel: { left: number; right: number };
+	hielbeenCorrectie: {
+		zijde: { left: string; right: string };
+		waarde: { left: number; right: number };
+	};
+	hielbreedteCorrectie: { left: number; right: number };
+	zoolbreedte: { left: number; right: number };
 }
 
 const DEFAULT_CORRECTIONS: OntwerpCorrections = {
@@ -60,6 +89,22 @@ const DEFAULT_CORRECTIONS: OntwerpCorrections = {
 		regio: { left: 'voorvoet', right: 'voorvoet' },
 		correctie: { left: 0, right: 0 },
 	},
+	mediaalVlak: {
+		hoogte: { left: 'midden', right: 'midden' },
+		waarde: { left: 0, right: 0 },
+	},
+	lateraalVlak: {
+		hoogte: { left: 'midden', right: 'midden' },
+		waarde: { left: 0, right: 0 },
+	},
+	apexMiddenvoet: { left: 0, right: 0 },
+	apexHiel: { left: 0, right: 0 },
+	hielbeenCorrectie: {
+		zijde: { left: 'mediaal', right: 'mediaal' },
+		waarde: { left: 0, right: 0 },
+	},
+	hielbreedteCorrectie: { left: 0, right: 0 },
+	zoolbreedte: { left: 0, right: 0 },
 };
 
 interface OntwerpPanelProps {
@@ -372,6 +417,265 @@ export function OntwerpPanel({
 					max={10}
 					step={0.5}
 					unit="°"
+				/>
+				</CollapsibleSection>
+			)}
+
+			{/* Mediaal vlak - Dual select for height + Dual number for amount */}
+			{isActive('mediaalVlak') && (
+				<CollapsibleSection title="Mediaal vlak" defaultOpen={false}>
+				<DualSelectInput
+					label="Hoogte"
+					options={FLANGE_HEIGHT_OPTIONS}
+					leftValue={corrections.mediaalVlak.hoogte.left}
+					rightValue={corrections.mediaalVlak.hoogte.right}
+					onLeftChange={(val) =>
+						updateCorrections({
+							mediaalVlak: {
+								...corrections.mediaalVlak,
+								hoogte: { ...corrections.mediaalVlak.hoogte, left: val },
+							},
+						})
+					}
+					onRightChange={(val) =>
+						updateCorrections({
+							mediaalVlak: {
+								...corrections.mediaalVlak,
+								hoogte: { ...corrections.mediaalVlak.hoogte, right: val },
+							},
+						})
+					}
+				/>
+				<DualNumberInput
+					label="Waarde"
+					leftValue={corrections.mediaalVlak.waarde.left}
+					rightValue={corrections.mediaalVlak.waarde.right}
+					onLeftChange={(val) =>
+						updateCorrections({
+							mediaalVlak: {
+								...corrections.mediaalVlak,
+								waarde: { ...corrections.mediaalVlak.waarde, left: val },
+							},
+						})
+					}
+					onRightChange={(val) =>
+						updateCorrections({
+							mediaalVlak: {
+								...corrections.mediaalVlak,
+								waarde: { ...corrections.mediaalVlak.waarde, right: val },
+							},
+						})
+					}
+					min={0}
+					max={15}
+					step={0.5}
+					unit="mm"
+				/>
+				</CollapsibleSection>
+			)}
+
+			{/* Lateraal vlak - Dual select for height + Dual number for amount */}
+			{isActive('lateraalVlak') && (
+				<CollapsibleSection title="Lateraal vlak" defaultOpen={false}>
+				<DualSelectInput
+					label="Hoogte"
+					options={FLANGE_HEIGHT_OPTIONS}
+					leftValue={corrections.lateraalVlak.hoogte.left}
+					rightValue={corrections.lateraalVlak.hoogte.right}
+					onLeftChange={(val) =>
+						updateCorrections({
+							lateraalVlak: {
+								...corrections.lateraalVlak,
+								hoogte: { ...corrections.lateraalVlak.hoogte, left: val },
+							},
+						})
+					}
+					onRightChange={(val) =>
+						updateCorrections({
+							lateraalVlak: {
+								...corrections.lateraalVlak,
+								hoogte: { ...corrections.lateraalVlak.hoogte, right: val },
+							},
+						})
+					}
+				/>
+				<DualNumberInput
+					label="Waarde"
+					leftValue={corrections.lateraalVlak.waarde.left}
+					rightValue={corrections.lateraalVlak.waarde.right}
+					onLeftChange={(val) =>
+						updateCorrections({
+							lateraalVlak: {
+								...corrections.lateraalVlak,
+								waarde: { ...corrections.lateraalVlak.waarde, left: val },
+							},
+						})
+					}
+					onRightChange={(val) =>
+						updateCorrections({
+							lateraalVlak: {
+								...corrections.lateraalVlak,
+								waarde: { ...corrections.lateraalVlak.waarde, right: val },
+							},
+						})
+					}
+					min={0}
+					max={15}
+					step={0.5}
+					unit="mm"
+				/>
+				</CollapsibleSection>
+			)}
+
+			{/* Verplaats apex middenvoet - Dual number input */}
+			{isActive('apexMiddenvoet') && (
+				<CollapsibleSection title="Verplaats apex middenvoet" defaultOpen={false}>
+				<DualNumberInput
+					label="Verschuiving"
+					leftValue={corrections.apexMiddenvoet.left}
+					rightValue={corrections.apexMiddenvoet.right}
+					onLeftChange={(val) =>
+						updateCorrections({
+							apexMiddenvoet: { ...corrections.apexMiddenvoet, left: val },
+						})
+					}
+					onRightChange={(val) =>
+						updateCorrections({
+							apexMiddenvoet: { ...corrections.apexMiddenvoet, right: val },
+						})
+					}
+					min={-15}
+					max={15}
+					step={0.5}
+					unit="mm"
+				/>
+				</CollapsibleSection>
+			)}
+
+			{/* Verplaats apex hiel - Dual number input */}
+			{isActive('apexHiel') && (
+				<CollapsibleSection title="Verplaats apex hiel" defaultOpen={false}>
+				<DualNumberInput
+					label="Verschuiving"
+					leftValue={corrections.apexHiel.left}
+					rightValue={corrections.apexHiel.right}
+					onLeftChange={(val) =>
+						updateCorrections({
+							apexHiel: { ...corrections.apexHiel, left: val },
+						})
+					}
+					onRightChange={(val) =>
+						updateCorrections({
+							apexHiel: { ...corrections.apexHiel, right: val },
+						})
+					}
+					min={-10}
+					max={10}
+					step={0.5}
+					unit="mm"
+				/>
+				</CollapsibleSection>
+			)}
+
+			{/* Hielbeencorrectie - Dual select for side + Dual number for amount */}
+			{isActive('hielbeenCorrectie') && (
+				<CollapsibleSection title="Hielbeencorrectie" defaultOpen={false}>
+				<DualSelectInput
+					label="Zijde"
+					options={HEEL_CLIP_SIDE_OPTIONS}
+					leftValue={corrections.hielbeenCorrectie.zijde.left}
+					rightValue={corrections.hielbeenCorrectie.zijde.right}
+					onLeftChange={(val) =>
+						updateCorrections({
+							hielbeenCorrectie: {
+								...corrections.hielbeenCorrectie,
+								zijde: { ...corrections.hielbeenCorrectie.zijde, left: val },
+							},
+						})
+					}
+					onRightChange={(val) =>
+						updateCorrections({
+							hielbeenCorrectie: {
+								...corrections.hielbeenCorrectie,
+								zijde: { ...corrections.hielbeenCorrectie.zijde, right: val },
+							},
+						})
+					}
+				/>
+				<DualNumberInput
+					label="Correctie"
+					leftValue={corrections.hielbeenCorrectie.waarde.left}
+					rightValue={corrections.hielbeenCorrectie.waarde.right}
+					onLeftChange={(val) =>
+						updateCorrections({
+							hielbeenCorrectie: {
+								...corrections.hielbeenCorrectie,
+								waarde: { ...corrections.hielbeenCorrectie.waarde, left: val },
+							},
+						})
+					}
+					onRightChange={(val) =>
+						updateCorrections({
+							hielbeenCorrectie: {
+								...corrections.hielbeenCorrectie,
+								waarde: { ...corrections.hielbeenCorrectie.waarde, right: val },
+							},
+						})
+					}
+					min={0}
+					max={10}
+					step={0.5}
+					unit="mm"
+				/>
+				</CollapsibleSection>
+			)}
+
+			{/* Hielbreedte correctie - Dual number input */}
+			{isActive('hielbreedteCorrectie') && (
+				<CollapsibleSection title="Hielbreedte correctie" defaultOpen={false}>
+				<DualNumberInput
+					label="Verbreding"
+					leftValue={corrections.hielbreedteCorrectie.left}
+					rightValue={corrections.hielbreedteCorrectie.right}
+					onLeftChange={(val) =>
+						updateCorrections({
+							hielbreedteCorrectie: { ...corrections.hielbreedteCorrectie, left: val },
+						})
+					}
+					onRightChange={(val) =>
+						updateCorrections({
+							hielbreedteCorrectie: { ...corrections.hielbreedteCorrectie, right: val },
+						})
+					}
+					min={0}
+					max={10}
+					step={0.5}
+					unit="mm"
+				/>
+				</CollapsibleSection>
+			)}
+
+			{/* Zoolbreedte - Dual number input */}
+			{isActive('zoolbreedte') && (
+				<CollapsibleSection title="Zoolbreedte" defaultOpen={false}>
+				<DualNumberInput
+					label="Verbreding"
+					leftValue={corrections.zoolbreedte.left}
+					rightValue={corrections.zoolbreedte.right}
+					onLeftChange={(val) =>
+						updateCorrections({
+							zoolbreedte: { ...corrections.zoolbreedte, left: val },
+						})
+					}
+					onRightChange={(val) =>
+						updateCorrections({
+							zoolbreedte: { ...corrections.zoolbreedte, right: val },
+						})
+					}
+					min={0}
+					max={10}
+					step={0.5}
+					unit="mm"
 				/>
 				</CollapsibleSection>
 			)}

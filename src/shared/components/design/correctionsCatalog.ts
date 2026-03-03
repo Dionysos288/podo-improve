@@ -9,6 +9,13 @@ export type CorrectionKey =
 	| 'gladstrijken'
 	| 'pronatie'
 	| 'supinatie'
+	| 'mediaalVlak'
+	| 'lateraalVlak'
+	| 'apexMiddenvoet'
+	| 'apexHiel'
+	| 'hielbeenCorrectie'
+	| 'hielbreedteCorrectie'
+	| 'zoolbreedte'
 	| 'tekst';
 
 export type CorrectionOption = {
@@ -23,11 +30,18 @@ export const CORRECTION_OPTIONS: CorrectionOption[] = [
 	{ key: 'supinatie', label: 'Supinatie', category: 'Voorvoet' },
 
 	{ key: 'medialeBoogCorrectie', label: 'Mediale boog correctie', category: 'Middenvoet' },
+	{ key: 'mediaalVlak', label: 'Mediaal vlak', category: 'Middenvoet' },
+	{ key: 'lateraalVlak', label: 'Lateraal vlak', category: 'Middenvoet' },
+	{ key: 'apexMiddenvoet', label: 'Verplaats apex middenvoet', category: 'Middenvoet' },
 
 	{ key: 'hielHeffing', label: 'Hiel heffing', category: 'Hiel' },
 	{ key: 'kuipHoogte', label: 'Kuip hoogte', category: 'Hiel' },
+	{ key: 'apexHiel', label: 'Verplaats apex hiel', category: 'Hiel' },
+	{ key: 'hielbeenCorrectie', label: 'Hielbeencorrectie', category: 'Hiel' },
+	{ key: 'hielbreedteCorrectie', label: 'Hielbreedte correctie', category: 'Hiel' },
 
 	{ key: 'gladstrijken', label: 'Gladstrijken', category: 'Overige' },
+	{ key: 'zoolbreedte', label: 'Zoolbreedte', category: 'Overige' },
 	{ key: 'tekst', label: 'Tekst toevoegen', category: 'Overige' },
 ];
 
