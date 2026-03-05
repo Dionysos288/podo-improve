@@ -236,3 +236,110 @@ export type ScanValidationResult = {
 	isManifold: boolean;
 	inferredSide: 'left' | 'right' | 'unknown';
 };
+
+// ============================================
+// Automatic Landmark Detection
+// ============================================
+
+/**
+ * Confidence level for an individual detected landmark.
+ * 0 = no confidence (detection failed), 1 = fully confident.
+ */
+export type LandmarkConfidence = {
+	heel: number;
+	meta1: number;
+	meta5: number;
+	toeTip: number;
+	navicular: number;
+	calcaneus: number;
+};
+
+/**
+ * Result from automatic landmark detection.
+ */
+export type AutoLandmarkResult = {
+	/** The 3 primary landmarks needed for the pipeline */
+	landmarks: ThreePointLandmarks;
+	/** Additionally derived points (navicular, calcaneus, toeTip, lateral edge) */
+	derived: DerivedLandmarks;
+	/** Per-landmark confidence scores (0–1) */
+	confidence: LandmarkConfidence;
+	/** Overall confidence (geometric mean of individual scores) */
+	overallConfidence: number;
+	/** Whether manual override is recommended (overallConfidence < threshold) */
+	needsManualReview: boolean;
+	/** Descriptive warnings/notes about detection quality */
+	warnings: string[];
+	/** Detected foot side */
+	side: 'left' | 'right' | 'unknown';
+};
+
+/** Threshold below which the system recommends manual landmark review */
+export const LANDMARK_CONFIDENCE_THRESHOLD = 0.65;
+
+// ============================================
+// Scan-to-Insole Pipeline
+// ============================================
+
+/** Pipeline processing stage */
+export type PipelineStage =
+	| 'idle'
+	| 'validating'
+	| 'preprocessing'
+	| 'detecting-landmarks'
+	| 'awaiting-manual-landmarks'
+	| 'aligning'
+	| 'extracting-plantar'
+	| 'generating-insole'
+	| 'applying-corrections'
+	| 'smoothing'
+	| 'complete'
+	| 'error';
+
+/**
+ * Configuration for the automated scan-to-insole pipeline.
+ */
+export type PipelineConfig = {
+	/** Skip automatic landmark detection and require manual picking */
+	forceManualLandmarks: boolean;
+	/** Confidence threshold for auto-detection (default LANDMARK_CONFIDENCE_THRESHOLD) */
+	confidenceThreshold: number;
+	/** Light Laplacian smoothing iterations for mesh preprocessing */
+	preprocessingSmoothPasses: number;
+	/** Target vertex count for decimation (0 = no decimation) */
+	targetVertexCount: number;
+	/** Insole generation configuration */
+	insoleConfig: PrecisionInsoleConfig;
+	/** Filename hint (for left/right inference) */
+	filename?: string;
+};
+
+export const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
+	forceManualLandmarks: false,
+	confidenceThreshold: LANDMARK_CONFIDENCE_THRESHOLD,
+	preprocessingSmoothPasses: 1,
+	targetVertexCount: 0,
+	insoleConfig: DEFAULT_PRECISION_INSOLE_CONFIG,
+};
+
+/**
+ * Result of the full scan-to-insole pipeline.
+ */
+export type PipelineResult = {
+	/** Current stage of the pipeline */
+	stage: PipelineStage;
+	/** Validated scan info */
+	validation?: ScanValidationResult;
+	/** Detected or manually provided landmarks */
+	landmarks?: AutoLandmarkResult;
+	/** Computed foot geometry */
+	footGeometry?: FootGeometry;
+	/** Extracted plantar data */
+	plantarData?: PlantarData;
+	/** Whether manual landmark intervention was required */
+	manualLandmarksUsed: boolean;
+	/** Processing times for each stage (ms) */
+	timing: Partial<Record<PipelineStage, number>>;
+	/** Any errors encountered */
+	error?: string;
+};

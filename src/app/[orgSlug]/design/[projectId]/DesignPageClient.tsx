@@ -13,6 +13,11 @@ import { ViewOverlay } from '@/src/shared/components/design/ViewOverlay';
 import { StepRail } from '@/src/shared/components/design/StepRail';
 import { GeneratedInsoleOverlay } from '@/src/shared/components/design/GeneratedInsoleOverlay';
 import {
+	TrimlineEditOverlay,
+	DEFAULT_TRIMLINE_ADJUSTMENTS,
+	type TrimlineAdjustments,
+} from '@/src/shared/components/design/TrimlineEditOverlay';
+import {
 	BoxEditToolsOverlay,
 	type BoxEditTool,
 } from '@/src/shared/components/design/BoxEditToolsOverlay';
@@ -39,10 +44,15 @@ import {
 	type LandmarkPoints,
 } from '@/src/features/design/utils/landmarkFitting';
 import { extractPlantarSurface } from '@/src/features/design/utils/plantarExtraction';
+import { detectLandmarksClassical, validateDetectedLandmarks } from '@/src/features/design/utils/landmarkDetection';
 import type {
 	ThreePointLandmarks,
 	CompleteLandmarkSet,
+	AutoLandmarkResult,
+	FootGeometry,
 } from '@/src/features/design/types/types';
+import { LANDMARK_CONFIDENCE_THRESHOLD } from '@/src/features/design/types/types';
+import { STLLoader } from 'three-stdlib';
 import {
 	exportGeometryToSTLBinary,
 	geometryToBinarySTLArrayBuffer,
@@ -164,13 +174,31 @@ export interface ProjectDetail {
 
 type WorkflowStep = 'base' | 'stl-select' | 'point-pick' | 'dynamic-edit';
 
-// Default foot-scan STL files (used when no patient scans are available)
-const DEFAULT_LEFT_STL = '/STL/Ekrem_Zeneli_055037_000528_L.stl';
-const DEFAULT_RIGHT_STL = '/STL/Ekrem_Zeneli_055037_000528_R.stl';
-
 // Existing editable base insoles (used in Basis/Ontwerp workflow)
 const DEFAULT_BASE_LEFT_STL = '/base/(Amina) Ruymen - voor Dion_L.stl';
 const DEFAULT_BASE_RIGHT_STL = '/base/(Amina) Ruymen - voor Dion_R.stl';
+
+// Demo scan pairs available for testing
+const DEMO_SCAN_PAIRS = [
+	{
+		id: 'ekrem',
+		label: 'Ekrem Zeneli',
+		leftUrl: '/STL/Ekrem_Zeneli_055037_000528_L.stl',
+		rightUrl: '/STL/Ekrem_Zeneli_055037_000528_R.stl',
+	},
+	{
+		id: 'kim',
+		label: 'Kim Heyerick',
+		leftUrl: '/STL/Kim_Heyerick_055037_000635_L.stl',
+		rightUrl: '/STL/Kim_Heyerick_055037_000635_R.stl',
+	},
+	{
+		id: 'mathis',
+		label: 'Mathis Bothuyne',
+		leftUrl: '/STL/Mathis_Bothuyne_055037_000614_L.stl',
+		rightUrl: '/STL/Mathis_Bothuyne_055037_000614_R.stl',
+	},
+] as const;
 
 type PickPointId =
 	| 'heel'
@@ -227,8 +255,8 @@ const deriveSeedFromPickedPoints = (
 
 	if (!heel || !heelLateral || !meta1 || !meta2 || !meta5) {
 		return {
-			archMm: clamp(fallbackArchMm, 2, 16),
-			cupMm: clamp(fallbackArchMm * 0.55, 1, 12),
+			archMm: clamp(fallbackArchMm, 3, 18),
+			cupMm: clamp(fallbackArchMm * 0.55, 2, 12),
 			shoeSizeEu: 40,
 			pronationMm: 0,
 			supinationMm: 0,
@@ -266,11 +294,11 @@ const deriveSeedFromPickedPoints = (
 	while (deltaDeg > 90) deltaDeg -= 180;
 	while (deltaDeg < -90) deltaDeg += 180;
 
-	const archByForefoot = clamp(4 + m2OffsetMm * 0.45, 2, 16);
-	const archByWidth = clamp(5 + ((forefootWidthMm - 80) * 0.08), 2, 16);
+	const archByForefoot = clamp(4 + m2OffsetMm * 0.45, 3, 18);
+	const archByWidth = clamp(5 + ((forefootWidthMm - 80) * 0.10), 3, 18);
 	// Step 2 refine: combine point biomechanics + STL geometry estimate
-	const archMm = clamp((fallbackArchMm * 0.65) + (archByForefoot * 0.2) + (archByWidth * 0.15), 2, 16);
-	const cupMm = clamp(2 + ((lateralSpanMm - 24) * 0.1), 1, 10);
+	const archMm = clamp((fallbackArchMm * 0.65) + (archByForefoot * 0.2) + (archByWidth * 0.15), 3, 18);
+	const cupMm = clamp(2 + ((lateralSpanMm - 24) * 0.1), 2, 12);
 	// EU size estimate from foot length + functional toe allowance (~15mm)
 	const rawShoeSizeEu = ((footLengthMm + 15) * 1.5) / 10;
 	const plausibleLength = footLengthMm >= 180 && footLengthMm <= 340;
@@ -280,13 +308,90 @@ const deriveSeedFromPickedPoints = (
 	const supinationMm = deltaDeg < 0 ? clamp(Math.abs(deltaDeg) * 0.25, 0, 6) : 0;
 
 	return {
-		archMm: roundStep(Number.isFinite(archMm) ? archMm : clamp(fallbackArchMm, 2, 16), 0.5),
+		archMm: roundStep(Number.isFinite(archMm) ? archMm : clamp(fallbackArchMm, 3, 18), 0.5),
 		cupMm: roundStep(cupMm, 0.5),
 		shoeSizeEu: roundStep(shoeSizeEu, 0.5),
 		pronationMm: roundStep(pronationMm, 0.5),
 		supinationMm: roundStep(supinationMm, 0.5),
 	};
 };
+
+/**
+ * Derive biomechanical seed parameters from auto-detected FootGeometry.
+ * This replaces deriveSeedFromPickedPoints when using automatic detection,
+ * since we don't have the manual meta2/heelLateral points.
+ */
+const deriveSeedFromFootGeometry = (
+	fg: FootGeometry,
+	worldToMm: number
+) => {
+	const forefootWidthMm = fg.forefootWidth * worldToMm;
+	const footLengthMm = fg.footLength * worldToMm;
+	const rawArchMm = fg.archHeight * worldToMm;
+
+	// Arch support height: ~25-30% of the geometric arch height.
+	// Typical navicular height above ground plane = 25-50mm for adults,
+	// and typical medial arch support in an insole = 8-15mm.
+	const archFromGeometry = clamp(rawArchMm * 0.28, 3, 18);
+	// Cross-check with forefoot width heuristic
+	const archByWidth = clamp(5 + ((forefootWidthMm - 80) * 0.10), 3, 18);
+	const archByLength = clamp(6 + ((footLengthMm - 240) * 0.03), 4, 12);
+	const weightedArch = (archFromGeometry * 0.62) + (archByWidth * 0.23) + (archByLength * 0.15);
+	const finalArch = clamp(Math.max(weightedArch, archByLength * 0.9), 4, 18);
+
+	// Cup height: proportional to arch, typically 40-60% of arch support
+	const cupMm = clamp(finalArch * 0.55, 2, 12);
+
+	// Rim / max insole height: the edge rim that wraps around the foot.
+	// Should be cup height + margin for good containment.
+	const rimHeightMm = clamp(cupMm + 4, 6, 18);
+
+	// Sole thickness: thicker for larger feet
+	const soleThicknessMm = footLengthMm > 270 ? 3 : 2.5;
+
+	// EU shoe size from foot length
+	const rawEu = ((footLengthMm + 15) * 1.5) / 10;
+	const plausible = footLengthMm >= 180 && footLengthMm <= 340;
+	const shoeSizeEu = plausible ? clamp(rawEu, 32, 52) : 40;
+
+	// Width-based sole broadening (if scan forefoot is wider than base insole)
+	// Typical base insole forefoot width for size 40 ≈ 85mm.
+	const expectedWidth = 75 + (shoeSizeEu - 36) * 1.5;
+	const widthExcess = Math.max(0, forefootWidthMm - expectedWidth);
+	const zoolbreedteMm = clamp(widthExcess * 0.5, 0, 8);
+	const hielbreedteMm = clamp(widthExcess * 0.28, 0, 4);
+
+	console.log(
+		`[Seed] archHeight=${rawArchMm.toFixed(1)}mm → archSupport=${finalArch.toFixed(1)}mm, ` +
+		`cup=${cupMm.toFixed(1)}mm, rim=${rimHeightMm.toFixed(1)}mm, ` +
+		`shoeSize=${shoeSizeEu.toFixed(1)}, footLen=${footLengthMm.toFixed(0)}mm, ` +
+		`ffWidth=${forefootWidthMm.toFixed(0)}mm, zoolbreedte=${zoolbreedteMm.toFixed(1)}mm, hielbreedte=${hielbreedteMm.toFixed(1)}mm`
+	);
+
+	return {
+		archMm: roundStep(Number.isFinite(finalArch) ? finalArch : 8, 0.5),
+		cupMm: roundStep(cupMm, 0.5),
+		rimHeightMm: roundStep(rimHeightMm, 0.5),
+		soleThicknessMm: roundStep(soleThicknessMm, 0.5),
+		shoeSizeEu: roundStep(shoeSizeEu, 0.5),
+		pronationMm: 0,
+		supinationMm: 0,
+		forefootWidthMm,
+		hielbreedteMm: roundStep(hielbreedteMm, 0.5),
+		zoolbreedteMm: roundStep(zoolbreedteMm, 0.5),
+	};
+};
+
+/**
+ * Load an STL file from a URL and return raw THREE.BufferGeometry.
+ */
+async function loadStlGeometry(url: string): Promise<THREE.BufferGeometry> {
+	const response = await fetch(url);
+	if (!response.ok) throw new Error(`Failed to load STL: ${url}`);
+	const buffer = await response.arrayBuffer();
+	const loader = new STLLoader();
+	return loader.parse(buffer);
+}
 
 interface DesignPageClientProps {
 	project: ProjectDetail;
@@ -338,6 +443,22 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		forefootWidthMm: number;
 	} | null>(null);
 	const [isFitting, setIsFitting] = useState(false);
+	const [autoDetectStatus, setAutoDetectStatus] = useState<
+		'idle' | 'detecting' | 'success' | 'failed'
+	>('idle');
+	const [autoDetectMessage, setAutoDetectMessage] = useState('');
+
+	// Auto-dismiss the success banner after 6 seconds
+	useEffect(() => {
+		if (autoDetectStatus === 'success') {
+			const t = setTimeout(() => {
+				setAutoDetectStatus('idle');
+				setAutoDetectMessage('');
+			}, 6000);
+			return () => clearTimeout(t);
+		}
+	}, [autoDetectStatus]);
+
 	const [designPlan, setDesignPlan] = useState<{
 		plan: ReturnType<typeof buildInsolePlan> | null;
 		points: LandmarkPoints | null;
@@ -492,6 +613,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		}));
 	}, [step3Left, step3Right, activeProfiles]);
 	const [showScanModal, setShowScanModal] = useState(false);
+	const [selectedDemoPairId, setSelectedDemoPairId] = useState<string>('ekrem');
 	const [step4View, setStep4View] = useState<'export' | 'directProduce'>(
 		'export'
 	);
@@ -583,6 +705,14 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		? boxEnabled[selectedInsoleSide]
 		: false;
 	const [boxEditTool, setBoxEditTool] = useState<BoxEditTool>('rotate');
+	const [trimlineEditSide, setTrimlineEditSide] = useState<'left' | 'right' | null>(null);
+	const [trimlineAdjustments, setTrimlineAdjustments] = useState<{
+		left: TrimlineAdjustments;
+		right: TrimlineAdjustments;
+	}>({
+		left: { ...DEFAULT_TRIMLINE_ADJUSTMENTS },
+		right: { ...DEFAULT_TRIMLINE_ADJUSTMENTS },
+	});
 	const toggleCorrection = useCallback((key: CorrectionKey) => {
 		setActiveCorrections((prev) => {
 			const has = prev.includes(key);
@@ -706,11 +836,11 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		orderedScans.find((s) => s.footSide === 'right') ??
 		null;
 
-	// Use patient scans when available, fall back to default STL files
-	const leftStlUrl = leftScan?.stlUrl ?? DEFAULT_LEFT_STL;
-	const rightStlUrl = rightScan?.stlUrl ?? DEFAULT_RIGHT_STL;
+	// Use patient scans when available, fall back to selected demo pair
+	const activeDemoPair = DEMO_SCAN_PAIRS.find(p => p.id === selectedDemoPairId) ?? DEMO_SCAN_PAIRS[0];
+	const leftStlUrl = leftScan?.stlUrl ?? activeDemoPair.leftUrl;
+	const rightStlUrl = rightScan?.stlUrl ?? activeDemoPair.rightUrl;
 
-	const mockDateLabel = '12 dec 2024';
 	const currentPointStep = POINT_SEQUENCE[pointStepIndex];
 
 	const {
@@ -735,6 +865,208 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		clearLandmarkPipeline();
 		setWorkflowStep('point-pick');
 	}, [clearLandmarkPipeline]);
+
+	/**
+	 * Automatically detect landmarks on both feet, compute geometry, seed parameters,
+	 * and skip the manual point-pick step entirely.
+	 * Falls back to manual point-picking if auto-detection confidence is too low.
+	 */
+	const autoDetectAndApply = useCallback(async (
+		rightUrl: string,
+		leftUrl: string
+	) => {
+		setAutoDetectStatus('detecting');
+		setAutoDetectMessage('Landmarks automatisch detecteren...');
+		clearLandmarkPipeline();
+
+		try {
+			// Load both foot scan STL files
+			setAutoDetectMessage('Scans laden...');
+			const [rightGeom, leftGeom] = await Promise.all([
+				loadStlGeometry(rightUrl),
+				loadStlGeometry(leftUrl),
+			]);
+
+			// Auto-detect landmarks on right foot
+			setAutoDetectMessage('Rechtervoet analyseren...');
+			const rightResult = detectLandmarksClassical(rightGeom, rightUrl);
+			const rightValidation = validateDetectedLandmarks(rightResult);
+			rightResult.warnings.push(...rightValidation);
+
+			// Auto-detect landmarks on left foot
+			setAutoDetectMessage('Linkervoet analyseren...');
+			const leftResult = detectLandmarksClassical(leftGeom, leftUrl);
+			const leftValidation = validateDetectedLandmarks(leftResult);
+			leftResult.warnings.push(...leftValidation);
+
+			console.log(
+				'[Auto-detect] Right confidence:', rightResult.overallConfidence.toFixed(2),
+				'Left confidence:', leftResult.overallConfidence.toFixed(2),
+				'\n  Right per-landmark:', Object.entries(rightResult.confidence).map(([k, v]) => `${k}: ${((v as number) * 100).toFixed(0)}%`).join(', '),
+				'\n  Left per-landmark:', Object.entries(leftResult.confidence).map(([k, v]) => `${k}: ${((v as number) * 100).toFixed(0)}%`).join(', '),
+				'\n  Right warnings:', rightResult.warnings,
+				'\n  Left warnings:', leftResult.warnings,
+			);
+
+			// Check if both have sufficient confidence
+			const threshold = LANDMARK_CONFIDENCE_THRESHOLD;
+			if (
+				rightResult.overallConfidence < threshold ||
+				leftResult.overallConfidence < threshold
+			) {
+				console.log(`[Auto-detect] Low confidence R: ${(rightResult.overallConfidence * 100).toFixed(0)}%, L: ${(leftResult.overallConfidence * 100).toFixed(0)}%, falling back to manual`);
+				setAutoDetectStatus('failed');
+				setAutoDetectMessage(
+					`Auto-detectie: R ${(rightResult.overallConfidence * 100).toFixed(0)}% · L ${(leftResult.overallConfidence * 100).toFixed(0)}% (drempel: ${(threshold * 100).toFixed(0)}%). Handmatig kiezen.`
+				);
+				// Fall back to manual point-pick
+				startPointPicking();
+				return;
+			}
+
+			// Both feet have good confidence — compute everything
+			setAutoDetectMessage('Voetgeometrie berekenen...');
+			setIsFitting(true);
+			setIsGeneratingInsole(true);
+
+			// ── Right foot computation ──
+			const { footGeometry: rightFg, derived: rightDerived, complete: rightComplete } =
+				computeFootGeometryFrom3Points(rightResult.landmarks, rightGeom, rightUrl);
+
+			setThreePointLandmarks(rightResult.landmarks);
+			setFootGeometry(rightFg);
+			setDerivedLandmarks(rightDerived);
+			setCompleteLandmarks(rightComplete);
+
+			const rightLegacy = completeLandmarksToLegacy(rightComplete);
+			const plan = buildInsolePlan(rightLegacy);
+			setDesignPlan({ plan, points: rightLegacy });
+			setPlanWorldToMm(1); // STL loaded at raw mm scale
+
+			const rightPlantar = extractPlantarSurface(rightGeom, rightFg, 1.0);
+			setPlantarData(rightPlantar);
+
+			const rightSeeds = deriveSeedFromFootGeometry(rightFg, 1);
+			const rightMeshShoeSize = estimateEuShoeSizeFromGeometry(rightGeom, 1);
+
+			// ── Left foot computation ──
+			const { footGeometry: leftFg } =
+				computeFootGeometryFrom3Points(leftResult.landmarks, leftGeom, leftUrl);
+
+			const leftSeeds = deriveSeedFromFootGeometry(leftFg, 1);
+			const leftMeshShoeSize = estimateEuShoeSizeFromGeometry(leftGeom, 1);
+
+			// ── Seed parameters from both feet ──
+			setParameters({
+				...parameters,
+				general: {
+					...generalNormalized,
+					shoeSize: {
+						left: leftMeshShoeSize,
+						right: rightMeshShoeSize,
+					},
+					soleThicknessMm: {
+						left: leftSeeds.soleThicknessMm,
+						right: rightSeeds.soleThicknessMm,
+					},
+					maxInsoleHeightMm: {
+						left: leftSeeds.rimHeightMm,
+						right: rightSeeds.rimHeightMm,
+					},
+				},
+			});
+
+			setCorrections((prev) => {
+				const next = prev ?? {
+					kuipHoogte: { left: 0, right: 0 },
+					voorvoetUitvlakken: { enabled: false },
+					hielHeffing: {
+						length: { left: 'lang', right: 'lang' },
+						value: { left: 0, right: 0 },
+					},
+					medialeBoogCorrectie: { left: 0, right: 0 },
+					gladstrijken: 0,
+					pronatie: {
+						regio: { left: 'hiel', right: 'hiel' },
+						correctie: { left: 0, right: 0 },
+					},
+					supinatie: {
+						regio: { left: 'hiel', right: 'hiel' },
+						correctie: { left: 0, right: 0 },
+					},
+					mediaalVlak: {
+						hoogte: { left: 'midden', right: 'midden' },
+						waarde: { left: 0, right: 0 },
+					},
+					lateraalVlak: {
+						hoogte: { left: 'midden', right: 'midden' },
+						waarde: { left: 0, right: 0 },
+					},
+					apexMiddenvoet: { left: 0, right: 0 },
+					apexHiel: { left: 0, right: 0 },
+					hielbeenCorrectie: {
+						zijde: { left: 'mediaal', right: 'mediaal' },
+						waarde: { left: 0, right: 0 },
+					},
+					hielbreedteCorrectie: { left: 0, right: 0 },
+					zoolbreedte: { left: 0, right: 0 },
+				};
+				return {
+					...next,
+					kuipHoogte: {
+						left: leftSeeds.cupMm,
+						right: rightSeeds.cupMm,
+					},
+					medialeBoogCorrectie: {
+						left: leftSeeds.archMm,
+						right: rightSeeds.archMm,
+					},
+					gladstrijken: 3,
+					hielbreedteCorrectie: {
+						left: leftSeeds.hielbreedteMm,
+						right: rightSeeds.hielbreedteMm,
+					},
+					zoolbreedte: {
+						left: leftSeeds.zoolbreedteMm,
+						right: rightSeeds.zoolbreedteMm,
+					},
+				};
+			});
+
+			setTargetForefootWidthMm({
+				left: leftSeeds.forefootWidthMm,
+				right: rightSeeds.forefootWidthMm,
+			});
+
+			// ── Transition to design step ──
+			setScansActive(true);
+			setShowOverlays(true);
+			setWorkflowStep('base');
+			setActiveDesignStep(2);
+			setAutoDetectStatus('success');
+			setAutoDetectMessage(
+				`Landmarks automatisch gedetecteerd (R: ${(rightResult.overallConfidence * 100).toFixed(0)}%, L: ${(leftResult.overallConfidence * 100).toFixed(0)}%)`
+			);
+
+			setTimeout(() => {
+				setIsFitting(false);
+				setIsGeneratingInsole(false);
+			}, 800);
+
+		} catch (err) {
+			console.error('[Auto-detect] Failed:', err);
+			setAutoDetectStatus('failed');
+			setAutoDetectMessage(
+				`Automatische detectie mislukt: ${err instanceof Error ? err.message : 'onbekende fout'}. Kies handmatig.`
+			);
+			// Fall back to manual
+			startPointPicking();
+		}
+	}, [
+		clearLandmarkPipeline, startPointPicking, setThreePointLandmarks, setFootGeometry,
+		setDerivedLandmarks, setCompleteLandmarks, setPlantarData, setIsGeneratingInsole,
+		setParameters, parameters, generalNormalized,
+	]);
 
 	const handleCancelPointPick = useCallback(() => {
 		setRightPointSelections({});
@@ -840,13 +1172,13 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 
 						const seeds = deriveSeedFromPickedPoints(
 							updatedSelections,
-							clamp(fg.archHeight * worldToMm * 0.12, 2, 14),
+							clamp(fg.archHeight * worldToMm * 0.28, 3, 18),
 							worldToMm
 						);
 						const meshShoeSizeEu = estimateEuShoeSizeFromGeometry(geom, worldToMm);
 						rightFittingRef.current = {
-							archHeight: roundStep(clamp(seeds.archMm, 2, 16), 0.5),
-							cupHeight: roundStep(clamp(seeds.cupMm, 1, 10), 0.5),
+							archHeight: roundStep(clamp(seeds.archMm, 3, 18), 0.5),
+							cupHeight: roundStep(clamp(seeds.cupMm, 2, 12), 0.5),
 							shoeSize: meshShoeSizeEu,
 							pronation: roundStep(clamp(seeds.pronationMm, 0, 6), 0.5),
 							supination: roundStep(clamp(seeds.supinationMm, 0, 6), 0.5),
@@ -892,12 +1224,12 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							computeFootGeometryFrom3Points(leftThreePoints, leftGeom);
 						const seeds = deriveSeedFromPickedPoints(
 							updatedSelections,
-							clamp(fg.archHeight * leftWorldToMm * 0.12, 2, 14),
+							clamp(fg.archHeight * leftWorldToMm * 0.28, 3, 18),
 							leftWorldToMm
 						);
 						const meshShoeSizeEu = estimateEuShoeSizeFromGeometry(leftGeom, leftWorldToMm);
-						leftArchMm = roundStep(clamp(seeds.archMm, 2, 16), 0.5);
-						leftCupMm = roundStep(clamp(seeds.cupMm, 1, 10), 0.5);
+						leftArchMm = roundStep(clamp(seeds.archMm, 3, 18), 0.5);
+						leftCupMm = roundStep(clamp(seeds.cupMm, 2, 12), 0.5);
 						leftShoeSize = meshShoeSizeEu;
 						leftPronation = roundStep(clamp(seeds.pronationMm, 0, 6), 0.5);
 						leftSupination = roundStep(clamp(seeds.supinationMm, 0, 6), 0.5);
@@ -916,6 +1248,20 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 				const rightSupination = rightFitting?.supination ?? 0;
 				const rightForefootWidthMm = rightFitting?.forefootWidthMm ?? targetForefootWidthMm.right;
 
+				const estimateWidthCorrections = (forefootMm: number | null, shoeSizeEu: number) => {
+					if (!Number.isFinite(forefootMm as number)) {
+						return { zoolbreedte: 0, hielbreedte: 0 };
+					}
+					const expectedWidth = 75 + (shoeSizeEu - 36) * 1.5;
+					const widthExcess = Math.max(0, (forefootMm as number) - expectedWidth);
+					return {
+						zoolbreedte: roundStep(clamp(widthExcess * 0.5, 0, 8), 0.5),
+						hielbreedte: roundStep(clamp(widthExcess * 0.28, 0, 4), 0.5),
+					};
+				};
+				const leftWidthSeeds = estimateWidthCorrections(leftForefootWidthMm, leftShoeSize);
+				const rightWidthSeeds = estimateWidthCorrections(rightForefootWidthMm, rightShoeSize);
+
 				// Seed parameters from both feet
 				setParameters({
 					...parameters,
@@ -925,9 +1271,13 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							left: leftShoeSize,
 							right: rightShoeSize,
 						},
+						soleThicknessMm: {
+							left: 2.5,
+							right: 2.5,
+						},
 						maxInsoleHeightMm: {
-							left: leftArchMm,
-							right: rightArchMm,
+							left: clamp(leftCupMm + 4, 6, 18),
+							right: clamp(rightCupMm + 4, 6, 18),
 						},
 					},
 				});
@@ -1002,6 +1352,15 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								left: leftSupination,
 								right: rightSupination,
 							},
+						},
+						gladstrijken: 3,
+						hielbreedteCorrectie: {
+							left: leftWidthSeeds.hielbreedte,
+							right: rightWidthSeeds.hielbreedte,
+						},
+						zoolbreedte: {
+							left: leftWidthSeeds.zoolbreedte,
+							right: rightWidthSeeds.zoolbreedte,
 						},
 					};
 				});
@@ -2076,7 +2435,9 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							onLeftSelect={(id) => setSelectedLeftScanId(id)}
 							onRightSelect={(id) => setSelectedRightScanId(id)}
 							onContinue={() => {
-								startPointPicking();
+								const rUrl = rightScan?.stlUrl ?? activeDemoPair.rightUrl;
+								const lUrl = leftScan?.stlUrl ?? activeDemoPair.leftUrl;
+								autoDetectAndApply(rUrl, lUrl);
 							}}
 						/>
 					)}
@@ -2122,6 +2483,19 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 										x
 									</div>
 								</>
+							)}
+							{autoDetectStatus === 'failed' && autoDetectMessage && (
+								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-950/80 px-4 py-2 text-xs font-semibold text-amber-300 shadow-lg">
+									<span>⚠</span>
+									<span>{autoDetectMessage}</span>
+									<button
+										type="button"
+										className="ml-1 text-amber-400 hover:text-amber-200"
+										onClick={() => { setAutoDetectStatus('idle'); setAutoDetectMessage(''); }}
+									>
+										✕
+									</button>
+								</div>
 							)}
 							<div className="absolute right-4 top-4 z-20 w-[420px] rounded-2xl border border-ui-border bg-ui-panel text-ui-text shadow-lg">
 								<div className="flex items-center justify-between border-b border-ui-border px-4 py-3">
@@ -2284,10 +2658,34 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								leftPlacedElements={leftPlacedElements}
 								rightPlacedElements={rightPlacedElements}
 								evaBlockMode={isEvaMethod}
+								trimlineAdjustments={trimlineAdjustments}
 							/>
 							{isFitting && (
 								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel px-4 py-2 text-xs font-semibold text-ui-text shadow-lg">
 									Berekenen… steunzool wordt aangepast
+								</div>
+							)}
+							{autoDetectStatus === 'detecting' && !isFitting && (
+								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel px-4 py-2 text-xs font-semibold text-ui-text shadow-lg animate-pulse">
+									{autoDetectMessage || 'Landmarks automatisch detecteren...'}
+								</div>
+							)}
+							{autoDetectStatus === 'success' && !isFitting && (
+								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-emerald-500/30 bg-emerald-950/80 px-4 py-2 text-xs font-semibold text-emerald-300 shadow-lg">
+									✓ {autoDetectMessage}
+								</div>
+							)}
+							{autoDetectStatus === 'failed' && !isFitting && (
+								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-950/80 px-4 py-2 text-xs font-semibold text-amber-300 shadow-lg">
+									<span>⚠</span>
+									<span>{autoDetectMessage}</span>
+									<button
+										type="button"
+										className="ml-1 text-amber-400 hover:text-amber-200"
+										onClick={() => { setAutoDetectStatus('idle'); setAutoDetectMessage(''); }}
+									>
+										✕
+									</button>
 								</div>
 							)}
 							<ViewOverlay
@@ -2312,7 +2710,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 									className="absolute left-6 top-[340px] z-20 w-[220px]"
 								/>
 							)}
-							{selectedInsoleSide && !isSelectedGridModeOn && (
+							{selectedInsoleSide && !isSelectedGridModeOn && !trimlineEditSide && (
 								<GeneratedInsoleOverlay
 									selectedSide={selectedInsoleSide}
 									boxEnabled={boxEnabled}
@@ -2321,6 +2719,22 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 										setBoxEditTool('rotate');
 									}}
 									onMirrorToOther={mirrorCorrectionsToOtherSide}
+									onTrimlineEdit={(side) => setTrimlineEditSide(side)}
+									className="absolute left-6 bottom-6 z-20"
+								/>
+							)}
+
+							{trimlineEditSide && (
+								<TrimlineEditOverlay
+									selectedSide={trimlineEditSide}
+									adjustments={trimlineAdjustments[trimlineEditSide]}
+									onChange={(adj) =>
+										setTrimlineAdjustments((prev) => ({
+											...prev,
+											[trimlineEditSide]: adj,
+										}))
+									}
+									onClose={() => setTrimlineEditSide(null)}
 									className="absolute left-6 bottom-6 z-20"
 								/>
 							)}
@@ -2350,7 +2764,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							)}
 							</>
 							)}
-							{!selectedInsoleSide && selectedPlacedElement && (
+							{leftPanelTab !== 'analysis' && !selectedInsoleSide && selectedPlacedElement && (
 								<div className="absolute right-4 top-4 z-20 flex h-auto max-h-[85vh] w-[320px] flex-col rounded-2xl border border-ui-border bg-ui-panel text-ui-text overflow-hidden">
 									<ElementInspector
 										element={selectedPlacedElement}
@@ -2359,7 +2773,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 									/>
 								</div>
 							)}
-							{!selectedInsoleSide && !selectedPlacedElement && (
+							{leftPanelTab !== 'analysis' && !selectedInsoleSide && !selectedPlacedElement && (
 								<div className="absolute right-4 top-4 z-20 flex h-[85vh] w-[420px] flex-col rounded-2xl border border-ui-border bg-ui-panel text-ui-text overflow-hidden">
 									<StepRail
 										activeStep={activeDesignStep}
@@ -2401,14 +2815,29 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 					<>
 						<Button
 							variant="outline"
+							disabled={autoDetectStatus === 'detecting'}
 							onClick={() => {
 								if (leftScan?.id) setSelectedLeftScanId(leftScan.id);
 								if (rightScan?.id) setSelectedRightScanId(rightScan.id);
-								startPointPicking();
 								setShowScanModal(false);
+								// Try automatic detection first; falls back to manual if confidence is low
+								const rUrl = rightScan?.stlUrl ?? activeDemoPair.rightUrl;
+								const lUrl = leftScan?.stlUrl ?? activeDemoPair.leftUrl;
+								autoDetectAndApply(rUrl, lUrl);
 							}}
 						>
-							{leftScan && rightScan ? 'Gebruik paar' : 'Gebruik standaard scans'}
+							{autoDetectStatus === 'detecting' ? 'Detecteren...' : leftScan && rightScan ? 'Gebruik paar' : 'Gebruik scans'}
+						</Button>
+						<Button
+							variant="ghost"
+							onClick={() => {
+								if (leftScan?.id) setSelectedLeftScanId(leftScan.id);
+								if (rightScan?.id) setSelectedRightScanId(rightScan.id);
+								setShowScanModal(false);
+								startPointPicking();
+							}}
+						>
+							Handmatig kiezen
 						</Button>
 						<Button onClick={() => setShowScanModal(false)} variant="ghost">
 							Annuleer
@@ -2418,48 +2847,73 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 			>
 				<div className="grid grid-cols-[260px_1fr]">
 					<div className="border-r border-ui-border bg-[rgba(255,255,255,0.02)]">
+						{leftScan && rightScan && (
+							<>
+								<div className="px-4 py-2 text-[11px] uppercase text-ui-muted">
+									Patiënt scans
+								</div>
+								<div className="space-y-2 px-3 pb-3">
+									<button
+										type="button"
+										onClick={() => setSelectedDemoPairId('')}
+										className={cn(
+											'flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left transition',
+											!selectedDemoPairId
+												? 'border-ui-accent bg-[rgba(99,247,214,0.16)] text-foreground'
+												: 'border-ui-border bg-[rgba(255,255,255,0.02)] text-ui-text hover:bg-[rgba(255,255,255,0.04)]'
+										)}
+									>
+										<div className="flex flex-col">
+											<span className="text-sm font-semibold">Patiënt scan</span>
+											<span className="text-[11px] uppercase text-ui-muted">
+												Links &amp; Rechts
+											</span>
+										</div>
+									</button>
+								</div>
+							</>
+						)}
 						<div className="px-4 py-2 text-[11px] uppercase text-ui-muted">
-							{mockDateLabel}
+							Test scans
 						</div>
 						<div className="space-y-2 px-3 pb-3">
-							<button
-								type="button"
-								className={cn(
-									'flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left transition',
-									leftScan && rightScan
-										? 'border-ui-accent bg-[rgba(99,247,214,0.16)] text-foreground'
-										: 'border-ui-border bg-[rgba(255,255,255,0.02)] text-ui-text hover:bg-[rgba(255,255,255,0.04)]'
-								)}
-							>
-								<div className="flex flex-col">
-									<span className="text-sm font-semibold">Scan-1</span>
-									<span className="text-[11px] uppercase text-ui-muted">
-										Links &amp; Rechts
+							{DEMO_SCAN_PAIRS.map((pair) => (
+								<button
+									key={pair.id}
+									type="button"
+									onClick={() => setSelectedDemoPairId(pair.id)}
+									className={cn(
+										'flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left transition',
+										selectedDemoPairId === pair.id
+											? 'border-ui-accent bg-[rgba(99,247,214,0.16)] text-foreground'
+											: 'border-ui-border bg-[rgba(255,255,255,0.02)] text-ui-text hover:bg-[rgba(255,255,255,0.04)]'
+									)}
+								>
+									<div className="flex flex-col">
+										<span className="text-sm font-semibold">{pair.label}</span>
+										<span className="text-[11px] uppercase text-ui-muted">
+											Links &amp; Rechts
+										</span>
+									</div>
+									<span className="rounded-full border border-ui-border px-2 py-1 text-[11px] uppercase text-ui-muted">
+										Demo
 									</span>
-								</div>
-								<span className="rounded-full border border-ui-border px-2 py-1 text-[11px] uppercase text-ui-muted">
-									Preview
-								</span>
-							</button>
-							{(!leftScan || !rightScan) && (
-								<div className="px-1 text-xs text-ui-muted">
-									Geen patiëntscans gevonden. Standaard scans worden gebruikt.
-								</div>
-							)}
+								</button>
+							))}
 						</div>
 					</div>
 					<div className="h-[60vh] bg-[rgba(255,255,255,0.02)]">
 						<div className="grid h-full grid-cols-2 divide-x divide-ui-border">
 							<div className="relative h-full bg-[rgba(255,255,255,0.01)]">
-								<MiniSTLPreview url={leftScan?.stlUrl ?? DEFAULT_LEFT_STL} />
+								<MiniSTLPreview url={(!selectedDemoPairId && leftScan?.stlUrl) || activeDemoPair.leftUrl} />
 								<div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-[10px] text-ui-muted">
-									Links {leftScan ? '' : '(standaard)'}
+									Links
 								</div>
 							</div>
 							<div className="relative h-full bg-[rgba(255,255,255,0.01)]">
-								<MiniSTLPreview url={rightScan?.stlUrl ?? DEFAULT_RIGHT_STL} />
+								<MiniSTLPreview url={(!selectedDemoPairId && rightScan?.stlUrl) || activeDemoPair.rightUrl} />
 								<div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-[10px] text-ui-muted">
-									Rechts {rightScan ? '' : '(standaard)'}
+									Rechts
 								</div>
 							</div>
 						</div>

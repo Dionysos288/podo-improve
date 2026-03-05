@@ -32,8 +32,8 @@ import {
 	moveSelectedGridPoints,
 	type GridPoint,
 } from '@/src/features/design/utils/gridPointInteraction';
-import { applyElements, applyElementColors } from '@/src/features/design/elements/applyElements';
 import type { PlacedElement } from '@/src/features/design/elements/types';
+import type { TrimlineAdjustments } from '@/src/shared/components/design/TrimlineEditOverlay';
 
 interface STLMeshProps {
 	url: string;
@@ -44,6 +44,7 @@ interface STLMeshProps {
 	targetForefootWidthMm?: number;
 	targetTrimlineProfile?: TrimlineProfile | null;
 	trimlineOffsetMm?: number;
+	trimlineAdjustments?: TrimlineAdjustments;
 	interactive?: boolean;
 	rotationOffset?: [number, number, number];
 	opacity?: number;
@@ -118,13 +119,154 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 	return t * t * (3 - 2 * t);
 }
 
+/**
+ * Weld duplicate vertices, then smooth sharp crease edges so the insole
+ * renders as one continuous piece.
+ *
+ * Podiatry-CAD insole STLs often have sharp crease edges (>90°) where the
+ * flat top surface meets the side wall/rim.  When Three.js computes smooth
+ * vertex normals, the averaged normals at these creases create visible dark
+ * lines that make the insole look like separate pieces.
+ *
+ * We fix this with:
+ *  1. `mergeVertices` to share edges → smooth normals across faces
+ *  2. Laplacian position smoothing at crease-edge vertices to physically
+ *     round the sharp junctions
+ *  3. Multi-pass normal smoothing for a soft, uniform appearance
+ */
 function weldAndSmoothNormals(
 	geometry: THREE.BufferGeometry,
-	tolerance = 1e-6
+	tolerance = 1e-3
 ): THREE.BufferGeometry {
 	try {
+		// 1. Merge duplicate vertices (STL has 3 unique verts per face).
 		const merged = BufferGeometryUtils.mergeVertices(geometry, tolerance);
+
+		const idx = merged.index;
+		if (!idx) {
+			merged.computeVertexNormals();
+			merged.normalizeNormals();
+			if (merged !== geometry) geometry.dispose();
+			return merged;
+		}
+
+		const posAttr = merged.getAttribute('position') as THREE.BufferAttribute;
+		const vertCount = posAttr.count;
+		const indices = idx.array;
+		const faceCount = indices.length / 3;
+
+		// ---- Build adjacency structures ----
+		const neighborSets: Set<number>[] = Array.from({ length: vertCount }, () => new Set());
+		const vertFaces: number[][] = Array.from({ length: vertCount }, () => []);
+
+		for (let f = 0; f < faceCount; f++) {
+			const a = indices[f * 3], b = indices[f * 3 + 1], c = indices[f * 3 + 2];
+			neighborSets[a].add(b); neighborSets[a].add(c);
+			neighborSets[b].add(a); neighborSets[b].add(c);
+			neighborSets[c].add(a); neighborSets[c].add(b);
+			vertFaces[a].push(f); vertFaces[b].push(f); vertFaces[c].push(f);
+		}
+
+		// ---- Compute per-face normals ----
+		const fn = new Float32Array(faceCount * 3);
+		for (let f = 0; f < faceCount; f++) {
+			const a = indices[f * 3], b = indices[f * 3 + 1], c = indices[f * 3 + 2];
+			const ax = posAttr.getX(a), ay = posAttr.getY(a), az = posAttr.getZ(a);
+			const e1x = posAttr.getX(b) - ax, e1y = posAttr.getY(b) - ay, e1z = posAttr.getZ(b) - az;
+			const e2x = posAttr.getX(c) - ax, e2y = posAttr.getY(c) - ay, e2z = posAttr.getZ(c) - az;
+			const nx = e1y * e2z - e1z * e2y;
+			const ny = e1z * e2x - e1x * e2z;
+			const nz = e1x * e2y - e1y * e2x;
+			const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+			fn[f * 3] = nx / len; fn[f * 3 + 1] = ny / len; fn[f * 3 + 2] = nz / len;
+		}
+
+		// ---- Identify crease vertices ----
+		// A vertex sits on a crease if any two of its adjacent faces have
+		// normals differing by more than ~35°.
+		const creaseThreshold = Math.cos(35 * Math.PI / 180); // ≈ 0.819
+		const isCrease = new Uint8Array(vertCount);
+
+		for (let v = 0; v < vertCount; v++) {
+			const fList = vertFaces[v];
+			let found = false;
+			for (let i = 0; !found && i < fList.length; i++) {
+				for (let j = i + 1; !found && j < fList.length; j++) {
+					const fi = fList[i], fj = fList[j];
+					const dot = fn[fi * 3] * fn[fj * 3]
+						+ fn[fi * 3 + 1] * fn[fj * 3 + 1]
+						+ fn[fi * 3 + 2] * fn[fj * 3 + 2];
+					if (dot < creaseThreshold) found = true;
+				}
+			}
+			if (found) isCrease[v] = 1;
+		}
+
+		// Expand crease zone by 2 rings so the smoothing blends gradually.
+		for (let ring = 0; ring < 2; ring++) {
+			const expand = new Uint8Array(isCrease);
+			for (let v = 0; v < vertCount; v++) {
+				if (!isCrease[v]) continue;
+				for (const nb of neighborSets[v]) expand[nb] = 1;
+			}
+			isCrease.set(expand);
+		}
+
+		// ---- Laplacian position smoothing at crease vertices ----
+		const pos = posAttr.array as Float32Array;
+		const tmp = new Float32Array(pos.length);
+
+		const POSITION_PASSES = 4;
+		const POSITION_ALPHA = 0.30;
+
+		for (let pass = 0; pass < POSITION_PASSES; pass++) {
+			tmp.set(pos);
+			for (let v = 0; v < vertCount; v++) {
+				if (!isCrease[v]) continue;
+				const nbs = neighborSets[v];
+				if (nbs.size === 0) continue;
+				let sx = 0, sy = 0, sz = 0;
+				for (const nb of nbs) {
+					sx += pos[nb * 3]; sy += pos[nb * 3 + 1]; sz += pos[nb * 3 + 2];
+				}
+				const avg_x = sx / nbs.size;
+				const avg_y = sy / nbs.size;
+				const avg_z = sz / nbs.size;
+				tmp[v * 3]     = pos[v * 3]     + POSITION_ALPHA * (avg_x - pos[v * 3]);
+				tmp[v * 3 + 1] = pos[v * 3 + 1] + POSITION_ALPHA * (avg_y - pos[v * 3 + 1]);
+				tmp[v * 3 + 2] = pos[v * 3 + 2] + POSITION_ALPHA * (avg_z - pos[v * 3 + 2]);
+			}
+			pos.set(tmp);
+		}
+		posAttr.needsUpdate = true;
+
+		// ---- Compute smooth vertex normals ----
 		merged.computeVertexNormals();
+
+		// ---- Additional normal smoothing passes ----
+		// Averaging each vertex normal with its neighbors softens the shading
+		// transitions at remaining sharp features.
+		const normalAttr = merged.getAttribute('normal') as THREE.BufferAttribute;
+		const normals = normalAttr.array as Float32Array;
+		const ntmp = new Float32Array(normals.length);
+
+		const NORMAL_PASSES = 3;
+		for (let pass = 0; pass < NORMAL_PASSES; pass++) {
+			for (let v = 0; v < vertCount; v++) {
+				const nbs = neighborSets[v];
+				let sx = normals[v * 3], sy = normals[v * 3 + 1], sz = normals[v * 3 + 2];
+				for (const nb of nbs) {
+					sx += normals[nb * 3];
+					sy += normals[nb * 3 + 1];
+					sz += normals[nb * 3 + 2];
+				}
+				const len = Math.sqrt(sx * sx + sy * sy + sz * sz) || 1;
+				ntmp[v * 3] = sx / len; ntmp[v * 3 + 1] = sy / len; ntmp[v * 3 + 2] = sz / len;
+			}
+			normals.set(ntmp);
+		}
+		normalAttr.needsUpdate = true;
+
 		merged.normalizeNormals();
 		if (merged !== geometry) geometry.dispose();
 		return merged;
@@ -132,6 +274,54 @@ function weldAndSmoothNormals(
 		geometry.computeVertexNormals();
 		return geometry;
 	}
+}
+
+function removeDegenerateTriangles(
+	geometry: THREE.BufferGeometry,
+	areaEpsilon = 1e-12
+): THREE.BufferGeometry {
+	const source = geometry.index ? geometry.toNonIndexed() : geometry.clone();
+	const pos = source.getAttribute('position') as THREE.BufferAttribute | undefined;
+	if (!pos || pos.count < 3) return source;
+
+	const out: number[] = [];
+	const a = new THREE.Vector3();
+	const b = new THREE.Vector3();
+	const c = new THREE.Vector3();
+	const ab = new THREE.Vector3();
+	const ac = new THREE.Vector3();
+	const cross = new THREE.Vector3();
+
+	for (let i = 0; i <= pos.count - 3; i += 3) {
+		a.set(pos.getX(i), pos.getY(i), pos.getZ(i));
+		b.set(pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1));
+		c.set(pos.getX(i + 2), pos.getY(i + 2), pos.getZ(i + 2));
+
+		if (
+			!Number.isFinite(a.x) || !Number.isFinite(a.y) || !Number.isFinite(a.z) ||
+			!Number.isFinite(b.x) || !Number.isFinite(b.y) || !Number.isFinite(b.z) ||
+			!Number.isFinite(c.x) || !Number.isFinite(c.y) || !Number.isFinite(c.z)
+		) {
+			continue;
+		}
+
+		ab.subVectors(b, a);
+		ac.subVectors(c, a);
+		cross.crossVectors(ab, ac);
+		const area2 = cross.lengthSq();
+		if (!Number.isFinite(area2) || area2 <= areaEpsilon) continue;
+
+		out.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+	}
+
+	if (out.length === 0) return source;
+
+	const cleaned = new THREE.BufferGeometry();
+	cleaned.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+	cleaned.computeVertexNormals();
+
+	if (source !== geometry) source.dispose();
+	return cleaned;
 }
 
 // Calculate zone weights for a vertex position
@@ -653,13 +843,34 @@ function buildTrimlineProfileFromGeometry(
 		}
 	}
 
-	// Light smoothing for stable trimline
-	const smooth = new Float32Array(bins);
-	for (let i = 0; i < bins; i++) {
-		const a = maxHalfW[Math.max(0, i - 1)];
-		const b = maxHalfW[i];
-		const c = maxHalfW[Math.min(bins - 1, i + 1)];
-		smooth[i] = a * 0.25 + b * 0.5 + c * 0.25;
+	// Robust smoothing for stable trimline silhouette.
+	// This removes scan noise spikes that otherwise create random dents/bulges.
+	const smoothPass = (src: Float32Array) => {
+		const out = new Float32Array(bins);
+		for (let i = 0; i < bins; i++) {
+			const a = src[Math.max(0, i - 2)];
+			const b = src[Math.max(0, i - 1)];
+			const c = src[i];
+			const d = src[Math.min(bins - 1, i + 1)];
+			const e = src[Math.min(bins - 1, i + 2)];
+			out[i] = a * 0.08 + b * 0.22 + c * 0.4 + d * 0.22 + e * 0.08;
+		}
+		return out;
+	};
+
+	const smooth1 = smoothPass(maxHalfW);
+	const smooth2 = smoothPass(smooth1);
+
+	// Slope limiter to avoid abrupt bin-to-bin jumps along length.
+	const smooth = new Float32Array(smooth2);
+	const maxDelta = Math.max(0.35, (lenSpan / Math.max(1, bins - 1)) * 0.75);
+	for (let i = 1; i < bins; i++) {
+		smooth[i] = Math.min(smooth[i], smooth[i - 1] + maxDelta);
+		smooth[i] = Math.max(smooth[i], smooth[i - 1] - maxDelta);
+	}
+	for (let i = bins - 2; i >= 0; i--) {
+		smooth[i] = Math.min(smooth[i], smooth[i + 1] + maxDelta);
+		smooth[i] = Math.max(smooth[i], smooth[i + 1] - maxDelta);
 	}
 
 	const samplesT = Array.from({ length: bins }, (_, i) => i / (bins - 1));
@@ -679,7 +890,8 @@ function STLMesh({
 	flipLongAxis = false,
 	targetForefootWidthMm,
 	targetTrimlineProfile = null,
-	trimlineOffsetMm = 2,
+	trimlineOffsetMm = 3,
+	trimlineAdjustments,
 	interactive = true,
 	rotationOffset = [0, 0, 0],
 	opacity,
@@ -895,7 +1107,7 @@ function STLMesh({
 				typeof shoeSize === 'number' && Number.isFinite(shoeSize) && shoeSize > 0
 					? euSizeToLengthMm(shoeSize) / euSizeToLengthMm(DEFAULT_SHOE_SIZE)
 					: 1;
-			const trimOffsetWorld = Math.max(0, trimlineOffsetMm) * nextMmToWorld;
+			const trimOffsetWorld = Math.max(0, trimlineOffsetMm + (trimlineAdjustments?.global ?? 0)) * nextMmToWorld;
 			const targetTrimLength = targetTrimlineProfile
 				? targetTrimlineProfile.lengthWorld + trimOffsetWorld * 2
 				: null;
@@ -960,6 +1172,35 @@ function STLMesh({
 
 			// 2) Auto width fitting from scan profile +2mm trimline envelope.
 			if (targetTrimlineProfile && targetTrimlineProfile.halfWidthsWorld.length > 1) {
+				const halfW = Math.max(
+					1e-6,
+					(widthAxis === 'x'
+						? size.x
+						: widthAxis === 'y'
+							? size.y
+							: size.z) * 0.5
+				);
+				const medialSign = side === 'left' ? 1 : -1;
+				const toeSymReliefWorld = 0.6 * nextMmToWorld;
+				const halluxReliefWorld = 1.8 * nextMmToWorld;
+				const medialHeelReliefWorld = 0.8 * nextMmToWorld;
+				const applyToeAndMedialRelief = (widthValue: number, tLen: number) => {
+					const dist = widthValue - centerW;
+					const absDistNorm = Math.max(0, Math.min(1, Math.abs(dist) / halfW));
+					const signedNorm = Math.max(-1, Math.min(1, (dist / halfW) * medialSign));
+					const edgeWeight = smoothstep(0.22, 1.0, absDistNorm);
+					const medialWeight = smoothstep(0.08, 0.95, signedNorm);
+					const toeWeight = smoothstep(0.74, 0.995, tLen);
+					const halluxToeWeight = smoothstep(0.84, 0.998, tLen);
+					const heelWeight = 1 - smoothstep(0.2, 0.42, tLen);
+
+					const sign = dist > 0 ? 1 : dist < 0 ? -1 : 0;
+					const symmetricToeShift = sign * toeSymReliefWorld * edgeWeight * toeWeight;
+					const halluxShift = medialSign * halluxReliefWorld * medialWeight * halluxToeWeight;
+					const medialHeelShift = medialSign * medialHeelReliefWorld * medialWeight * heelWeight;
+					return widthValue + symmetricToeShift + halluxShift + medialHeelShift;
+				};
+
 				const sampleTrimHalfWidth = (t: number) => {
 					const arr = targetTrimlineProfile.halfWidthsWorld;
 					const tt = Math.max(0, Math.min(1, t));
@@ -968,7 +1209,23 @@ function STLMesh({
 					const i1 = Math.min(arr.length - 1, i0 + 1);
 					const a = arr[i0];
 					const b = arr[i1];
-					return a + (b - a) * (x - i0) + trimOffsetWorld;
+					const baseHalf = a + (b - a) * (x - i0) + trimOffsetWorld;
+
+					// Apply per-region trimline adjustments with smooth blending
+					if (!trimlineAdjustments) return baseHalf;
+					const { heel, midfoot, forefoot, toe } = trimlineAdjustments;
+					// Region boundaries: heel [0, 0.25], midfoot [0.25, 0.55], forefoot [0.55, 0.82], toe [0.82, 1]
+					// Use smoothstep blending between regions (6% overlap zones)
+					const ss = (e0: number, e1: number, v: number) => {
+						const c = Math.max(0, Math.min(1, (v - e0) / Math.max(1e-6, e1 - e0)));
+						return c * c * (3 - 2 * c);
+					};
+					const heelW   = 1 - ss(0.22, 0.28, tt);
+					const midW    = ss(0.22, 0.28, tt) * (1 - ss(0.52, 0.58, tt));
+					const foreW   = ss(0.52, 0.58, tt) * (1 - ss(0.79, 0.85, tt));
+					const toeW    = ss(0.79, 0.85, tt);
+					const regionOffset = (heel * heelW + midfoot * midW + forefoot * foreW + toe * toeW) * nextMmToWorld;
+					return Math.max(0, baseHalf + regionOffset);
 				};
 
 				// Build current insole half-width profile
@@ -1038,7 +1295,71 @@ function STLMesh({
 				sampleTrimHalfWidth(0.82),
 				sampleTrimHalfWidth(0.92)
 			);
-			const globalScale = Math.max(0.92, Math.min(1.12, targetForeHalf / sourceForeHalf));
+			const globalScale = Math.max(0.9, Math.min(1.22, targetForeHalf / sourceForeHalf));
+
+			const sourceHeelHalf = Math.max(
+				1e-6,
+				sampleCurrentHalfWidth(0.02),
+				sampleCurrentHalfWidth(0.08),
+				sampleCurrentHalfWidth(0.14)
+			);
+			const targetHeelHalf = Math.max(
+				1e-6,
+				sampleTrimHalfWidth(0.02),
+				sampleTrimHalfWidth(0.08),
+				sampleTrimHalfWidth(0.14)
+			);
+			const heelScale = Math.max(0.9, Math.min(1.24, targetHeelHalf / sourceHeelHalf));
+
+			const sourceToePadHalf = Math.max(
+				1e-6,
+				sampleCurrentHalfWidth(0.9),
+				sampleCurrentHalfWidth(0.95),
+				sampleCurrentHalfWidth(0.99)
+			);
+			const targetToePadHalf = Math.max(
+				1e-6,
+				sampleTrimHalfWidth(0.9),
+				sampleTrimHalfWidth(0.95),
+				sampleTrimHalfWidth(0.99)
+			);
+			const toeScale = Math.max(0.9, Math.min(1.26, targetToePadHalf / sourceToePadHalf));
+			const toeShoulderHalf = Math.max(
+				1e-6,
+				sampleCurrentHalfWidth(0.75),
+				sampleCurrentHalfWidth(0.78),
+				sampleCurrentHalfWidth(0.82),
+				sampleCurrentHalfWidth(0.88),
+				sampleTrimHalfWidth(0.75),
+				sampleTrimHalfWidth(0.78),
+				sampleTrimHalfWidth(0.82),
+				sampleTrimHalfWidth(0.88)
+			);
+			const toeTipMinHalf = toeShoulderHalf * 0.38;
+			const toeTipMaxHalf = toeShoulderHalf * 0.88;
+			const applyToeCapTemplate = (widthValue: number, tLen: number) => {
+				const toeFillBlend = smoothstep(0.84, 0.995, tLen);
+				const toeTipClampBlend = smoothstep(0.92, 0.998, tLen);
+				if (toeFillBlend <= 1e-6 && toeTipClampBlend <= 1e-6) return widthValue;
+				// Elliptical cap: stays wide at shoulder, narrows smoothly toward tip
+				const u = Math.max(0, Math.min(1, (tLen - 0.78) / 0.22));
+				const cap = Math.sqrt(Math.max(0, 1 - u * u));
+				const minHalf = toeTipMinHalf + (toeShoulderHalf - toeTipMinHalf) * cap;
+				const maxHalf = toeTipMaxHalf + (toeShoulderHalf - toeTipMaxHalf) * cap;
+				const dist = widthValue - centerW;
+				if (Math.abs(dist) < 1e-6) return widthValue;
+				const sign = dist > 0 ? 1 : -1;
+				const absDist = Math.abs(dist);
+				// Fill dents: gently push concavities toward the min envelope
+				const edgeBand = smoothstep(0.15, 0.85, Math.min(1, absDist / Math.max(1e-6, toeShoulderHalf)));
+				if (edgeBand <= 1e-6) return widthValue;
+				const fillStrength = toeFillBlend * (0.08 + edgeBand * 0.12);
+				const filledAbs = absDist + (Math.max(minHalf, absDist) - absDist) * fillStrength;
+				// Clamp over-expansion toward max envelope
+				const clampStrength = toeTipClampBlend * edgeBand;
+				const correctedAbs = filledAbs + (Math.min(maxHalf, filledAbs) - filledAbs) * clampStrength;
+				return centerW + sign * correctedAbs;
+			};
 
 				for (let i = 0; i < posAttr.count; i++) {
 					const x = posAttr.getX(i);
@@ -1049,17 +1370,36 @@ function STLMesh({
 					const tLen = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
 					const sourceHalfW = Math.max(1e-6, sampleCurrentHalfWidth(tLen));
 					const targetHalfW = Math.max(1e-6, sampleTrimHalfWidth(tLen));
-					const rawLocalScale = Math.max(0.9, Math.min(1.14, targetHalfW / sourceHalfW));
-					const localScale = globalScale * 0.7 + rawLocalScale * 0.3;
+					const rawLocalScale = Math.max(0.88, Math.min(1.24, targetHalfW / sourceHalfW));
 					const smoothstep = (edge0: number, edge1: number, v: number) => {
 						const t = Math.max(0, Math.min(1, (v - edge0) / Math.max(1e-6, edge1 - edge0)));
 						return t * t * (3 - 2 * t);
 					};
-					const blend = smoothstep(0.2, 0.94, tLen);
-					const finalScale = 1 + (localScale - 1) * blend;
+					const heelBlend = 1 - smoothstep(0.1, 0.28, tLen);
+					const toeBlend = smoothstep(0.78, 0.98, tLen);
+					const scaleDelta =
+						(globalScale - 1) * 0.45 +
+						(rawLocalScale - 1) * 0.35 +
+						(heelScale - 1) * heelBlend * 0.2 +
+						(toeScale - 1) * toeBlend * 0.3;
+					const localScale = 1 + scaleDelta;
+					const blend = smoothstep(0.04, 0.99, tLen);
+					const noShrinkToe = smoothstep(0.72, 0.98, tLen);
+					const noShrinkHeel = 1 - smoothstep(0.04, 0.22, tLen);
+					const noShrinkBlend = Math.max(noShrinkToe, noShrinkHeel);
+					const minScale = 1 - (1 - noShrinkBlend) * 0.03;
+					const finalScale = Math.max(minScale, Math.min(1.3, 1 + (localScale - 1) * blend));
 
 					const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
-					const wNext = centerW + (wVal - centerW) * finalScale;
+					const wScaled = centerW + (wVal - centerW) * finalScale;
+					const wRelief = applyToeAndMedialRelief(wScaled, tLen);
+					const wTemplated = applyToeCapTemplate(wRelief, tLen);
+					const maxAllowedHalf = targetHalfW + (1.5 * nextMmToWorld);
+					const distTemplated = wTemplated - centerW;
+					const distSign = distTemplated >= 0 ? 1 : -1;
+					const wNext = Math.abs(distTemplated) > maxAllowedHalf
+						? centerW + distSign * maxAllowedHalf
+						: wTemplated;
 					if (widthAxis === 'x') posAttr.setX(i, wNext);
 					else if (widthAxis === 'y') posAttr.setY(i, wNext);
 					else posAttr.setZ(i, wNext);
@@ -1095,9 +1435,63 @@ function STLMesh({
 				const currentForeWidth =
 					foreCount > 12 ? Math.max(1e-6, foreMaxW - foreMinW) : Math.max(1e-6, size[widthAxis]);
 				const widthScale = Math.max(0.82, Math.min(1.28, targetWidthWorld / currentForeWidth));
+				const toeShoulderHalf = Math.max(1e-6, currentForeWidth * 0.5);
+				const toeTipMinHalf = toeShoulderHalf * 0.38;
+				const toeTipMaxHalf = toeShoulderHalf * 0.88;
 
 				if (Number.isFinite(widthScale) && Math.abs(widthScale - 1) > 1e-3) {
 					const centerW = widthAxis === 'x' ? (bbox.min.x + bbox.max.x) * 0.5 : widthAxis === 'y' ? (bbox.min.y + bbox.max.y) * 0.5 : (bbox.min.z + bbox.max.z) * 0.5;
+					const halfW = Math.max(
+						1e-6,
+						(widthAxis === 'x'
+							? size.x
+							: widthAxis === 'y'
+								? size.y
+								: size.z) * 0.5
+					);
+					const medialSign = side === 'left' ? 1 : -1;
+					const toeSymReliefWorld = 0.6 * nextMmToWorld;
+					const halluxReliefWorld = 1.8 * nextMmToWorld;
+					const medialHeelReliefWorld = 0.8 * nextMmToWorld;
+					const applyToeAndMedialRelief = (widthValue: number, tLen: number) => {
+						const dist = widthValue - centerW;
+						const absDistNorm = Math.max(0, Math.min(1, Math.abs(dist) / halfW));
+						const signedNorm = Math.max(-1, Math.min(1, (dist / halfW) * medialSign));
+						const edgeWeight = smoothstep(0.22, 1.0, absDistNorm);
+						const medialWeight = smoothstep(0.08, 0.95, signedNorm);
+						const toeWeight = smoothstep(0.74, 0.995, tLen);
+						const halluxToeWeight = smoothstep(0.84, 0.998, tLen);
+						const heelWeight = 1 - smoothstep(0.2, 0.42, tLen);
+
+						const sign = dist > 0 ? 1 : dist < 0 ? -1 : 0;
+						const symmetricToeShift = sign * toeSymReliefWorld * edgeWeight * toeWeight;
+						const halluxShift = medialSign * halluxReliefWorld * medialWeight * halluxToeWeight;
+						const medialHeelShift = medialSign * medialHeelReliefWorld * medialWeight * heelWeight;
+						return widthValue + symmetricToeShift + halluxShift + medialHeelShift;
+					};
+					const applyToeCapTemplate = (widthValue: number, tLen: number) => {
+						const toeFillBlend = smoothstep(0.84, 0.995, tLen);
+						const toeTipClampBlend = smoothstep(0.92, 0.998, tLen);
+						if (toeFillBlend <= 1e-6 && toeTipClampBlend <= 1e-6) return widthValue;
+						// Elliptical cap: stays wide at shoulder, narrows smoothly toward tip
+						const u = Math.max(0, Math.min(1, (tLen - 0.78) / 0.22));
+						const cap = Math.sqrt(Math.max(0, 1 - u * u));
+						const minHalf = toeTipMinHalf + (toeShoulderHalf - toeTipMinHalf) * cap;
+						const maxHalf = toeTipMaxHalf + (toeShoulderHalf - toeTipMaxHalf) * cap;
+						const dist = widthValue - centerW;
+						if (Math.abs(dist) < 1e-6) return widthValue;
+						const sign = dist > 0 ? 1 : -1;
+						const absDist = Math.abs(dist);
+						// Fill dents: gently push concavities toward the min envelope
+						const edgeBand = smoothstep(0.15, 0.85, Math.min(1, absDist / Math.max(1e-6, toeShoulderHalf)));
+						if (edgeBand <= 1e-6) return widthValue;
+						const fillStrength = toeFillBlend * (0.08 + edgeBand * 0.12);
+						const filledAbs = absDist + (Math.max(minHalf, absDist) - absDist) * fillStrength;
+						// Clamp over-expansion toward max envelope
+						const clampStrength = toeTipClampBlend * edgeBand;
+						const correctedAbs = filledAbs + (Math.min(maxHalf, filledAbs) - filledAbs) * clampStrength;
+						return centerW + sign * correctedAbs;
+					};
 					const smoothstep = (edge0: number, edge1: number, v: number) => {
 						const t = Math.max(0, Math.min(1, (v - edge0) / Math.max(1e-6, edge1 - edge0)));
 						return t * t * (3 - 2 * t);
@@ -1110,10 +1504,17 @@ function STLMesh({
 						const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
 						const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
 						const tLen = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
-						const blend = smoothstep(0.25, 0.95, tLen);
+						const blend = smoothstep(0.08, 0.98, tLen);
 						const localScale = 1 + (widthScale - 1) * blend;
+						const noShrinkToe = smoothstep(0.72, 0.98, tLen);
+						const noShrinkHeel = 1 - smoothstep(0.04, 0.22, tLen);
+						const noShrinkBlend = Math.max(noShrinkToe, noShrinkHeel);
+						const minScale = 1 - (1 - noShrinkBlend) * 0.03;
+						const safeScale = Math.max(minScale, localScale);
 						const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
-						const wNext = centerW + (wVal - centerW) * localScale;
+						const wScaled = centerW + (wVal - centerW) * safeScale;
+						const wRelief = applyToeAndMedialRelief(wScaled, tLen);
+						const wNext = applyToeCapTemplate(wRelief, tLen);
 
 						if (widthAxis === 'x') posAttr.setX(i, wNext);
 						else if (widthAxis === 'y') posAttr.setY(i, wNext);
@@ -1147,6 +1548,7 @@ function STLMesh({
 		targetForefootWidthMm,
 		targetTrimlineProfile,
 		trimlineOffsetMm,
+		trimlineAdjustments,
 	]);
 	
 	// Create a working geometry that includes corrections
@@ -1301,7 +1703,6 @@ function STLMesh({
 				setH(i, h - thicknessDeltaWorld * bottomWeight);
 			}
 			posAttr.needsUpdate = true;
-			geom.computeVertexNormals();
 		},
 		[soleThicknessMm, mmToWorld, smoothstep01]
 	);
@@ -1356,7 +1757,6 @@ function STLMesh({
 			else posAttr.setZ(i, nextH);
 		}
 		posAttr.needsUpdate = true;
-		geom.computeVertexNormals();
 	}, [rimHeightMm, mmToWorld, smoothstep01]);
 
 	const animateGeometryTo = useCallback((target: THREE.BufferGeometry) => {
@@ -1398,7 +1798,6 @@ function STLMesh({
 			// Keep colors in sync when showing heatmap/zones/elements.
 			if (showZones) applyZoneColors(existing);
 			else if (heatmap) applyHeightmapColors(existing);
-			else if (placedElements && placedElements.length > 0) applyElementColors(existing, placedElements, { mmToWorld: mmToWorld || 1 });
 			else existing.deleteAttribute('color');
 			// Update analysis baseline after geometry changes
 			if (meshRef.current) {
@@ -1421,7 +1820,9 @@ function STLMesh({
 			applySoleThicknessAfterCorrections(workingGeometry);
 			applyRimHeightAfterCorrections(workingGeometry);
 		}
-		animateGeometryTo(workingGeometry);
+		// Re-weld to keep mesh as one continuous, watertight piece
+		const finalGeometry = weldAndSmoothNormals(workingGeometry);
+		animateGeometryTo(finalGeometry);
 	}, [applyGeneral, applyRimHeightAfterCorrections, applySoleThicknessAfterCorrections, animateGeometryTo]);
 
 	// Initialize corrected geometry (base + corrections) when they change (debounced)
@@ -1464,14 +1865,8 @@ function STLMesh({
 				}
 			}
 
-			// Apply orthotic elements (additive pads / engravings)
-			if (placedElements && placedElements.length > 0) {
-				try {
-					applyElements(workingGeometry, placedElements, { mmToWorld });
-				} catch (err) {
-					console.error('Error applying elements:', err);
-				}
-			}
+			// Re-weld after corrections to keep one solid mesh
+			const weldedWorking = weldAndSmoothNormals(workingGeometry);
 
 			// Cache corrected geometry and rebuild final (thickness/rim) immediately.
 			if (correctedGeometryRef.current) {
@@ -1481,7 +1876,7 @@ function STLMesh({
 					// ignore
 				}
 			}
-			correctedGeometryRef.current = workingGeometry;
+			correctedGeometryRef.current = weldedWorking;
 			correctedSignatureRef.current = pendingSignatureRef.current;
 			rebuildFinalGeometryFromCorrected();
 		}, 150);
@@ -1531,10 +1926,6 @@ function STLMesh({
 		}
 		if (heatmap) {
 			applyHeightmapColors(geometry);
-			return;
-		}
-		if (placedElements && placedElements.length > 0) {
-			applyElementColors(geometry, placedElements, { mmToWorld: mmToWorld || 1 });
 			return;
 		}
 		geometry.deleteAttribute('color');
@@ -1671,8 +2062,29 @@ function STLMesh({
 				if (pointPickMode || gridEditMode) return;
 				const baseline = baselineZ;
 				if (baseline == null) return;
-				// event.point is in world coordinates
-				const worldHeight = event.point.z - baseline;
+				// Measure height as top surface at hovered XY (not the touched face),
+				// so probing from underside still reports the top contour height.
+				let topZ = event.point.z;
+				if (meshRef.current) {
+					const worldBox = new THREE.Box3().setFromObject(meshRef.current);
+					const rayOrigin = new THREE.Vector3(
+						event.point.x,
+						event.point.y,
+						worldBox.max.z + Math.max(5, 10 * (mmToWorld || 1))
+					);
+					const rayDir = new THREE.Vector3(0, 0, -1);
+					const ray = new THREE.Raycaster(
+						rayOrigin,
+						rayDir,
+						0,
+						Math.max(20, (worldBox.max.z - worldBox.min.z) + 20)
+					);
+					const hits = ray.intersectObject(meshRef.current, false);
+					if (hits.length > 0) {
+						topZ = hits[0].point.z;
+					}
+				}
+				const worldHeight = topZ - baseline;
 				const heightMm = worldHeight / (mmToWorld || 1);
 				pendingProbeRef.current = {
 					point: event.point.clone(),
@@ -1715,9 +2127,9 @@ function STLMesh({
 			} : undefined}
 		>
 			<meshStandardMaterial
-				key={showZones || heatmap || (placedElements && placedElements.length > 0) ? 'colored' : 'normal'}
-				color={showZones || (placedElements && placedElements.length > 0) ? '#ffffff' : pointPickMode ? '#d9b5a1' : color}
-				vertexColors={showZones || heatmap || !!(placedElements && placedElements.length > 0)}
+				key={showZones || heatmap ? 'colored' : 'normal'}
+				color={showZones ? '#ffffff' : pointPickMode ? '#d9b5a1' : color}
+				vertexColors={showZones || heatmap}
 				side={THREE.DoubleSide}
 				shadowSide={THREE.DoubleSide}
 				roughness={0.3}
@@ -1810,6 +2222,7 @@ interface EnhancedSTLViewerProps {
 	rightOverlayUrl?: string;
 	targetForefootWidthMm?: { left: number | null; right: number | null };
 	trimlineOffsetMm?: number;
+	trimlineAdjustments?: { left: TrimlineAdjustments; right: TrimlineAdjustments };
 	showGrid?: boolean;
 	showBasePreview?: boolean;
 	lockTopView?: boolean;
@@ -1919,7 +2332,7 @@ export const EnhancedSTLViewer = forwardRef<
 			leftOverlayUrl,
 			rightOverlayUrl,
 			targetForefootWidthMm,
-			trimlineOffsetMm = 2,
+			trimlineOffsetMm = 3,
 			showGrid = true,
 			showBasePreview = false,
 			lockTopView = false,
@@ -1957,6 +2370,7 @@ export const EnhancedSTLViewer = forwardRef<
 			leftPlacedElements,
 			rightPlacedElements,
 			evaBlockMode = false,
+			trimlineAdjustments,
 		},
 		ref
 	) => {
@@ -2471,6 +2885,38 @@ export const EnhancedSTLViewer = forwardRef<
 					cam.lookAt(50, 0, 0);
 					c.target.set(50, 0, 0);
 				}
+			} else if (analysisEnabled) {
+				// Analysis mode: fixed camera (heel eye-level), no navigation.
+				c.enableRotate = false;
+				c.enablePan = false;
+				c.enableZoom = false;
+				c.minPolarAngle = 0.01;
+				c.maxPolarAngle = Math.PI - 0.01;
+				c.minAzimuthAngle = -Infinity;
+				c.maxAzimuthAngle = Infinity;
+
+				const box = new THREE.Box3();
+				let hasBox = false;
+				if (showLeft && leftMeshRef.current) {
+					box.union(new THREE.Box3().setFromObject(leftMeshRef.current));
+					hasBox = true;
+				}
+				if (showRight && rightMeshRef.current) {
+					box.union(new THREE.Box3().setFromObject(rightMeshRef.current));
+					hasBox = true;
+				}
+				const center = hasBox ? box.getCenter(new THREE.Vector3()) : new THREE.Vector3(0, 0, 0);
+				const size = hasBox ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(200, 200, 200);
+				const span = Math.max(size.x, size.y, size.z);
+				const dist = Math.max(180, span * 1.9);
+
+				// Behind-the-heel eye-level camera: along +Z (behind heel),
+				// nearly zero Y lift so we look straight into the heel edge-on, and closer.
+				const closeDist = dist * 0.40;
+				cam.position.set(center.x, center.y + closeDist * 0.02, center.z + closeDist);
+				cam.up.set(0, 1, 0);
+				cam.lookAt(center);
+				c.target.copy(center);
 			} else {
 				// Preferred angled view - closer to insoles
 				cam.position.set(0, -60, 180);
@@ -2479,18 +2925,20 @@ export const EnhancedSTLViewer = forwardRef<
 				c.enableRotate = true;
 				c.enablePan = true;
 				c.enableZoom = true;
-				c.minPolarAngle = 0.2;
-				c.maxPolarAngle = 0.9;
+				// Allow full vertical orbit so top/down inspection is possible.
+				// Keep tiny epsilon away from exact poles to avoid control singularities.
+				c.minPolarAngle = 0.01;
+				c.maxPolarAngle = Math.PI - 0.01;
 				c.minAzimuthAngle = -Infinity;
 				c.maxAzimuthAngle = Infinity;
 				c.target.set(0, 0, 0);
 			}
 			c.update();
 			handleLogCamera();
-		}, [lockTopView]);
+		}, [lockTopView, analysisEnabled, showLeft, showRight]);
 
 		useEffect(() => {
-			if (lockTopView) return;
+			if (lockTopView || analysisEnabled) return;
 			if (!cameraRef.current || !controlsRef.current) return;
 			const cam = cameraRef.current;
 			const c = controlsRef.current;
@@ -2560,6 +3008,7 @@ export const EnhancedSTLViewer = forwardRef<
 			handleLogCamera();
 		}, [
 			lockTopView,
+			analysisEnabled,
 			controlMode,
 			effectiveViewPreset,
 			showLeft,
@@ -2597,7 +3046,7 @@ export const EnhancedSTLViewer = forwardRef<
 		}, [lockTopView, rightGeometry]);
 
 		return (
-			<div className="w-full h-full bg-gray-900 relative">
+			<div className={`w-full h-full bg-gray-900 relative ${analysisEnabled ? 'cursor-crosshair' : ''}`}>
 				<Canvas
 					onPointerMissed={() => {
 						if (pointPickMode) return;
@@ -2626,6 +3075,7 @@ export const EnhancedSTLViewer = forwardRef<
 									targetForefootWidthMm={targetForefootWidthMm?.left ?? undefined}
 									targetTrimlineProfile={!pointPickMode ? leftTrimlineProfile : null}
 									trimlineOffsetMm={trimlineOffsetMm}
+									trimlineAdjustments={trimlineAdjustments?.left}
 									color={leftOverlayUrl || rightOverlayUrl ? '#cfe9ff' : '#d7dadd'}
 									position={[-50, 0, 0]}
 									onGeometryReady={(geom, meta) => {
@@ -2672,6 +3122,7 @@ export const EnhancedSTLViewer = forwardRef<
 									targetForefootWidthMm={targetForefootWidthMm?.right ?? undefined}
 									targetTrimlineProfile={!pointPickMode ? rightTrimlineProfile : null}
 									trimlineOffsetMm={trimlineOffsetMm}
+									trimlineAdjustments={trimlineAdjustments?.right}
 									color={leftOverlayUrl || rightOverlayUrl ? '#cfe9ff' : '#d7dadd'}
 									position={[50, 0, 0]}
 									onGeometryReady={(geom, meta) => {
@@ -2721,7 +3172,7 @@ export const EnhancedSTLViewer = forwardRef<
 
 						{/* Scan overlays (non-interactive) shown on top of base insoles */}
 						{!effectiveHideScans && showLeft && leftOverlayUrl && (
-							<group position={[-50, 0, 0.25]}>
+							<group position={[-30, 0, 0.25]}>
 								<group matrixAutoUpdate={false} matrix={leftOverlayRegistration.matrix}>
 									<STLMesh
 										url={leftOverlayUrl}
@@ -2743,7 +3194,7 @@ export const EnhancedSTLViewer = forwardRef<
 							</group>
 						)}
 						{!effectiveHideScans && showRight && rightOverlayUrl && (
-							<group position={[50, 0, 0.25]}>
+							<group position={[30, 0, 0.25]}>
 								<group matrixAutoUpdate={false} matrix={rightOverlayRegistration.matrix}>
 									<STLMesh
 										url={rightOverlayUrl}
@@ -2908,16 +3359,7 @@ export const EnhancedSTLViewer = forwardRef<
 						</>
 					)}
 
-					{analysisEnabled && probeState && (
-						<mesh position={probeState.point}>
-							<sphereGeometry args={[2.2, 18, 18]} />
-							<meshStandardMaterial
-								color="#111827"
-								emissive="#56f2d6"
-								emissiveIntensity={0.55}
-							/>
-						</mesh>
-					)}
+					{/* Analysis marker removed: native cursor is used */}
 
 					{pointPickMode &&
 						pickedPoints?.map((pt, idx) => {
@@ -2962,13 +3404,13 @@ export const EnhancedSTLViewer = forwardRef<
 
 					<OrbitControls
 						ref={controlsRef}
-						enablePan={true}
-						enableZoom={true}
-						enableRotate={!lockTopView}
+						enablePan={!analysisEnabled}
+						enableZoom={!analysisEnabled}
+						enableRotate={!lockTopView && !analysisEnabled}
 						minDistance={50}
 						maxDistance={500}
-						minPolarAngle={lockTopView ? 0 : Math.PI / 4}
-						maxPolarAngle={lockTopView ? 0 : Math.PI / 2}
+						minPolarAngle={lockTopView ? 0 : 0.01}
+						maxPolarAngle={lockTopView ? Math.PI : Math.PI - 0.01}
 						minAzimuthAngle={lockTopView ? 0 : undefined}
 						maxAzimuthAngle={lockTopView ? 0 : undefined}
 					/>

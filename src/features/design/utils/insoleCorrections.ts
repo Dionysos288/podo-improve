@@ -203,7 +203,6 @@ export function applyKuipHoogte(
 	}
 	
 	positions.needsUpdate = true;
-	geometry.computeVertexNormals();
 }
 
 /**
@@ -266,7 +265,6 @@ export function applyVoorvoetUitvlakken(
 	}
 	
 	positions.needsUpdate = true;
-	geometry.computeVertexNormals();
 }
 
 /**
@@ -321,7 +319,6 @@ export function applyHielHeffing(
 	}
 	
 	positions.needsUpdate = true;
-	geometry.computeVertexNormals();
 }
 
 /**
@@ -355,8 +352,8 @@ export function applyMedialeBoogCorrectie(
 		const relativeLength = heelToToe.getT(lengthVal);
 		const relativeWidth = (widthVal - minWidth) / widthSpan;
 		
-		// Arch zone: midfoot area (heel->toe)
-		const lengthInArch = relativeLength > 0.18 && relativeLength < 0.62;
+		// Arch zone: broader midfoot span for better support continuity
+		const lengthInArch = relativeLength > 0.14 && relativeLength < 0.7;
 		
 		if (lengthInArch) {
 			// Medial side depends on foot side
@@ -365,11 +362,12 @@ export function applyMedialeBoogCorrectie(
 			const medialSide = isLeftFoot ? relativeWidth > 0.5 : relativeWidth < 0.5;
 			
 			if (medialSide) {
-				// Calculate arch influence based on position
-				const lengthWeight = 1 - Math.abs(relativeLength - 0.42) / 0.22;
+				// Calculate arch influence based on position.
+				// Slightly wider and more anterior footprint to better support the navicular and medial column.
+				const lengthWeight = 1 - Math.abs(relativeLength - 0.44) / 0.28;
 				const widthWeight = isLeftFoot 
-					? smoothstep(0.5, 0.8, relativeWidth)
-					: smoothstep(0.5, 0.2, relativeWidth);
+					? smoothstep(0.42, 0.86, relativeWidth)
+					: smoothstep(0.58, 0.14, relativeWidth);
 				
 				const archWeight = Math.max(0, lengthWeight) * widthWeight;
 				
@@ -383,7 +381,6 @@ export function applyMedialeBoogCorrectie(
 	}
 	
 	positions.needsUpdate = true;
-	geometry.computeVertexNormals();
 }
 
 /**
@@ -539,7 +536,6 @@ export function applyGladstrijken(
 	}
 	
 	positions.needsUpdate = true;
-	geometry.computeVertexNormals();
 }
 
 /**
@@ -610,7 +606,6 @@ export function applyPronatie(
 	}
 	
 	positions.needsUpdate = true;
-	geometry.computeVertexNormals();
 }
 
 /**
@@ -678,7 +673,6 @@ export function applyMediaalVlak(
 	}
 
 	positions.needsUpdate = true;
-	geometry.computeVertexNormals();
 }
 
 /**
@@ -761,7 +755,6 @@ export function applyApexMiddenvoet(
 	}
 
 	positions.needsUpdate = true;
-	geometry.computeVertexNormals();
 }
 
 /**
@@ -814,7 +807,6 @@ export function applyApexHiel(
 	}
 
 	positions.needsUpdate = true;
-	geometry.computeVertexNormals();
 }
 
 /**
@@ -874,7 +866,6 @@ export function applyHielbeenCorrectie(
 	}
 
 	positions.needsUpdate = true;
-	geometry.computeVertexNormals();
 }
 
 /**
@@ -917,7 +908,6 @@ export function applyHielbreedteCorrectie(
 	}
 
 	positions.needsUpdate = true;
-	geometry.computeVertexNormals();
 }
 
 /**
@@ -952,7 +942,6 @@ export function applyZoolbreedte(
 	}
 
 	positions.needsUpdate = true;
-	geometry.computeVertexNormals();
 }
 
 /**
