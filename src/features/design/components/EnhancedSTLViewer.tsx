@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import {
 	Suspense,
@@ -26,14 +26,11 @@ import {
 import { applyAllCorrections } from '@/src/features/design/utils/insoleCorrections';
 import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpPanel';
 import type { CorrectionKey } from '@/src/shared/components/design/correctionsCatalog';
-import {
-	buildInteractiveGridPoints,
-	applyGridPointDeformation,
-	moveSelectedGridPoints,
-	type GridPoint,
-} from '@/src/features/design/utils/gridPointInteraction';
 import type { PlacedElement } from '@/src/features/design/elements/types';
+import { applyElements, applyElementColors, buildElementOverlayGeometries, type ElementOverlayData } from '@/src/features/design/elements';
 import type { TrimlineAdjustments } from '@/src/shared/components/design/TrimlineEditOverlay';
+import { InteractiveTrimline } from './InteractiveTrimline';
+import { InteractiveBoxGrid, applyBoxGridDeformation, type BoxGridPoint } from './InteractiveBoxGrid';
 
 interface STLMeshProps {
 	url: string;
@@ -56,6 +53,7 @@ interface STLMeshProps {
 	pointPickMode?: boolean;
 	showZones?: boolean;
 	heatmap?: boolean;
+	clampDebug?: boolean;
 	transparentMode?: boolean;
 	probeEnabled?: boolean;
 	onProbe?: (payload: {
@@ -120,6 +118,134 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 }
 
 /**
+ * Detect and fill interior holes in an indexed mesh.
+ *
+ * After `mergeVertices` every open edge belongs to exactly one face (its
+ * reverse half-edge is absent).  We walk those boundary half-edges into
+ * closed loops, skip the largest loop (the outer insole perimeter), then
+ * fan-triangulate every smaller loop from its centroid so the mesh becomes
+ * one watertight piece with no visible seam.
+ *
+ * Winding correctness:  for a CCW-wound mesh (outward normals) interior
+ * holes have their boundary half-edges traversed *clockwise* when viewed
+ * from outside.  Using (centIdx, a, b) for each directed edge a→b in that
+ * CW traversal always produces a CCW-wound (outward-facing) fill triangle.
+ */
+function fillMeshHoles(
+	geometry: THREE.BufferGeometry,
+	maxHoleEdges = 3000,
+): THREE.BufferGeometry {
+	if (!geometry.index) return geometry;
+
+	const idx    = geometry.index.array as Uint16Array | Uint32Array;
+	const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+	if (!posAttr) return geometry;
+
+	const faceCount  = idx.length / 3;
+	const vertCount  = posAttr.count;
+	const positions  = posAttr.array as Float32Array;
+
+	// ── Build directed half-edge set ──────────────────────────────────────
+	// Encode directed edge (a→b) as a * vertCount + b  (safe up to ~3M verts).
+	const dirEdges = new Set<number>();
+	for (let f = 0; f < faceCount; f++) {
+		const a = idx[f * 3], b = idx[f * 3 + 1], c = idx[f * 3 + 2];
+		dirEdges.add(a * vertCount + b);
+		dirEdges.add(b * vertCount + c);
+		dirEdges.add(c * vertCount + a);
+	}
+
+	// ── Boundary next-vertex map ──────────────────────────────────────────
+	// A directed edge (a→b) is a boundary half-edge if (b→a) is absent.
+	// `boundaryNext` maps a → b for each such half-edge.
+	const boundaryNext = new Map<number, number>();
+	for (let f = 0; f < faceCount; f++) {
+		const verts = [idx[f * 3], idx[f * 3 + 1], idx[f * 3 + 2]];
+		for (let e = 0; e < 3; e++) {
+			const a = verts[e], b = verts[(e + 1) % 3];
+			if (!dirEdges.has(b * vertCount + a)) {
+				boundaryNext.set(a, b);
+			}
+		}
+	}
+
+	if (boundaryNext.size === 0) return geometry; // Watertight – nothing to do.
+
+	// ── Walk boundary loops ───────────────────────────────────────────────
+	const visitedV = new Set<number>();
+	const loops: number[][] = [];
+
+	for (const [startV] of boundaryNext) {
+		if (visitedV.has(startV)) continue;
+		const loop: number[] = [];
+		let cur = startV;
+		let guard = boundaryNext.size + 1;
+		while (guard-- > 0) {
+			if (visitedV.has(cur)) break;
+			loop.push(cur);
+			visitedV.add(cur);
+			const nxt = boundaryNext.get(cur);
+			if (nxt === undefined || nxt === startV) break;
+			cur = nxt;
+		}
+		if (loop.length >= 3) loops.push(loop);
+	}
+
+	if (loops.length === 0) return geometry;
+
+	// ── Determine which loops to fill ────────────────────────────────────
+	// Sort descending by edge-count so the outer perimeter comes first.
+	loops.sort((a, b) => b.length - a.length);
+
+	// Skip the largest loop (outer insole perimeter); fill interior holes.
+	// Also skip any loop that is itself too large to be a real "hole".
+	const loopsToFill = loops.slice(1).filter(l => l.length <= maxHoleEdges);
+
+	if (loopsToFill.length === 0) return geometry;
+
+	// ── Fan-triangulate each hole from its centroid ───────────────────────
+	const newIndices    = Array.from(idx);
+	const extraPositions: number[] = [];
+	const baseVertCount = posAttr.count;
+
+	for (const loop of loopsToFill) {
+		let cx = 0, cy = 0, cz = 0;
+		for (const v of loop) {
+			cx += positions[v * 3];
+			cy += positions[v * 3 + 1];
+			cz += positions[v * 3 + 2];
+		}
+		cx /= loop.length;
+		cy /= loop.length;
+		cz /= loop.length;
+
+		const centIdx = baseVertCount + extraPositions.length / 3;
+		extraPositions.push(cx, cy, cz);
+
+		// (centIdx, a, b) for directed boundary edge a→b gives the correct
+		// outward-facing winding (verified for both interior and perimeter loops).
+		for (let i = 0; i < loop.length; i++) {
+			const a = loop[i];
+			const b = loop[(i + 1) % loop.length];
+			newIndices.push(centIdx, a, b);
+		}
+	}
+
+	if (extraPositions.length === 0) return geometry;
+
+	// ── Rebuild geometry ─────────────────────────────────────────────────
+	const combinedPos = new Float32Array(positions.length + extraPositions.length);
+	combinedPos.set(positions);
+	combinedPos.set(extraPositions, positions.length);
+
+	const filled = new THREE.BufferGeometry();
+	filled.setAttribute('position', new THREE.BufferAttribute(combinedPos, 3));
+	filled.setIndex(newIndices);
+	geometry.dispose();
+	return filled;
+}
+
+/**
  * Weld duplicate vertices, then smooth sharp crease edges so the insole
  * renders as one continuous piece.
  *
@@ -130,9 +256,10 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
  *
  * We fix this with:
  *  1. `mergeVertices` to share edges → smooth normals across faces
- *  2. Laplacian position smoothing at crease-edge vertices to physically
+ *  2. `fillMeshHoles` to close any open-boundary seams in one piece
+ *  3. Laplacian position smoothing at crease-edge vertices to physically
  *     round the sharp junctions
- *  3. Multi-pass normal smoothing for a soft, uniform appearance
+ *  4. Multi-pass normal smoothing for a soft, uniform appearance
  */
 function weldAndSmoothNormals(
 	geometry: THREE.BufferGeometry,
@@ -140,7 +267,10 @@ function weldAndSmoothNormals(
 ): THREE.BufferGeometry {
 	try {
 		// 1. Merge duplicate vertices (STL has 3 unique verts per face).
-		const merged = BufferGeometryUtils.mergeVertices(geometry, tolerance);
+		let merged = BufferGeometryUtils.mergeVertices(geometry, tolerance);
+
+		// 2. Fill any open-boundary holes so the mesh is one continuous piece.
+		merged = fillMeshHoles(merged);
 
 		const idx = merged.index;
 		if (!idx) {
@@ -491,6 +621,211 @@ function applyHeightmapColors(geometry: THREE.BufferGeometry): void {
 	}
 
 	geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+}
+
+function applyForefootClampDebugColors(
+	geometry: THREE.BufferGeometry,
+	params: {
+		side: 'left' | 'right';
+		mmToWorld: number;
+		targetForefootWidthMm?: number;
+		targetTrimlineProfile?: TrimlineProfile | null;
+		trimlineOffsetMm?: number;
+		trimlineAdjustments?: TrimlineAdjustments;
+	}
+): boolean {
+	const positions = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+	if (!positions || positions.count === 0) return false;
+
+	geometry.computeBoundingBox();
+	const bbox = geometry.boundingBox;
+	if (!bbox) return false;
+
+	const size = bbox.getSize(new THREE.Vector3());
+	const axes: Array<'x' | 'y' | 'z'> = ['x', 'y', 'z'];
+	const sizes = { x: size.x, y: size.y, z: size.z };
+	axes.sort((a, b) => sizes[a] - sizes[b]);
+	const widthAxis = axes[1];
+	const lengthAxis = axes[2];
+	const minLen = lengthAxis === 'x' ? bbox.min.x : lengthAxis === 'y' ? bbox.min.y : bbox.min.z;
+	const maxLen = lengthAxis === 'x' ? bbox.max.x : lengthAxis === 'y' ? bbox.max.y : bbox.max.z;
+	const lenSpan = Math.max(1e-6, maxLen - minLen);
+	const centerW =
+		widthAxis === 'x'
+			? (bbox.min.x + bbox.max.x) * 0.5
+			: widthAxis === 'y'
+				? (bbox.min.y + bbox.max.y) * 0.5
+				: (bbox.min.z + bbox.max.z) * 0.5;
+
+	const getW = (i: number) =>
+		widthAxis === 'x' ? positions.getX(i) : widthAxis === 'y' ? positions.getY(i) : positions.getZ(i);
+	const getL = (i: number) =>
+		lengthAxis === 'x' ? positions.getX(i) : lengthAxis === 'y' ? positions.getY(i) : positions.getZ(i);
+
+	const slice = Math.max(lenSpan * 0.08, 1e-6);
+	let minEndMinWidth = Number.POSITIVE_INFINITY;
+	let minEndMaxWidth = Number.NEGATIVE_INFINITY;
+	let minEndCount = 0;
+	let maxEndMinWidth = Number.POSITIVE_INFINITY;
+	let maxEndMaxWidth = Number.NEGATIVE_INFINITY;
+	let maxEndCount = 0;
+	for (let i = 0; i < positions.count; i++) {
+		const lenVal = getL(i);
+		const wVal = getW(i);
+		if (lenVal <= minLen + slice) {
+			minEndMinWidth = Math.min(minEndMinWidth, wVal);
+			minEndMaxWidth = Math.max(minEndMaxWidth, wVal);
+			minEndCount++;
+		}
+		if (lenVal >= maxLen - slice) {
+			maxEndMinWidth = Math.min(maxEndMinWidth, wVal);
+			maxEndMaxWidth = Math.max(maxEndMaxWidth, wVal);
+			maxEndCount++;
+		}
+	}
+	const minEndWidthSpan =
+		minEndCount > 10 ? Math.max(0, minEndMaxWidth - minEndMinWidth) : Number.POSITIVE_INFINITY;
+	const maxEndWidthSpan =
+		maxEndCount > 10 ? Math.max(0, maxEndMaxWidth - maxEndMinWidth) : Number.POSITIVE_INFINITY;
+	const heelAtMin =
+		Number.isFinite(minEndWidthSpan) && Number.isFinite(maxEndWidthSpan)
+			? minEndWidthSpan >= maxEndWidthSpan
+			: true;
+
+	const colors = new Float32Array(positions.count * 3);
+	const neutral = new THREE.Color('#d7dadd');
+	const hot = new THREE.Color('#ff2d95');
+	for (let i = 0; i < positions.count; i++) {
+		colors[i * 3] = neutral.r;
+		colors[i * 3 + 1] = neutral.g;
+		colors[i * 3 + 2] = neutral.b;
+	}
+
+	let highlighted = 0;
+	const mark = (index: number) => {
+		colors[index * 3] = hot.r;
+		colors[index * 3 + 1] = hot.g;
+		colors[index * 3 + 2] = hot.b;
+		highlighted++;
+	};
+
+	if (params.targetTrimlineProfile && params.targetTrimlineProfile.halfWidthsWorld.length > 1) {
+		const trimOffsetWorld = Math.max(0, (params.trimlineOffsetMm ?? 3) + (params.trimlineAdjustments?.global ?? 0)) * params.mmToWorld;
+		const sampleTrimHalfWidth = (t: number) => {
+			const arr = params.targetTrimlineProfile?.halfWidthsWorld ?? [];
+			const tt = Math.max(0, Math.min(1, t));
+			const x = tt * (arr.length - 1);
+			const i0 = Math.floor(x);
+			const i1 = Math.min(arr.length - 1, i0 + 1);
+			const a = arr[i0] ?? 0;
+			const b = arr[i1] ?? a;
+			const baseHalf = a + (b - a) * (x - i0) + trimOffsetWorld;
+			if (!params.trimlineAdjustments) return baseHalf;
+			const { heel, midfoot, forefoot, toe } = params.trimlineAdjustments;
+			const ss = (e0: number, e1: number, v: number) => {
+				const c = Math.max(0, Math.min(1, (v - e0) / Math.max(1e-6, e1 - e0)));
+				return c * c * (3 - 2 * c);
+			};
+			const heelW = 1 - ss(0.22, 0.28, tt);
+			const midW = ss(0.22, 0.28, tt) * (1 - ss(0.52, 0.58, tt));
+			const foreW = ss(0.52, 0.58, tt) * (1 - ss(0.79, 0.85, tt));
+			const toeW = ss(0.79, 0.85, tt);
+			const regionOffset = (heel * heelW + midfoot * midW + forefoot * foreW + toe * toeW) * params.mmToWorld;
+			return Math.max(0, baseHalf + regionOffset);
+		};
+
+		const bins = Math.max(64, params.targetTrimlineProfile.halfWidthsWorld.length);
+		const currentHalfW = new Float32Array(bins).fill(0);
+		const binHits = new Uint16Array(bins);
+		for (let i = 0; i < positions.count; i++) {
+			const lenVal = getL(i);
+			const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
+			const t = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
+			const idx = Math.min(bins - 1, Math.max(0, Math.round(t * (bins - 1))));
+			const halfW = Math.abs(getW(i) - centerW);
+			if (halfW > currentHalfW[idx]) currentHalfW[idx] = halfW;
+			binHits[idx]++;
+		}
+		for (let i = 0; i < bins; i++) {
+			if (binHits[i] > 0) continue;
+			let l = i - 1;
+			while (l >= 0 && binHits[l] === 0) l--;
+			let r = i + 1;
+			while (r < bins && binHits[r] === 0) r++;
+			if (l >= 0 && r < bins) currentHalfW[i] = (currentHalfW[l] + currentHalfW[r]) * 0.5;
+			else if (l >= 0) currentHalfW[i] = currentHalfW[l];
+			else if (r < bins) currentHalfW[i] = currentHalfW[r];
+		}
+		const sampleCurrentHalfWidth = (t: number) => {
+			const tt = Math.max(0, Math.min(1, t));
+			const x = tt * (bins - 1);
+			const i0 = Math.floor(x);
+			const i1 = Math.min(bins - 1, i0 + 1);
+			return currentHalfW[i0] + (currentHalfW[i1] - currentHalfW[i0]) * (x - i0);
+		};
+		const toeShoulderHalf = Math.max(
+			1e-6,
+			sampleCurrentHalfWidth(0.75),
+			sampleCurrentHalfWidth(0.78),
+			sampleCurrentHalfWidth(0.82),
+			sampleCurrentHalfWidth(0.88),
+			sampleTrimHalfWidth(0.75),
+			sampleTrimHalfWidth(0.78),
+			sampleTrimHalfWidth(0.82),
+			sampleTrimHalfWidth(0.88)
+		);
+		const toeTipMaxHalf = toeShoulderHalf * 0.88;
+		for (let i = 0; i < positions.count; i++) {
+			const lenVal = getL(i);
+			const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
+			const tLen = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
+			const currentAbs = Math.abs(getW(i) - centerW);
+			const targetHalfW = Math.max(1e-6, sampleTrimHalfWidth(tLen));
+			const maxAllowedHalf = targetHalfW + (1.5 * params.mmToWorld);
+			const u = Math.max(0, Math.min(1, (tLen - 0.78) / 0.22));
+			const cap = Math.sqrt(Math.max(0, 1 - u * u));
+			const maxHalf = toeTipMaxHalf + (toeShoulderHalf - toeTipMaxHalf) * cap;
+			const eps = Math.max(0.2 * params.mmToWorld, 0.015 * Math.max(maxHalf, maxAllowedHalf));
+			const nearToeClamp = tLen >= 0.84 && currentAbs >= maxHalf - eps;
+			const nearProfileClamp = tLen >= 0.78 && currentAbs >= maxAllowedHalf - eps;
+			if (nearToeClamp || nearProfileClamp) mark(i);
+		}
+	} else if (typeof params.targetForefootWidthMm === 'number' && Number.isFinite(params.targetForefootWidthMm) && params.targetForefootWidthMm > 0) {
+		const toeStart = heelAtMin ? minLen + lenSpan * 0.55 : maxLen - lenSpan * 0.75;
+		const toeEnd = heelAtMin ? minLen + lenSpan * 0.9 : maxLen - lenSpan * 0.4;
+		let foreMinW = Number.POSITIVE_INFINITY;
+		let foreMaxW = Number.NEGATIVE_INFINITY;
+		let foreCount = 0;
+		for (let i = 0; i < positions.count; i++) {
+			const lenVal = getL(i);
+			const inForefoot =
+				(heelAtMin && lenVal >= toeStart && lenVal <= toeEnd) ||
+				(!heelAtMin && lenVal <= toeStart && lenVal >= toeEnd);
+			if (!inForefoot) continue;
+			const wVal = getW(i);
+			foreMinW = Math.min(foreMinW, wVal);
+			foreMaxW = Math.max(foreMaxW, wVal);
+			foreCount++;
+		}
+		const currentForeWidth = foreCount > 12 ? Math.max(1e-6, foreMaxW - foreMinW) : Math.max(1e-6, sizes[widthAxis]);
+		const toeShoulderHalf = Math.max(1e-6, currentForeWidth * 0.5);
+		const toeTipMaxHalf = toeShoulderHalf * 0.88;
+		for (let i = 0; i < positions.count; i++) {
+			const lenVal = getL(i);
+			const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
+			const tLen = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
+			const currentAbs = Math.abs(getW(i) - centerW);
+			const u = Math.max(0, Math.min(1, (tLen - 0.78) / 0.22));
+			const cap = Math.sqrt(Math.max(0, 1 - u * u));
+			const maxHalf = toeTipMaxHalf + (toeShoulderHalf - toeTipMaxHalf) * cap;
+			const eps = Math.max(0.2 * params.mmToWorld, 0.015 * maxHalf);
+			if (tLen >= 0.84 && currentAbs >= maxHalf - eps) mark(i);
+		}
+	}
+
+	if (highlighted === 0) return false;
+	geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+	return true;
 }
 
 type OverlayRegistration = {
@@ -900,6 +1235,7 @@ function STLMesh({
 	pointPickMode = false,
 	showZones = false,
 	heatmap = false,
+	clampDebug = false,
 	transparentMode = false,
 	probeEnabled = false,
 	onProbe,
@@ -948,8 +1284,6 @@ function STLMesh({
 	const correctedGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const correctedSignatureRef = useRef<string>('');
 	const generalRafRef = useRef<number | null>(null);
-	const [gridPoints, setGridPoints] = useState<GridPoint[]>([]);
-	const [selectedGridPoints, setSelectedGridPoints] = useState<Set<string>>(new Set());
 	const baseGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const [baselineZ, setBaselineZ] = useState<number | null>(null);
 
@@ -1557,6 +1891,19 @@ function STLMesh({
 		geometryRef.current = geometry;
 	}, [geometry]);
 
+	// Overlay meshes for each placed element (rendered on top of insole)
+	const [elementOverlays, setElementOverlays] = useState<ElementOverlayData[]>([]);
+
+	const rebuildElementOverlays = useCallback(() => {
+		const geom = geometryRef.current;
+		if (!geom || !placedElements || placedElements.length === 0) {
+			setElementOverlays(prev => { prev.forEach(d => d.geometry.dispose()); return []; });
+			return;
+		}
+		const overlays = buildElementOverlayGeometries(geom, placedElements, { mmToWorld: mmToWorld || 1 });
+		setElementOverlays(prev => { prev.forEach(d => d.geometry.dispose()); return overlays; });
+	}, [placedElements, mmToWorld]);
+
 	// EVA block: contour-following solid block (side walls + bottom cap, no top)
 	const evaBlock = useMemo(() => {
 		if (!evaBlockMode || !geometry) return null;
@@ -1795,10 +2142,23 @@ function STLMesh({
 			animRafRef.current = null;
 			existing.computeVertexNormals();
 			onGeometryReady?.(existing, { mmToWorld: mmToWorld || 1 });
-			// Keep colors in sync when showing heatmap/zones/elements.
+			// Keep colors in sync when showing heatmap/zones.
 			if (showZones) applyZoneColors(existing);
 			else if (heatmap) applyHeightmapColors(existing);
+			else if (clampDebug && meshRole === 'insole') {
+				const applied = applyForefootClampDebugColors(existing, {
+					side,
+					mmToWorld: mmToWorld || 1,
+					targetForefootWidthMm,
+					targetTrimlineProfile,
+					trimlineOffsetMm,
+					trimlineAdjustments,
+				});
+				if (!applied) existing.deleteAttribute('color');
+			}
 			else existing.deleteAttribute('color');
+			// Rebuild element overlays now that geometry has settled
+			if (placedElements && placedElements.length > 0) rebuildElementOverlays();
 			// Update analysis baseline after geometry changes
 			if (meshRef.current) {
 				applyOrientation(meshRef.current);
@@ -1810,7 +2170,7 @@ function STLMesh({
 		animRafRef.current = requestAnimationFrame(step);
 		// We no longer need the target geometry object.
 		target.dispose();
-	}, [gridEditMode, showZones, heatmap, placedElements, applyOrientation, onGeometryReady, mmToWorld]);
+	}, [gridEditMode, showZones, heatmap, clampDebug, placedElements, applyOrientation, onGeometryReady, mmToWorld, rebuildElementOverlays, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments]);
 
 	const rebuildFinalGeometryFromCorrected = useCallback(() => {
 		const corrected = correctedGeometryRef.current;
@@ -1822,8 +2182,12 @@ function STLMesh({
 		}
 		// Re-weld to keep mesh as one continuous, watertight piece
 		const finalGeometry = weldAndSmoothNormals(workingGeometry);
+		// Apply element height displacements (raised pads)
+		if (placedElements && placedElements.length > 0) {
+			applyElements(finalGeometry, placedElements, { mmToWorld: mmToWorld || 1 });
+		}
 		animateGeometryTo(finalGeometry);
-	}, [applyGeneral, applyRimHeightAfterCorrections, applySoleThicknessAfterCorrections, animateGeometryTo]);
+	}, [applyGeneral, applyRimHeightAfterCorrections, applySoleThicknessAfterCorrections, animateGeometryTo, placedElements, mmToWorld]);
 
 	// Initialize corrected geometry (base + corrections) when they change (debounced)
 	useEffect(() => {
@@ -1917,7 +2281,7 @@ function STLMesh({
 		};
 	}, [applyGeneral, soleThicknessMm, rimHeightMm, rebuildFinalGeometryFromCorrected]);
 	
-	// Apply zone / element colors whenever visual mode changes
+	// Apply zone colors / rebuild element overlays whenever visual mode changes
 	useEffect(() => {
 		if (!geometry) return;
 		if (showZones) {
@@ -1928,8 +2292,26 @@ function STLMesh({
 			applyHeightmapColors(geometry);
 			return;
 		}
+		if (clampDebug && meshRole === 'insole') {
+			const applied = applyForefootClampDebugColors(geometry, {
+				side,
+				mmToWorld: mmToWorld || 1,
+				targetForefootWidthMm,
+				targetTrimlineProfile,
+				trimlineOffsetMm,
+				trimlineAdjustments,
+			});
+			if (applied) return;
+		}
 		geometry.deleteAttribute('color');
-	}, [geometry, showZones, heatmap, placedElements, mmToWorld]);
+		// Element overlays are rebuilt via rebuildElementOverlays (called from animateGeometryTo
+		// and here when placedElements/geometry reference changes)
+		if (placedElements && placedElements.length > 0) {
+			rebuildElementOverlays();
+		} else {
+			setElementOverlays(prev => { prev.forEach(d => d.geometry.dispose()); return []; });
+		}
+	}, [geometry, showZones, heatmap, clampDebug, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments, placedElements, mmToWorld, rebuildElementOverlays]);
 
 	const probeRafRef = useRef<number | null>(null);
 	const pendingProbeRef = useRef<{
@@ -1947,83 +2329,26 @@ function STLMesh({
 		setBaselineZ(worldBox.min.z);
 	}, [geometry, applyOrientation]);
 	
-	// Initialize grid points when entering grid edit mode
+	// Clone the base geometry when entering grid edit mode (for non-destructive editing)
 	useEffect(() => {
-		let cancelled = false;
-		const schedule = (fn: () => void) => {
-			if (typeof queueMicrotask === 'function') {
-				queueMicrotask(fn);
-			} else {
-				setTimeout(fn, 0);
-			}
-		};
-
 		if (!geometry || !showBoxGrid || !gridEditMode) {
 			baseGeometryRef.current = null;
-			schedule(() => {
-				if (cancelled) return;
-				setGridPoints([]);
-				setSelectedGridPoints(new Set());
-			});
 			return;
 		}
-
-		// Build grid points from geometry
-		const points = buildInteractiveGridPoints(geometry, 16, 22);
-		baseGeometryRef.current = geometry.clone();
-		schedule(() => {
-			if (cancelled) return;
-			setGridPoints(points);
-			setSelectedGridPoints(new Set());
-		});
-
-		return () => {
-			cancelled = true;
-		};
+		// Only snapshot once per grid session — don't overwrite with deformed clones
+		if (!baseGeometryRef.current) {
+			baseGeometryRef.current = geometry.clone();
+		}
 	}, [geometry, showBoxGrid, gridEditMode]);
 
-	// Keyboard controls for moving selected grid points
+	// Notify parent about geometry — but NOT during grid editing, where
+	// setGeometry produces deformed clones.  Propagating those to the parent
+	// would reset camera position (parent camera effect depends on geometry).
 	useEffect(() => {
-		if (!gridEditMode || selectedGridPoints.size === 0) return;
-
-		const handleKeyDown = (e: KeyboardEvent) => {
-			if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-				e.preventDefault();
-				// Keep keyboard movement stable in millimeters, even if the STL is rescaled for viewing.
-				const stepMm = 0.3;
-				const delta = (e.key === 'ArrowUp' ? stepMm : -stepMm) * (mmToWorld || 1);
-
-				setGridPoints((prev) => {
-					const updated = [...prev];
-					moveSelectedGridPoints(updated, selectedGridPoints, delta);
-
-					// Apply deformation to geometry with smooth blending
-					if (geometry && baseGeometryRef.current) {
-						const workingGeom = baseGeometryRef.current.clone();
-						const influenceRadiusMm = 4.5;
-						applyGridPointDeformation(
-							workingGeom,
-							updated,
-							influenceRadiusMm * (mmToWorld || 1)
-						);
-						setGeometry(workingGeom);
-					}
-
-					return updated;
-				});
-			}
-		};
-
-		window.addEventListener('keydown', handleKeyDown);
-		return () => window.removeEventListener('keydown', handleKeyDown);
-	}, [gridEditMode, selectedGridPoints, geometry, mmToWorld]);
-
-	// Notify parent about geometry
-	useEffect(() => {
-		if (geometry && onGeometryReady) {
+		if (geometry && onGeometryReady && !gridEditMode) {
 			onGeometryReady(geometry, { mmToWorld: mmToWorld || 1 });
 		}
-	}, [geometry, onGeometryReady, mmToWorld]);
+	}, [geometry, onGeometryReady, mmToWorld, gridEditMode]);
 
 
 	if (!geometry) {
@@ -2127,9 +2452,9 @@ function STLMesh({
 			} : undefined}
 		>
 			<meshStandardMaterial
-				key={showZones || heatmap ? 'colored' : 'normal'}
+				key={(showZones || heatmap || clampDebug) ? 'colored' : 'normal'}
 				color={showZones ? '#ffffff' : pointPickMode ? '#d9b5a1' : color}
-				vertexColors={showZones || heatmap}
+				vertexColors={showZones || heatmap || clampDebug}
 				side={THREE.DoubleSide}
 				shadowSide={THREE.DoubleSide}
 				roughness={0.3}
@@ -2173,44 +2498,58 @@ function STLMesh({
 			)}
 
 			{/* Interactive Box grid overlay */}
-			{showBoxGrid && gridEditMode && (
-				<group>
-					{gridPoints.map((gp) => {
-						const isSelected = selectedGridPoints.has(gp.id);
-						return (
-							<mesh
-								key={gp.id}
-								position={[gp.position.x, gp.position.y, gp.position.z]}
-								onClick={(e) => {
-									e.stopPropagation();
-									setSelectedGridPoints((prev) => {
-										const next = new Set(prev);
-										if (e.shiftKey) {
-											// Multi-select with shift
-											if (next.has(gp.id)) next.delete(gp.id);
-											else next.add(gp.id);
-										} else {
-											// Single select
-											next.clear();
-											next.add(gp.id);
-										}
-										return next;
-									});
-								}}
-							>
-								<sphereGeometry args={[0.9, 16, 16]} />
-								<meshStandardMaterial
-									color={isSelected ? '#22c55e' : '#00d9ff'}
-									emissive={isSelected ? '#16a34a' : '#0099bb'}
-									emissiveIntensity={isSelected ? 0.6 : 0.4}
-									transparent
-									opacity={isSelected ? 0.95 : 0.85}
-								/>
-							</mesh>
+			{showBoxGrid && gridEditMode && geometry && (
+				<InteractiveBoxGrid
+					insoleGeometry={geometry}
+					mmToWorld={mmToWorld || 1}
+					active={true}
+					onDeformationChange={(points) => {
+						if (!baseGeometryRef.current || !geometry) return;
+
+						const working = baseGeometryRef.current.clone();
+						const influenceRadiusMm = 4.5;
+						applyBoxGridDeformation(
+							working,
+							points,
+							influenceRadiusMm * (mmToWorld || 1),
 						);
-					})}
-				</group>
+
+						const srcPos = working.getAttribute('position') as THREE.BufferAttribute | undefined;
+						const dstPos = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+						if (!srcPos || !dstPos || srcPos.count !== dstPos.count) {
+							working.dispose();
+							return;
+						}
+
+						const srcArr = srcPos.array as Float32Array;
+						const dstArr = dstPos.array as Float32Array;
+						dstArr.set(srcArr);
+						dstPos.needsUpdate = true;
+						geometry.computeVertexNormals();
+
+						if (showZones) applyZoneColors(geometry);
+						else if (heatmap) applyHeightmapColors(geometry);
+						else geometry.deleteAttribute('color');
+
+						working.dispose();
+					}}
+				/>
 			)}
+
+			{/* Element overlay meshes — solid coloured pads sitting on the insole surface */}
+			{elementOverlays.map(overlay => (
+				<mesh key={overlay.elementId} geometry={overlay.geometry}>
+					<meshStandardMaterial
+						color={overlay.colorHex}
+						roughness={0.45}
+						metalness={0.0}
+						side={THREE.DoubleSide}
+						polygonOffset
+						polygonOffsetFactor={-3}
+						polygonOffsetUnits={-3}
+					/>
+				</mesh>
+			))}
 		</mesh>
 	);
 }
@@ -2233,6 +2572,7 @@ interface EnhancedSTLViewerProps {
 	showRight?: boolean;
 	transparent?: boolean;
 	heatmap?: boolean;
+	clampDebug?: boolean;
 	showInsoles?: boolean;
 	showModel?: boolean;
 	viewPreset?: 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom' | 'iso';
@@ -2270,6 +2610,10 @@ interface EnhancedSTLViewerProps {
 	rightPlacedElements?: PlacedElement[];
 	/** When true, render insoles inside a solid EVA block (Frezen: EVA mode) */
 	evaBlockMode?: boolean;
+	/** Which side is being trimline-edited interactively (null = none) */
+	trimlineEditSide?: 'left' | 'right' | null;
+	/** Callback when user drags a trimline handle (pending only — not yet committed) */
+	onPendingTrimlineChange?: (side: 'left' | 'right', adj: TrimlineAdjustments) => void;
 }
 
 function BaseInsolePreview({
@@ -2343,6 +2687,8 @@ export const EnhancedSTLViewer = forwardRef<
 			showRight = true,
 			transparent = false,
 			heatmap = false,
+			clampDebug = false,
+			showInsoles = true,
 			showModel,
 			viewPreset = 'iso',
 			controlMode = 'rotate',
@@ -2371,6 +2717,8 @@ export const EnhancedSTLViewer = forwardRef<
 			rightPlacedElements,
 			evaBlockMode = false,
 			trimlineAdjustments,
+			trimlineEditSide = null,
+			onPendingTrimlineChange,
 		},
 		ref
 	) => {
@@ -2496,6 +2844,8 @@ export const EnhancedSTLViewer = forwardRef<
 		const rightMeshRef = useRef<THREE.Group>(null);
 		const cameraRef = useRef<THREE.PerspectiveCamera>(null);
 		const controlsRef = useRef<OrbitControlsImpl | null>(null);
+		const cameraInitRef = useRef(false);
+		const prevPresetRef = useRef<string | undefined>(undefined);
 		const [probeState, setProbeState] = useState<{
 			point: [number, number, number];
 			heightMm: number;
@@ -2503,7 +2853,8 @@ export const EnhancedSTLViewer = forwardRef<
 		} | null>(null);
 
 		const effectiveShowGeneratedInsole = showGeneratedInsole;
-		const effectiveHideScans = hideScans || (typeof showModel === 'boolean' ? !showModel : false);
+		const effectiveHideScans = hideScans;
+		const effectiveShowModel = typeof showModel === 'boolean' ? showModel : true;
 		const effectiveViewPreset = analysisEnabled ? 'back' : viewPreset;
 		const leftOverlayRegistration = useMemo(
 			() => computeOverlayRegistration(leftOverlayGeometry, leftGeometry),
@@ -2612,10 +2963,10 @@ export const EnhancedSTLViewer = forwardRef<
 				scale: 1,
 			});
 			if (leftMeshRef.current) {
-				leftMeshRef.current.position.set(-50, 0, 0);
+				leftMeshRef.current.position.set(-30, 0, 0);
 			}
 			if (rightMeshRef.current) {
-				rightMeshRef.current.position.set(50, 0, 0);
+				rightMeshRef.current.position.set(30, 0, 0);
 			}
 		};
 
@@ -2918,24 +3269,18 @@ export const EnhancedSTLViewer = forwardRef<
 				cam.lookAt(center);
 				c.target.copy(center);
 			} else {
-				// Preferred angled view - closer to insoles
-				cam.position.set(0, -60, 180);
-				cam.up.set(0, 1, 0);
-				cam.lookAt(0, 0, 0);
+				// Normal mode: only configure controls, do NOT reposition the camera
+				// (let the user keep their current view when toggling visibility options)
 				c.enableRotate = true;
 				c.enablePan = true;
 				c.enableZoom = true;
-				// Allow full vertical orbit so top/down inspection is possible.
-				// Keep tiny epsilon away from exact poles to avoid control singularities.
 				c.minPolarAngle = 0.01;
 				c.maxPolarAngle = Math.PI - 0.01;
 				c.minAzimuthAngle = -Infinity;
 				c.maxAzimuthAngle = Infinity;
-				c.target.set(0, 0, 0);
 			}
 			c.update();
-			handleLogCamera();
-		}, [lockTopView, analysisEnabled, showLeft, showRight]);
+		}, [lockTopView, analysisEnabled]);
 
 		useEffect(() => {
 			if (lockTopView || analysisEnabled) return;
@@ -2943,7 +3288,7 @@ export const EnhancedSTLViewer = forwardRef<
 			const cam = cameraRef.current;
 			const c = controlsRef.current;
 
-			// Control mode
+			// Always apply control mode immediately
 			if (controlMode === 'pan') {
 				c.enableRotate = false;
 				c.enablePan = true;
@@ -2954,14 +3299,25 @@ export const EnhancedSTLViewer = forwardRef<
 				c.enableZoom = true;
 			}
 
-			// Compute a world bbox from currently visible scans
+			// Only reposition the camera on first geometry load OR when the user
+			// explicitly changes the view preset. Toggling showLeft/showRight/
+			// showInsoles/showModel must NOT reset the camera.
+			const presetChanged = prevPresetRef.current !== effectiveViewPreset;
+			prevPresetRef.current = effectiveViewPreset;
+			if (cameraInitRef.current && !presetChanged) {
+				c.update();
+				return;
+			}
+			cameraInitRef.current = true;
+
+			// Compute a world bbox from currently visible meshes
 			const box = new THREE.Box3();
 			let hasBox = false;
-			if (showLeft && leftMeshRef.current) {
+			if (leftMeshRef.current) {
 				box.union(new THREE.Box3().setFromObject(leftMeshRef.current));
 				hasBox = true;
 			}
-			if (showRight && rightMeshRef.current) {
+			if (rightMeshRef.current) {
 				box.union(new THREE.Box3().setFromObject(rightMeshRef.current));
 				hasBox = true;
 			}
@@ -3011,8 +3367,6 @@ export const EnhancedSTLViewer = forwardRef<
 			analysisEnabled,
 			controlMode,
 			effectiveViewPreset,
-			showLeft,
-			showRight,
 			leftGeometry,
 			rightGeometry,
 		]);
@@ -3066,7 +3420,7 @@ export const EnhancedSTLViewer = forwardRef<
 					<directionalLight position={[0, -50, 50]} intensity={0.6} />
 
 					<Suspense fallback={null}>
-						{!effectiveHideScans && showLeft && leftUrl && (
+						{!effectiveHideScans && showInsoles && showLeft && leftUrl && (
 							<group ref={leftMeshRef}>
 								<STLMesh
 									url={leftUrl}
@@ -3077,7 +3431,7 @@ export const EnhancedSTLViewer = forwardRef<
 									trimlineOffsetMm={trimlineOffsetMm}
 									trimlineAdjustments={trimlineAdjustments?.left}
 									color={leftOverlayUrl || rightOverlayUrl ? '#cfe9ff' : '#d7dadd'}
-									position={[-50, 0, 0]}
+									position={[-30, 0, 0]}
 									onGeometryReady={(geom, meta) => {
 										setLeftGeometry(geom);
 										setLeftMmToWorld(meta?.mmToWorld || 1);
@@ -3086,6 +3440,7 @@ export const EnhancedSTLViewer = forwardRef<
 									pointPickMode={pointPickMode}
 									showZones={showZones}
 									heatmap={heatmap}
+									clampDebug={clampDebug}
 									transparentMode={transparent}
 									probeEnabled={analysisEnabled}
 									onProbe={(payload) => {
@@ -3113,7 +3468,7 @@ export const EnhancedSTLViewer = forwardRef<
 								/>
 							</group>
 						)}
-						{!effectiveHideScans && showRight && rightUrl && (
+						{!effectiveHideScans && showInsoles && showRight && rightUrl && (
 							<group ref={rightMeshRef}>
 								<STLMesh
 									url={rightUrl}
@@ -3124,7 +3479,7 @@ export const EnhancedSTLViewer = forwardRef<
 									trimlineOffsetMm={trimlineOffsetMm}
 									trimlineAdjustments={trimlineAdjustments?.right}
 									color={leftOverlayUrl || rightOverlayUrl ? '#cfe9ff' : '#d7dadd'}
-									position={[50, 0, 0]}
+									position={[30, 0, 0]}
 									onGeometryReady={(geom, meta) => {
 										setRightGeometry(geom);
 										setRightMmToWorld(meta?.mmToWorld || 1);
@@ -3142,6 +3497,7 @@ export const EnhancedSTLViewer = forwardRef<
 									pointPickMode={pointPickMode}
 									showZones={showZones}
 									heatmap={heatmap}
+									clampDebug={clampDebug}
 									transparentMode={transparent}
 									probeEnabled={analysisEnabled}
 									onProbe={(payload) => {
@@ -3171,7 +3527,7 @@ export const EnhancedSTLViewer = forwardRef<
 						)}
 
 						{/* Scan overlays (non-interactive) shown on top of base insoles */}
-						{!effectiveHideScans && showLeft && leftOverlayUrl && (
+						{!hideScans && effectiveShowModel && showLeft && leftOverlayUrl && (
 							<group position={[-30, 0, 0.25]}>
 								<group matrixAutoUpdate={false} matrix={leftOverlayRegistration.matrix}>
 									<STLMesh
@@ -3193,7 +3549,7 @@ export const EnhancedSTLViewer = forwardRef<
 								</group>
 							</group>
 						)}
-						{!effectiveHideScans && showRight && rightOverlayUrl && (
+						{!hideScans && effectiveShowModel && showRight && rightOverlayUrl && (
 							<group position={[30, 0, 0.25]}>
 								<group matrixAutoUpdate={false} matrix={rightOverlayRegistration.matrix}>
 									<STLMesh
@@ -3234,6 +3590,33 @@ export const EnhancedSTLViewer = forwardRef<
 									metalness={0.05}
 								/>
 							</mesh>
+						)}
+
+						{/* Interactive trimline handles for left insole */}
+						{trimlineEditSide === 'left' && leftGeometry && (
+							<group position={[-30, 0, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+								<InteractiveTrimline
+									insoleGeometry={leftGeometry}
+									adjustments={trimlineAdjustments?.left ?? { global: 0, heel: 0, midfoot: 0, forefoot: 0, toe: 0 }}
+									onPendingChange={(adj: TrimlineAdjustments) => onPendingTrimlineChange?.('left', adj)}
+									side="left"
+									mmToWorld={leftMmToWorld || MM_TO_WORLD}
+									active={true}
+								/>
+							</group>
+						)}
+						{/* Interactive trimline handles for right insole */}
+						{trimlineEditSide === 'right' && rightGeometry && (
+							<group position={[30, 0, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+								<InteractiveTrimline
+									insoleGeometry={rightGeometry}
+									adjustments={trimlineAdjustments?.right ?? { global: 0, heel: 0, midfoot: 0, forefoot: 0, toe: 0 }}
+									onPendingChange={(adj: TrimlineAdjustments) => onPendingTrimlineChange?.('right', adj)}
+									side="right"
+									mmToWorld={rightMmToWorld || MM_TO_WORLD}
+									active={true}
+								/>
+							</group>
 						)}
 					</Suspense>
 
@@ -3406,7 +3789,7 @@ export const EnhancedSTLViewer = forwardRef<
 						ref={controlsRef}
 						enablePan={!analysisEnabled}
 						enableZoom={!analysisEnabled}
-						enableRotate={!lockTopView && !analysisEnabled}
+						enableRotate={!lockTopView && !analysisEnabled && !trimlineEditSide}
 						minDistance={50}
 						maxDistance={500}
 						minPolarAngle={lockTopView ? 0 : 0.01}

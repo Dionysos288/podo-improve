@@ -337,50 +337,180 @@ export function applyElements(
 }
 
 /* ══════════════════════════════════════════════
- *  applyElementColors
- *  Paints vertex colors on the geometry to visualise
- *  placed orthotic elements (like the competitor app).
- *
- *  Call on the *rendered* geometry (after corrections,
- *  thickness, rim height are applied).
+ *  buildElementOverlayGeometries
+ *  Creates separate Three.js geometries for each placed element,
+ *  positioned directly on the insole surface.
+ *  These render as solid coloured pads ON TOP of the insole mesh,
+ *  matching the competitor app appearance.
  * ══════════════════════════════════════════════ */
 
-/**
- * Compute the UV footprint for one placed element.
- * Returns the centre (cu, cv) and radii (ru, rv) of the ellipse
- * that represents the element on the insole.
- */
-function getElementEllipse(
-	el: PlacedElement,
-	item: { outline: [number, number][]; defaultScale?: [number, number] } | undefined,
-) {
-	// Base element size as fraction of insole — large for bold competitor-style colors
-	const BASE_U = 0.28;
-	const BASE_V = 0.35;
+export interface ElementOverlayData {
+	geometry: THREE.BufferGeometry;
+	colorHex: string;
+	elementId: string;
+}
 
-	// Compute approximate outline radius from the library outline
-	let outlineRadiusU = 0.4; // default: 80% of outline space
-	let outlineRadiusV = 0.4;
-	if (item?.outline && item.outline.length > 2) {
-		let maxDx = 0, maxDy = 0;
-		for (const [ox, oy] of item.outline) {
-			maxDx = Math.max(maxDx, Math.abs(ox - 0.5));
-			maxDy = Math.max(maxDy, Math.abs(oy - 0.5));
-		}
-		outlineRadiusU = maxDx || 0.4;
-		outlineRadiusV = maxDy || 0.4;
+export function buildElementOverlayGeometries(
+	insoleGeometry: THREE.BufferGeometry,
+	elements: PlacedElement[],
+	options?: { mmToWorld?: number }
+): ElementOverlayData[] {
+	if (!elements || elements.length === 0) return [];
+
+	if (!insoleGeometry.getAttribute('normal')) {
+		insoleGeometry.computeVertexNormals();
 	}
 
-	const ru = BASE_U * outlineRadiusU * 2 * el.scaleU;
-	const rv = BASE_V * outlineRadiusV * 2 * el.scaleV;
+	const axes = getGeometryAxes(insoleGeometry);
+	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = axes;
+	const lengthMin = getMinForAxis(bbox, lengthAxis);
+	const widthMin  = getMinForAxis(bbox, widthAxis);
+	const heightMax = getMaxForAxis(bbox, heightAxis);
+	const heightMin = getMinForAxis(bbox, heightAxis);
+	const heightSpan = heightMax - heightMin;
 
-	return { cu: el.positionU, cv: el.positionV, ru, rv };
+	const positions = insoleGeometry.getAttribute('position') as THREE.BufferAttribute;
+	const normals   = insoleGeometry.getAttribute('normal')   as THREE.BufferAttribute;
+	const vertexCount = positions.count;
+
+	// Detect which normal direction is "up" (toward the top surface)
+	const normalIdx = heightAxis === 'x' ? 0 : heightAxis === 'y' ? 1 : 2;
+	const getNComp = (i: number): number => {
+		if (normalIdx === 0) return normals.getX(i);
+		if (normalIdx === 1) return normals.getY(i);
+		return normals.getZ(i);
+	};
+	let signSum = 0, signCount = 0;
+	const topThresh = heightMin + heightSpan * 0.8;
+	for (let i = 0; i < vertexCount; i++) {
+		if (getAxisValue(positions, i, heightAxis) >= topThresh) {
+			signSum += getNComp(i); signCount++;
+		}
+	}
+	const upSign = signCount > 0 && signSum / signCount < 0 ? -1 : 1;
+
+	// Heel/toe direction
+	let wSumLow = 0, cLow = 0, wSumHigh = 0, cHigh = 0;
+	const thr = lengthSpan * 0.2;
+	for (let i = 0; i < vertexCount; i++) {
+		const lv = getAxisValue(positions, i, lengthAxis);
+		const wv = getAxisValue(positions, i, widthAxis);
+		const nl = lv - lengthMin;
+		if (nl < thr) { wSumLow += Math.abs(wv - widthMin - widthSpan / 2); cLow++; }
+		else if (nl > lengthSpan - thr) { wSumHigh += Math.abs(wv - widthMin - widthSpan / 2); cHigh++; }
+	}
+	const heelAtMin = (cLow > 0 ? wSumLow / cLow : 0) >= (cHigh > 0 ? wSumHigh / cHigh : 0);
+
+	// Build a UV → max-surface-height lookup grid from top-facing vertices
+	const GRID = 48;
+	const heightGrid = new Float32Array(GRID * GRID).fill(heightMin);
+	for (let i = 0; i < vertexCount; i++) {
+		if (getNComp(i) * upSign < 0.1) continue; // skip sides / bottom
+		const lv = getAxisValue(positions, i, lengthAxis);
+		const wv = getAxisValue(positions, i, widthAxis);
+		const hv = getAxisValue(positions, i, heightAxis);
+		const rawU = (lv - lengthMin) / lengthSpan;
+		const u = heelAtMin ? rawU : 1 - rawU;
+		const v = (wv - widthMin) / widthSpan;
+		const gu = Math.max(0, Math.min(GRID - 1, Math.floor(u * GRID)));
+		const gv = Math.max(0, Math.min(GRID - 1, Math.floor(v * GRID)));
+		if (hv > heightGrid[gu * GRID + gv]) heightGrid[gu * GRID + gv] = hv;
+	}
+	// Fill empty grid cells by spreading from neighbours
+	for (let pass = 0; pass < 4; pass++) {
+		for (let gu = 0; gu < GRID; gu++) {
+			for (let gv = 0; gv < GRID; gv++) {
+				const gi = gu * GRID + gv;
+				if (heightGrid[gi] > heightMin) continue;
+				let sum = 0, cnt = 0;
+				for (const [du, dv] of [[-1,0],[1,0],[0,-1],[0,1]] as const) {
+					const nu = gu+du, nv = gv+dv;
+					if (nu>=0 && nu<GRID && nv>=0 && nv<GRID) {
+						const ni = nu*GRID+nv;
+						if (heightGrid[ni] > heightMin) { sum += heightGrid[ni]; cnt++; }
+					}
+				}
+				if (cnt > 0) heightGrid[gi] = sum / cnt;
+			}
+		}
+	}
+
+	// Bilinear sample of the height grid at a UV point
+	const sampleHeight = (u: number, v: number): number => {
+		const gu = Math.max(0, Math.min(GRID - 0.001, u * GRID));
+		const gv = Math.max(0, Math.min(GRID - 0.001, v * GRID));
+		const gui = Math.floor(gu), guf = gu - gui;
+		const gvi = Math.floor(gv), gvf = gv - gvi;
+		const gui1 = Math.min(GRID-1, gui+1), gvi1 = Math.min(GRID-1, gvi+1);
+		const h00 = heightGrid[gui * GRID + gvi];
+		const h10 = heightGrid[gui1 * GRID + gvi];
+		const h01 = heightGrid[gui * GRID + gvi1];
+		const h11 = heightGrid[gui1 * GRID + gvi1];
+		return h00*(1-guf)*(1-gvf) + h10*guf*(1-gvf) + h01*(1-guf)*gvf + h11*guf*gvf;
+	};
+
+	// Map UV + height to 3D world-space position
+	const uvToWorld = (u: number, v: number, h: number): [number, number, number] => {
+		const rawU = heelAtMin ? u : 1-u;
+		const lw = lengthMin + rawU * lengthSpan;
+		const ww = widthMin + v * widthSpan;
+		const c: Record<string, number> = { x: 0, y: 0, z: 0 };
+		c[lengthAxis] = lw; c[widthAxis] = ww; c[heightAxis] = h;
+		return [c.x, c.y, c.z];
+	};
+
+	const mmToWorld    = options?.mmToWorld ?? 1;
+	const LIFT         = 0.6 * mmToWorld; // mm above surface
+	const ELEMENT_SIZE_U = 0.18;
+	const ELEMENT_SIZE_V = 0.22;
+
+	const result: ElementOverlayData[] = [];
+
+	for (const el of elements) {
+		const item = getElementByKey(el.libraryKey);
+		if (!item) continue;
+
+		const outline = transformOutline(item.outline, el, ELEMENT_SIZE_U, ELEMENT_SIZE_V);
+		const n = outline.length;
+
+		// Triangulate polygon correctly (handles concave shapes like crescent/horseshoe)
+		const pts2d = outline.map(([u, v]) => new THREE.Vector2(u, v));
+		let triIndices: number[];
+		try {
+			triIndices = THREE.ShapeUtils.triangulateShape(pts2d, []).flat();
+		} catch {
+			// Fallback: simple fan from vertex 0
+			triIndices = [];
+			for (let i = 1; i < n - 1; i++) triIndices.push(0, i, i + 1);
+		}
+
+		// Build world-space vertices, each snapped to insole surface + lift
+		const verts: number[] = [];
+		for (const [u, v] of outline) {
+			const h = sampleHeight(u, v) + LIFT;
+			verts.push(...uvToWorld(u, v, h));
+		}
+
+		const geom = new THREE.BufferGeometry();
+		geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+		geom.setIndex(triIndices);
+		geom.computeVertexNormals();
+
+		result.push({
+			geometry: geom,
+			colorHex: ELEMENT_COLORS[item.color] ?? '#999',
+			elementId: el.id,
+		});
+	}
+
+	return result;
 }
 
 /**
  * Paint vertex colors on the geometry for each placed element.
- * Uses an ellipse-based approach for robust, visible results.
- * Colors ALL vertices (top + sides) for maximum visibility.
+ * Uses the same outline polygon as applyElements for pixel-accurate shape.
+ * Only colors the TOP surface (avoids side bleed-through).
+ * Colors are fully opaque inside the element boundary.
  *
  * Mutates the geometry's `color` BufferAttribute in-place.
  */
@@ -410,111 +540,125 @@ export function applyElementColors(
 		return;
 	}
 
-	// Detect geometry axes
-	geometry.computeBoundingBox();
-	const bbox = geometry.boundingBox!;
-	const sizeX = bbox.max.x - bbox.min.x;
-	const sizeY = bbox.max.y - bbox.min.y;
-	const sizeZ = bbox.max.z - bbox.min.z;
+	// Reuse the same axis detection as applyElements
+	const axes = getGeometryAxes(geometry);
+	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = axes;
 
-	// Sort axes by size: longest = length, middle = width, shortest = height
-	const axes = [
-		{ axis: 'x' as const, size: sizeX, min: bbox.min.x, max: bbox.max.x },
-		{ axis: 'y' as const, size: sizeY, min: bbox.min.y, max: bbox.max.y },
-		{ axis: 'z' as const, size: sizeZ, min: bbox.min.z, max: bbox.max.z },
-	].sort((a, b) => b.size - a.size);
+	const lengthMin = getMinForAxis(bbox, lengthAxis);
+	const widthMin = getMinForAxis(bbox, widthAxis);
+	const heightMax = getMaxForAxis(bbox, heightAxis);
+	const heightMin = getMinForAxis(bbox, heightAxis);
+	const heightSpan = heightMax - heightMin;
 
-	const lengthInfo = axes[0]; // longest
-	const widthInfo = axes[1];  // middle
-	const heightInfo = axes[2]; // shortest (thickness)
-
-	const getVal = (i: number, axis: 'x' | 'y' | 'z') => {
-		if (axis === 'x') return positions.getX(i);
-		if (axis === 'y') return positions.getY(i);
-		return positions.getZ(i);
-	};
-
-	// Infer heel direction: the wider end is the heel
+	// Heel direction (same heuristic as applyElements)
 	let widthSumLow = 0, countLow = 0;
 	let widthSumHigh = 0, countHigh = 0;
-	const thresh20 = lengthInfo.size * 0.2;
-	const widthCenter = widthInfo.min + widthInfo.size / 2;
+	const thresh = lengthSpan * 0.2;
 
 	for (let i = 0; i < vertexCount; i++) {
-		const lengthVal = getVal(i, lengthInfo.axis);
-		const widthVal = getVal(i, widthInfo.axis);
-		const normLen = lengthVal - lengthInfo.min;
-		if (normLen < thresh20) {
-			widthSumLow += Math.abs(widthVal - widthCenter);
+		const lengthVal = getAxisValue(positions, i, lengthAxis);
+		const widthVal = getAxisValue(positions, i, widthAxis);
+		const normLen = lengthVal - lengthMin;
+		if (normLen < thresh) {
+			widthSumLow += Math.abs(widthVal - widthMin - widthSpan / 2);
 			countLow++;
-		} else if (normLen > lengthInfo.size - thresh20) {
-			widthSumHigh += Math.abs(widthVal - widthCenter);
+		} else if (normLen > lengthSpan - thresh) {
+			widthSumHigh += Math.abs(widthVal - widthMin - widthSpan / 2);
 			countHigh++;
 		}
 	}
-	const avgLow = countLow > 0 ? widthSumLow / countLow : 0;
-	const avgHigh = countHigh > 0 ? widthSumHigh / countHigh : 0;
-	const heelAtMin = avgLow >= avgHigh;
+	const heelAtMin = (countLow > 0 ? widthSumLow / countLow : 0) >= (countHigh > 0 ? widthSumHigh / countHigh : 0);
 
-	// Precompute element ellipses and colours
+	// Same element size constants as applyElements so shapes align
+	const ELEMENT_SIZE_U = 0.18;
+	const ELEMENT_SIZE_V = 0.22;
+
+	// Precompute transformed outlines + bounding boxes
 	const prepared = elements.map((el) => {
 		const item = getElementByKey(el.libraryKey);
-		const ellipse = getElementEllipse(el, item);
+		const outline = item?.outline ?? ([[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]] as [number, number][]);
+		const transformed = transformOutline(outline, el, ELEMENT_SIZE_U, ELEMENT_SIZE_V);
 		const colorHex = item ? ELEMENT_COLORS[item.color] : '#999';
 		const col = new THREE.Color(colorHex);
 
-		// Blend zone around the ellipse (in UV space)
-		const blendFrac = 0.50; // 50% extra around ellipse for wide smooth taper
-
-		return {
-			...ellipse,
-			color: col,
-			blendRu: ellipse.ru * (1 + blendFrac),
-			blendRv: ellipse.rv * (1 + blendFrac),
-		};
+		// Bounding box for fast per-vertex reject
+		let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+		for (const [u, v] of transformed) {
+			if (u < minU) minU = u;
+			if (u > maxU) maxU = u;
+			if (v < minV) minV = v;
+			if (v > maxV) maxV = v;
+		}
+		// Small UV margin for soft edge taper
+		const edgeMargin = 0.012;
+		return { transformed, color: col, minU: minU - edgeMargin, maxU: maxU + edgeMargin, minV: minV - edgeMargin, maxV: maxV + edgeMargin, edgeMargin };
 	});
+
+	// Use vertex normals to detect top surface (normal points in +heightAxis direction).
+	// First detect which sign is "up" by averaging normals of the top-altitude vertices.
+	const normals = geometry.getAttribute('normal') as THREE.BufferAttribute | undefined;
+	const normalIdx = heightAxis === 'x' ? 0 : heightAxis === 'y' ? 1 : 2;
+
+	const getHeightNormalRaw = (i: number): number => {
+		if (!normals) return 1;
+		if (normalIdx === 0) return normals.getX(i);
+		if (normalIdx === 1) return normals.getY(i);
+		return normals.getZ(i);
+	};
+
+	// Determine "up" sign: average normal component for the top-20% height vertices
+	let normalSignSum = 0, normalSignCount = 0;
+	const topThreshAbs = heightMin + heightSpan * 0.8;
+	for (let i = 0; i < vertexCount; i++) {
+		const hv = getAxisValue(positions, i, heightAxis);
+		if (hv >= topThreshAbs) {
+			normalSignSum += getHeightNormalRaw(i);
+			normalSignCount++;
+		}
+	}
+	// upSign = +1 if top surface normals are positive, -1 if they're negative
+	const upSign = normalSignCount > 0 && normalSignSum / normalSignCount < 0 ? -1 : 1;
+
+	const getHeightNormal = (i: number): number => getHeightNormalRaw(i) * upSign;
 
 	const tempColor = new THREE.Color();
 
 	for (let i = 0; i < vertexCount; i++) {
-		const lengthVal = getVal(i, lengthInfo.axis);
-		const widthVal = getVal(i, widthInfo.axis);
-		const heightVal = getVal(i, heightInfo.axis);
+		// Only paint vertices whose normal points sufficiently upward (top surface)
+		const normalUp = getHeightNormal(i);
+		if (normalUp < 0.25) continue; // side/bottom vertices — skip
 
-		// Normalise to 0-1 UV
-		const rawU = (lengthVal - lengthInfo.min) / lengthInfo.size;
-		const u = heelAtMin ? rawU : 1 - rawU; // 0 = heel, 1 = toe
-		const v = (widthVal - widthInfo.min) / widthInfo.size;
+		// Soft weight based on how top-facing the normal is (0.25→0.55 = partial, >0.55 = full)
+		const topWeight = smoothstep(0.25, 0.55, normalUp);
 
-		// Height weighting: top surface gets full colour, sides get partial
-		const heightNorm = (heightVal - heightInfo.min) / (heightInfo.size || 1);
-		// Top surface (heightNorm > 0.4): full colour. Bottom/sides: still 65% coloured.
-		const surfaceWeight = heightNorm > 0.4 ? 1.0 : 0.65;
+		const lengthVal = getAxisValue(positions, i, lengthAxis);
+		const widthVal = getAxisValue(positions, i, widthAxis);
 
-		// Check each element
+		const rawU = (lengthVal - lengthMin) / lengthSpan;
+		const u = heelAtMin ? rawU : 1 - rawU;
+		const v = (widthVal - widthMin) / widthSpan;
+
 		let bestAlpha = 0;
 		let bestColor: THREE.Color | null = null;
 
 		for (const p of prepared) {
-			// Ellipse distance: (du/ru)^2 + (dv/rv)^2
-			const du = u - p.cu;
-			const dv = v - p.cv;
+			// Fast bounding-box reject
+			if (u < p.minU || u > p.maxU || v < p.minV || v > p.maxV) continue;
 
-			// Check against outer blend boundary (fast reject)
-			const normDistBlend = (du * du) / (p.blendRu * p.blendRu) + (dv * dv) / (p.blendRv * p.blendRv);
-			if (normDistBlend > 1) continue; // outside blend zone
-
-			// Check against inner ellipse
-			const normDist = (du * du) / (p.ru * p.ru) + (dv * dv) / (p.rv * p.rv);
+			const inside = pointInPolygon(u, v, p.transformed);
 
 			let alpha: number;
-			if (normDist <= 1) {
-				// Inside the element ellipse — bold solid colour
-				alpha = 0.95;
+			if (inside) {
+				// Fully opaque inside — crisp solid pad
+				alpha = 1.0;
 			} else {
-				// In the blend zone — taper off
-				const t = (Math.sqrt(normDist) - 1) / (Math.sqrt(normDistBlend) - 1 + 0.001);
-				alpha = 0.95 * (1 - smoothstep(0, 1, Math.min(1, t)));
+				// Soft taper just outside the polygon edge (tiny margin only)
+				const edgeDist = distToPolygonEdge(u, v, p.transformed);
+				if (edgeDist < p.edgeMargin) {
+					alpha = 1.0 - edgeDist / p.edgeMargin;
+				} else {
+					continue;
+				}
 			}
 
 			if (alpha > bestAlpha) {
@@ -523,13 +667,9 @@ export function applyElementColors(
 			}
 		}
 
-		if (bestColor && bestAlpha > 0.01) {
-			const finalAlpha = bestAlpha * surfaceWeight;
-			tempColor.setRGB(
-				colors[i * 3],
-				colors[i * 3 + 1],
-				colors[i * 3 + 2]
-			);
+		if (bestColor && bestAlpha > 0) {
+			const finalAlpha = bestAlpha * topWeight;
+			tempColor.setRGB(colors[i * 3], colors[i * 3 + 1], colors[i * 3 + 2]);
 			tempColor.lerp(bestColor, finalAlpha);
 			colors[i * 3] = tempColor.r;
 			colors[i * 3 + 1] = tempColor.g;

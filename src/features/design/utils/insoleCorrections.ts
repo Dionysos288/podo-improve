@@ -182,24 +182,22 @@ export function applyKuipHoogte(
 	for (let i = 0; i < positions.count; i++) {
 		const lengthVal = getAxisValue(positions, i, lengthAxis);
 		const t = heelToToe.getT(lengthVal);
-		// Heel cup should be strongest in the rearfoot and fade toward the forefoot.
-		// 1.0 at heel->~midfoot, then fades to 0 by ~2/3 length.
-		const lengthWeight = smoothstep(0.65, 0.35, t);
+		// Heel cup: full effect at heel, fades to zero well past midfoot.
+		// Wider fade window (0.25 → 0.75) avoids a visible transition ring.
+		const lengthWeight = smoothstep(0.75, 0.22, t);
 		if (lengthWeight <= 0.001) continue;
 
 		const widthVal = getAxisValue(positions, i, widthAxis);
 		
-		// Calculate distance from center (normalized 0-1 where 1 is at edge)
+		// Smooth bowl profile starting at 30% from centre (no hard inner edge).
+		// Using a power curve: near-zero at centre, full at the outer rim.
 		const distFromCenter = Math.abs(widthVal - centerWidth) / (widthSpan / 2);
-		
-		// Only apply to the outer 40% of the width on each side
-		if (distFromCenter > 0.6) {
-			const adjustedFactor = smoothstep(0.6, 1.0, distFromCenter);
-			const heightAdjust = amount * adjustedFactor * lengthWeight;
-			
-			const currentHeight = getAxisValue(positions, i, heightAxis);
-			setAxisValue(positions, i, heightAxis, currentHeight + heightAdjust);
-		}
+		const adjustedFactor = smoothstep(0.30, 1.0, distFromCenter);
+		if (adjustedFactor <= 0.001) continue;
+
+		const heightAdjust = amount * adjustedFactor * lengthWeight;
+		const currentHeight = getAxisValue(positions, i, heightAxis);
+		setAxisValue(positions, i, heightAxis, currentHeight + heightAdjust);
 	}
 	
 	positions.needsUpdate = true;
@@ -229,17 +227,29 @@ export function applyVoorvoetUitvlakken(
 	
 	// Forefoot is roughly the front 40% (0.6 to 1.0)
 	const forefootStart = 0.6;
+
+	// Determine the top-surface height threshold so we only average the
+	// plantar (top) face – not the bottom face or side walls, which would
+	// pull the average toward the wrong value and flatten the wrong surface.
+	let minH = Infinity, maxH = -Infinity;
+	for (let i = 0; i < positions.count; i++) {
+		const h = getAxisValue(positions, i, heightAxis);
+		if (h < minH) minH = h;
+		if (h > maxH) maxH = h;
+	}
+	const topSurfaceThreshold = minH + (maxH - minH) * 0.5;
 	
-	// First pass: find average height in forefoot region
+	// First pass: find average height in forefoot region (top surface only)
 	let totalHeight = 0;
 	let count = 0;
 	
 	for (let i = 0; i < positions.count; i++) {
 		const lengthVal = getAxisValue(positions, i, lengthAxis);
 		const t = heelToToe.getT(lengthVal);
+		const h = getAxisValue(positions, i, heightAxis);
 		
-		if (t > forefootStart) {
-			totalHeight += getAxisValue(positions, i, heightAxis);
+		if (t > forefootStart && h > topSurfaceThreshold) {
+			totalHeight += h;
 			count++;
 		}
 	}
@@ -385,156 +395,160 @@ export function applyMedialeBoogCorrectie(
 
 /**
  * GLADSTRIJKEN (Smoothing)
- * Smooths out bumps and height variations across the entire insole surface
- * Works by finding local average heights and using bilinear interpolation
- * to create perfectly smooth transitions without visible bands
- * Higher values = more smoothing (reduces bumps more aggressively)
+ * Smooths height variations across the insole surface.
+ *
+ * When the geometry is indexed (which it always is after weldAndSmoothNormals)
+ * we use topology-aware Laplacian smoothing: each vertex moves toward the
+ * average height of its mesh-connected neighbours.  This produces zero grid
+ * banding and naturally respects the surface topology.
+ *
+ * Higher intensity = more Laplacian passes = more smoothing.
  */
 export function applyGladstrijken(
 	geometry: THREE.BufferGeometry,
 	intensity: number // 0-10 scale
 ): void {
 	if (intensity === 0) return;
-	
+
 	const positions = geometry.attributes.position as THREE.BufferAttribute;
-	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
-	
-	const minLength = getMinForAxis(bbox, lengthAxis);
-	const minWidth = getMinForAxis(bbox, widthAxis);
-	
-	// Create a grid to compute local average heights
-	// Use fixed resolution for consistent results
-	const gridResolution = 20;
-	const cellSizeLength = lengthSpan / (gridResolution - 1);
-	const cellSizeWidth = widthSpan / (gridResolution - 1);
-	
-	// Build grid of average heights
-	const heightGrid: { sum: number; count: number }[][] = [];
-	for (let i = 0; i < gridResolution; i++) {
-		heightGrid[i] = [];
-		for (let j = 0; j < gridResolution; j++) {
-			heightGrid[i][j] = { sum: 0, count: 0 };
+	const { heightAxis } = getGeometryAxes(geometry);
+	const idx = geometry.index;
+
+	if (idx) {
+		// ── Topology-based Laplacian height smoothing ─────────────────────
+		// Each pass nudges every vertex's height α of the way toward the
+		// average height of its direct mesh neighbours.  No grid, no bands.
+		const idxArr = idx.array;
+		const vertCount = positions.count;
+		const faceCount = idxArr.length / 3;
+
+		// Build deduplicated neighbour sets (same pattern as weldAndSmoothNormals).
+		const neighborSets: Set<number>[] = Array.from({ length: vertCount }, () => new Set<number>());
+		for (let f = 0; f < faceCount; f++) {
+			const a = idxArr[f * 3], b = idxArr[f * 3 + 1], c = idxArr[f * 3 + 2];
+			neighborSets[a].add(b); neighborSets[a].add(c);
+			neighborSets[b].add(a); neighborSets[b].add(c);
+			neighborSets[c].add(a); neighborSets[c].add(b);
 		}
+
+		// intensity 1-10 → ~2-18 passes; alpha=0.25 per pass is stable.
+		const passes = Math.max(1, Math.round(intensity * 1.8));
+		const alpha  = 0.25;
+
+		const heights = new Float32Array(vertCount);
+		for (let v = 0; v < vertCount; v++) {
+			heights[v] = getAxisValue(positions, v, heightAxis);
+		}
+		const next = new Float32Array(vertCount);
+
+		for (let p = 0; p < passes; p++) {
+			for (let v = 0; v < vertCount; v++) {
+				const nbs = neighborSets[v];
+				if (nbs.size === 0) { next[v] = heights[v]; continue; }
+				let sum = 0;
+				for (const nb of nbs) sum += heights[nb];
+				next[v] = heights[v] + alpha * (sum / nbs.size - heights[v]);
+			}
+			heights.set(next);
+		}
+
+		for (let v = 0; v < vertCount; v++) {
+			setAxisValue(positions, v, heightAxis, heights[v]);
+		}
+		positions.needsUpdate = true;
+		return;
 	}
-	
-	// First pass: accumulate heights into grid cells
+
+	// ── Fallback: higher-resolution grid for non-indexed geometries ────────
+	// (Should rarely be reached in practice.)
+	const { lengthAxis, widthAxis, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
+	const minLength = getMinForAxis(bbox, lengthAxis);
+	const minWidth  = getMinForAxis(bbox, widthAxis);
+
+	const gridResolution = 48; // was 20 – ~5mm cells instead of ~13mm, no visible banding
+	const cellSizeLength = lengthSpan / (gridResolution - 1);
+	const cellSizeWidth  = widthSpan  / (gridResolution - 1);
+
+	// Accumulate heights into grid cells.
+	const gridSum   = new Float32Array(gridResolution * gridResolution);
+	const gridCount = new Uint16Array(gridResolution * gridResolution);
+
 	for (let i = 0; i < positions.count; i++) {
-		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const widthVal = getAxisValue(positions, i, widthAxis);
-		const heightVal = getAxisValue(positions, i, heightAxis);
-		
-		const gridX = Math.min(gridResolution - 1, Math.max(0, Math.round((lengthVal - minLength) / cellSizeLength)));
-		const gridY = Math.min(gridResolution - 1, Math.max(0, Math.round((widthVal - minWidth) / cellSizeWidth)));
-		
-		heightGrid[gridX][gridY].sum += heightVal;
-		heightGrid[gridX][gridY].count++;
+		const lv = getAxisValue(positions, i, lengthAxis);
+		const wv = getAxisValue(positions, i, widthAxis);
+		const hv = getAxisValue(positions, i, heightAxis);
+		const gx = Math.min(gridResolution - 1, Math.max(0, Math.round((lv - minLength) / cellSizeLength)));
+		const gy = Math.min(gridResolution - 1, Math.max(0, Math.round((wv - minWidth)  / cellSizeWidth)));
+		gridSum[gx * gridResolution + gy]   += hv;
+		gridCount[gx * gridResolution + gy] += 1;
 	}
-	
-	// Compute average heights per cell (fill empty cells with neighbors)
-	const avgHeights: number[][] = [];
+
+	// Compute per-cell averages, filling empty cells from nearest neighbours.
+	const avg = new Float32Array(gridResolution * gridResolution);
 	for (let i = 0; i < gridResolution; i++) {
-		avgHeights[i] = [];
 		for (let j = 0; j < gridResolution; j++) {
-			const cell = heightGrid[i][j];
-			if (cell.count > 0) {
-				avgHeights[i][j] = cell.sum / cell.count;
+			const ci = i * gridResolution + j;
+			if (gridCount[ci] > 0) {
+				avg[ci] = gridSum[ci] / gridCount[ci];
 			} else {
-				// Find nearest non-empty cell
+				// Nearest occupied cell.
 				let found = false;
 				for (let r = 1; r < gridResolution && !found; r++) {
 					for (let di = -r; di <= r && !found; di++) {
 						for (let dj = -r; dj <= r && !found; dj++) {
-							const ni = i + di;
-							const nj = j + dj;
+							const ni = i + di, nj = j + dj;
 							if (ni >= 0 && ni < gridResolution && nj >= 0 && nj < gridResolution) {
-								const neighbor = heightGrid[ni][nj];
-								if (neighbor.count > 0) {
-									avgHeights[i][j] = neighbor.sum / neighbor.count;
-									found = true;
-								}
+								const nc = ni * gridResolution + nj;
+								if (gridCount[nc] > 0) { avg[ci] = gridSum[nc] / gridCount[nc]; found = true; }
 							}
 						}
 					}
 				}
-				if (!found) avgHeights[i][j] = 0;
 			}
 		}
 	}
-	
-	// Apply multiple smoothing passes to the grid itself
-	const smoothPasses = Math.ceil(intensity / 2);
-	let smoothedHeights = avgHeights;
-	
-	for (let pass = 0; pass < smoothPasses; pass++) {
-		const newSmoothed: number[][] = [];
+
+	// Gaussian smooth the grid (more passes than before).
+	const smoothPasses = Math.max(2, Math.ceil(intensity * 1.2));
+	let src = avg.slice();
+	for (let p = 0; p < smoothPasses; p++) {
+		const dst = new Float32Array(src.length);
 		for (let i = 0; i < gridResolution; i++) {
-			newSmoothed[i] = [];
 			for (let j = 0; j < gridResolution; j++) {
-				let sum = smoothedHeights[i][j];
-				let count = 1;
-				
-				// Average with neighbors (gaussian-like weighting)
+				let sum = 0, wt = 0;
 				for (let di = -1; di <= 1; di++) {
 					for (let dj = -1; dj <= 1; dj++) {
-						if (di === 0 && dj === 0) continue;
-						const ni = i + di;
-						const nj = j + dj;
+						const ni = i + di, nj = j + dj;
 						if (ni >= 0 && ni < gridResolution && nj >= 0 && nj < gridResolution) {
-							// Corner neighbors get less weight
-							const weight = (di !== 0 && dj !== 0) ? 0.5 : 1.0;
-							sum += smoothedHeights[ni][nj] * weight;
-							count += weight;
+							const w = (di !== 0 && dj !== 0) ? 0.5 : 1.0;
+							sum += src[ni * gridResolution + nj] * w; wt += w;
 						}
 					}
 				}
-				newSmoothed[i][j] = sum / count;
+				dst[i * gridResolution + j] = sum / wt;
 			}
 		}
-		smoothedHeights = newSmoothed;
+		src = dst;
 	}
-	
-	// Normalize intensity to blend factor (0.1 to 0.9)
+
 	const blendFactor = 0.1 + (intensity / 10) * 0.8;
-	
-	// Second pass: use BILINEAR INTERPOLATION for smooth transitions
+
 	for (let i = 0; i < positions.count; i++) {
-		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const widthVal = getAxisValue(positions, i, widthAxis);
-		const currentHeight = getAxisValue(positions, i, heightAxis);
-		
-		// Get continuous grid coordinates
-		const gx = (lengthVal - minLength) / cellSizeLength;
-		const gy = (widthVal - minWidth) / cellSizeWidth;
-		
-		// Clamp to grid bounds
-		const gxClamped = Math.max(0, Math.min(gridResolution - 1.001, gx));
-		const gyClamped = Math.max(0, Math.min(gridResolution - 1.001, gy));
-		
-		// Get integer and fractional parts for bilinear interpolation
-		const x0 = Math.floor(gxClamped);
-		const y0 = Math.floor(gyClamped);
-		const x1 = Math.min(x0 + 1, gridResolution - 1);
-		const y1 = Math.min(y0 + 1, gridResolution - 1);
-		const fx = gxClamped - x0;
-		const fy = gyClamped - y0;
-		
-		// Bilinear interpolation between 4 grid points
-		const h00 = smoothedHeights[x0][y0];
-		const h10 = smoothedHeights[x1][y0];
-		const h01 = smoothedHeights[x0][y1];
-		const h11 = smoothedHeights[x1][y1];
-		
-		const targetHeight = 
-			h00 * (1 - fx) * (1 - fy) +
-			h10 * fx * (1 - fy) +
-			h01 * (1 - fx) * fy +
-			h11 * fx * fy;
-		
-		// Blend current height toward target (smoothed interpolated average)
-		const newHeight = currentHeight + (targetHeight - currentHeight) * blendFactor;
-		setAxisValue(positions, i, heightAxis, newHeight);
+		const lv = getAxisValue(positions, i, lengthAxis);
+		const wv = getAxisValue(positions, i, widthAxis);
+		const hv = getAxisValue(positions, i, heightAxis);
+		const gx = Math.max(0, Math.min(gridResolution - 1.001, (lv - minLength) / cellSizeLength));
+		const gy = Math.max(0, Math.min(gridResolution - 1.001, (wv - minWidth)  / cellSizeWidth));
+		const x0 = Math.floor(gx), y0 = Math.floor(gy);
+		const x1 = Math.min(x0 + 1, gridResolution - 1), y1 = Math.min(y0 + 1, gridResolution - 1);
+		const fx = gx - x0, fy = gy - y0;
+		const target =
+			src[x0 * gridResolution + y0] * (1 - fx) * (1 - fy) +
+			src[x1 * gridResolution + y0] * fx       * (1 - fy) +
+			src[x0 * gridResolution + y1] * (1 - fx) * fy +
+			src[x1 * gridResolution + y1] * fx       * fy;
+		setAxisValue(positions, i, heightAxis, hv + (target - hv) * blendFactor);
 	}
-	
 	positions.needsUpdate = true;
 }
 

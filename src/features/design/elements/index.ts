@@ -19,7 +19,8 @@ export {
 } from './catalog';
 
 export { useElementsStore } from './elementsStore';
-export { applyElements, applyElementColors } from './applyElements';
+export { applyElements, applyElementColors, buildElementOverlayGeometries } from './applyElements';
+export type { ElementOverlayData } from './applyElements';
 export { ElementsModal } from './ElementsModal';
 export { ElementInspector } from './ElementInspector';
 export { ElementActionsPanel } from './ElementActionsPanel';

@@ -13,10 +13,10 @@ import {
 
 type Props = {
 	element: PlacedElement;
-	/** When true, renders as the full "Item Instellingen" right-sidebar panel */
+	/** When true, renders as the full right-sidebar panel */
 	standalone?: boolean;
-	/** Callback to add another element (opens modal) */
-	onAddElement?: () => void;
+	/** Callback to close / deselect (back button) */
+	onClose?: () => void;
 };
 
 /**
@@ -33,7 +33,7 @@ type Props = {
  *   │  [ Toevoegen aan bibliotheek]│
  *   └──────────────────────────────┘
  */
-export function ElementInspector({ element, standalone, onAddElement }: Props) {
+export function ElementInspector({ element, standalone, onClose }: Props) {
 	const { updateElement } = useElementsStore();
 
 	const item = getElementByKey(element.libraryKey);
@@ -46,23 +46,9 @@ export function ElementInspector({ element, standalone, onAddElement }: Props) {
 		[element.id, updateElement]
 	);
 
-	const content = (
-		<div className="space-y-3">
-			{/* Header */}
-			<div className="flex items-center gap-2.5">
-				<div
-					className="h-3.5 w-3.5 rounded-full ring-2 ring-white/20"
-					style={{ backgroundColor: color }}
-				/>
-				<span className="text-sm font-bold text-ui-text">
-					{item?.label ?? element.libraryKey}
-				</span>
-			</div>
-
-			<div className="h-px bg-ui-border" />
-
-			{/* ── Settings ── */}
-			<div className="space-y-2.5">
+	// Settings rows only — no title (standalone wrapper has its own header)
+	const settingsContent = (
+		<div className="space-y-2.5">
 				{/* Profile selector (if multiple profiles) */}
 				{item && item.profiles.length > 1 && (
 					<div className="flex items-center justify-between">
@@ -154,40 +140,63 @@ export function ElementInspector({ element, standalone, onAddElement }: Props) {
 					</button>
 				</div>
 			</div>
+	);
 
+	// Full content block with name header — used in non-standalone (embedded) mode
+	const content = (
+		<div className="space-y-3">
+			<div className="flex items-center gap-2.5">
+				<div
+					className="h-3.5 w-3.5 rounded-full ring-2 ring-white/20"
+					style={{ backgroundColor: color }}
+				/>
+				<span className="text-sm font-bold text-ui-text">
+					{item?.label ?? element.libraryKey}
+				</span>
+			</div>
 			<div className="h-px bg-ui-border" />
-
-			{/* Add to library button (green, like competitor) */}
-			<button
-				type="button"
-				className="w-full rounded-lg bg-ui-accent px-4 py-2.5 text-sm font-semibold text-slate-900 transition hover:brightness-110"
-			>
-				Toevoegen aan bibliotheek
-			</button>
-
-			{/* Add another element */}
-			{onAddElement && (
-				<button
-					type="button"
-					onClick={onAddElement}
-					className="w-full rounded-lg border border-ui-border bg-[rgba(255,255,255,0.03)] px-4 py-2 text-sm text-ui-text transition hover:bg-[rgba(255,255,255,0.06)]"
-				>
-					+ Element toevoegen
-				</button>
-			)}
+			{settingsContent}
 		</div>
 	);
 
 	if (standalone) {
 		return (
-			<div className="flex h-full flex-col">
-				<div className="border-b border-ui-border px-5 py-4">
-					<h3 className="text-base font-bold text-ui-text">
-						Item Instellingen
-					</h3>
+			<div className="ui-overlay-card rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
+				{/* Header — same pattern as BoxEditConfirmOverlay */}
+				<div className="flex items-start justify-between">
+					<div>
+						<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">
+							Actie
+						</div>
+						<div className="mt-1 flex items-center gap-2">
+							<div
+								className="h-2.5 w-2.5 rounded-full shrink-0"
+								style={{ backgroundColor: color }}
+							/>
+							<span className="text-sm font-semibold text-ui-text">
+								{item?.label ?? element.libraryKey}
+							</span>
+							<span className="rounded-full bg-ui-accent/15 px-2 py-0.5 text-[10px] font-semibold text-ui-accent">
+								{element.side === 'left' ? 'Links' : 'Rechts'}
+							</span>
+						</div>
+					</div>
+					{onClose && (
+						<button
+							type="button"
+							onClick={onClose}
+							className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-xs text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)]"
+						>
+							Sluiten
+						</button>
+					)}
 				</div>
-				<div className="flex-1 overflow-y-auto px-5 py-4">
-					{content}
+
+				<div className="mt-3 h-px bg-ui-border" />
+
+				{/* Settings */}
+				<div className="mt-3">
+					{settingsContent}
 				</div>
 			</div>
 		);

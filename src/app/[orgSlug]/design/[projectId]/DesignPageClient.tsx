@@ -13,7 +13,6 @@ import { ViewOverlay } from '@/src/shared/components/design/ViewOverlay';
 import { StepRail } from '@/src/shared/components/design/StepRail';
 import { GeneratedInsoleOverlay } from '@/src/shared/components/design/GeneratedInsoleOverlay';
 import {
-	TrimlineEditOverlay,
 	DEFAULT_TRIMLINE_ADJUSTMENTS,
 	type TrimlineAdjustments,
 } from '@/src/shared/components/design/TrimlineEditOverlay';
@@ -471,6 +470,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		showRight: true,
 		transparent: false,
 		heatmap: false,
+		clampDebug: false,
 		showInsoles: true,
 		showModel: true,
 	});
@@ -707,6 +707,14 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 	const [boxEditTool, setBoxEditTool] = useState<BoxEditTool>('rotate');
 	const [trimlineEditSide, setTrimlineEditSide] = useState<'left' | 'right' | null>(null);
 	const [trimlineAdjustments, setTrimlineAdjustments] = useState<{
+		left: TrimlineAdjustments;
+		right: TrimlineAdjustments;
+	}>({
+		left: { ...DEFAULT_TRIMLINE_ADJUSTMENTS },
+		right: { ...DEFAULT_TRIMLINE_ADJUSTMENTS },
+	});
+	// Pending adjustments (visual only — drives handle display, committed on Save)
+	const [pendingTrimlineAdj, setPendingTrimlineAdj] = useState<{
 		left: TrimlineAdjustments;
 		right: TrimlineAdjustments;
 	}>({
@@ -2639,6 +2647,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								showRight={viewSettings.showRight}
 								transparent={viewSettings.transparent}
 								heatmap={viewSettings.heatmap}
+								clampDebug={viewSettings.clampDebug}
 								showInsoles={viewSettings.showInsoles}
 								showModel={viewSettings.showModel}
 								viewPreset={viewerViewPreset}
@@ -2659,6 +2668,13 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								rightPlacedElements={rightPlacedElements}
 								evaBlockMode={isEvaMethod}
 								trimlineAdjustments={trimlineAdjustments}
+								trimlineEditSide={trimlineEditSide}
+								onPendingTrimlineChange={(side: 'left' | 'right', adj: TrimlineAdjustments) =>
+									setPendingTrimlineAdj((prev) => ({
+										...prev,
+										[side]: adj,
+									}))
+								}
 							/>
 							{isFitting && (
 								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel px-4 py-2 text-xs font-semibold text-ui-text shadow-lg">
@@ -2703,11 +2719,11 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 								analysisSide={analysisProbe?.side ?? null}
 								className="absolute left-6 top-6 z-20"
 							/>
-							{/* Element action panel – shown below ViewOverlay when editing an element */}
+							{/* Element action panel – bottom-left corner of canvas */}
 							{selectedPlacedElement && !selectedInsoleSide && (
 								<ElementActionsPanel
 									element={selectedPlacedElement}
-									className="absolute left-6 top-[340px] z-20 w-[220px]"
+									className="absolute bottom-6 left-6 z-20 w-[280px]"
 								/>
 							)}
 							{selectedInsoleSide && !isSelectedGridModeOn && !trimlineEditSide && (
@@ -2719,24 +2735,86 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 										setBoxEditTool('rotate');
 									}}
 									onMirrorToOther={mirrorCorrectionsToOtherSide}
-									onTrimlineEdit={(side) => setTrimlineEditSide(side)}
+									onTrimlineEdit={(side) => {
+										setTrimlineEditSide(side);
+										setPendingTrimlineAdj({ ...trimlineAdjustments });
+										setViewerViewPreset('top');
+									}}
 									className="absolute left-6 bottom-6 z-20"
 								/>
 							)}
 
 							{trimlineEditSide && (
-								<TrimlineEditOverlay
-									selectedSide={trimlineEditSide}
-									adjustments={trimlineAdjustments[trimlineEditSide]}
-									onChange={(adj) =>
-										setTrimlineAdjustments((prev) => ({
-											...prev,
-											[trimlineEditSide]: adj,
-										}))
-									}
-									onClose={() => setTrimlineEditSide(null)}
-									className="absolute left-6 bottom-6 z-20"
-								/>
+								<div className="absolute left-6 bottom-6 z-20 ui-overlay-card w-[320px] rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
+									<div className="flex items-center justify-between">
+										<div>
+											<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">
+												Trimline aanpassen
+											</div>
+											<div className="mt-0.5 text-xs text-(--ui-muted)">
+												{trimlineEditSide === 'left' ? 'Links' : 'Rechts'} — sleep de punten om de rand te wijzigen
+											</div>
+										</div>
+										<button
+											type="button"
+											onClick={() => setTrimlineEditSide(null)}
+											className="rounded-lg border border-(--ui-border) px-2.5 py-1 text-xs text-(--ui-muted) transition hover:bg-[rgba(255,255,255,0.08)] hover:text-(--ui-text)"
+										>
+											Sluiten
+										</button>
+									</div>
+									<div className="mt-3 space-y-1.5">
+										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
+											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#ef4444]" />
+											<span>Hiel</span>
+											<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].heel > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].heel.toFixed(1)} mm</span>
+										</div>
+										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
+											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#22c55e]" />
+											<span>Middenvoet</span>
+											<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].midfoot > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].midfoot.toFixed(1)} mm</span>
+										</div>
+										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
+											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#3b82f6]" />
+											<span>Voorvoet</span>
+											<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].forefoot > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].forefoot.toFixed(1)} mm</span>
+										</div>
+										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
+											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#f59e0b]" />
+											<span>Teen</span>
+											<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].toe > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].toe.toFixed(1)} mm</span>
+										</div>
+									</div>
+									<div className="mt-3 flex gap-2">
+										{/* Save — commit pending adjustments to the geometry */}
+										<button
+											type="button"
+											onClick={() => {
+												setTrimlineAdjustments({ ...pendingTrimlineAdj });
+											}}
+											disabled={
+												JSON.stringify(pendingTrimlineAdj[trimlineEditSide]) ===
+												JSON.stringify(trimlineAdjustments[trimlineEditSide])
+											}
+											className="flex-1 rounded-lg bg-[#56f2d6] px-3 py-2 text-xs font-semibold text-gray-900 transition hover:bg-[#3ddbb8] disabled:opacity-30 disabled:cursor-not-allowed"
+										>
+											Opslaan
+										</button>
+										{Object.values(pendingTrimlineAdj[trimlineEditSide]).some((v) => v !== 0) && (
+											<button
+												type="button"
+												onClick={() => {
+													const reset = { global: 0, heel: 0, midfoot: 0, forefoot: 0, toe: 0 };
+													setTrimlineAdjustments((prev) => ({ ...prev, [trimlineEditSide!]: reset }));
+													setPendingTrimlineAdj((prev) => ({ ...prev, [trimlineEditSide!]: reset }));
+												}}
+												className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.04)] px-3 py-2 text-xs text-(--ui-muted) transition hover:bg-[rgba(255,255,255,0.08)] hover:text-(--ui-text)"
+											>
+												Reset
+											</button>
+										)}
+									</div>
+								</div>
 							)}
 
 							{selectedInsoleSide && isSelectedGridModeOn && (
@@ -2765,11 +2843,11 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							</>
 							)}
 							{leftPanelTab !== 'analysis' && !selectedInsoleSide && selectedPlacedElement && (
-								<div className="absolute right-4 top-4 z-20 flex h-auto max-h-[85vh] w-[320px] flex-col rounded-2xl border border-ui-border bg-ui-panel text-ui-text overflow-hidden">
+								<div className="absolute right-4 top-4 z-20 w-[320px]">
 									<ElementInspector
 										element={selectedPlacedElement}
 										standalone
-										onAddElement={() => setElementsModalOpen(true)}
+										onClose={() => selectPlacedElement(null)}
 									/>
 								</div>
 							)}
