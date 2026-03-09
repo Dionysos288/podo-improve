@@ -60,8 +60,7 @@ import type {
 	EnhancedSTLViewerRef,
 	BottomTextOverlay,
 } from '@/src/features/design/components/EnhancedSTLViewer';
-import type { HardnessKey } from '@/src/features/printers/types/printers';
-import { getPrinters } from '@/src/features/printers/server/actions';
+import type { HardnessKey, PrinterSettings as OrgPrinterSettings } from '@/src/features/printers/types/printers';
 import {
 	useElementsStore,
 	ElementsModal,
@@ -88,6 +87,10 @@ import { EvaPreparationPanel } from '@/src/shared/components/design/EvaPreparati
 import { CncProducePanel } from '@/src/shared/components/design/CncProducePanelSimple';
 import { CncFixtureView } from '@/src/shared/components/design/CncFixtureView';
 import { MillingModeSelector } from '@/src/shared/components/design/MillingModeSelector';
+import { useDesignAutosave, type ClientSettingsGetter } from '@/src/features/design/hooks/useDesignAutosave';
+import { UploadScansModal } from '@/src/features/projects/components/UploadScansModal';
+import { useRouter } from 'next/navigation';
+import { Check, Loader2, AlertCircle } from 'lucide-react';
 
 // Dynamic imports for heavy 3D components - reduces initial bundle by ~200-500KB
 const EnhancedSTLViewer = dynamic(
@@ -166,6 +169,8 @@ export interface ProjectDetail {
 	};
 	scans: Array<{
 		id: string;
+		name: string;
+		pairId: string;
 		footSide: string;
 		stlUrl: string;
 	}>;
@@ -176,28 +181,6 @@ type WorkflowStep = 'base' | 'stl-select' | 'point-pick' | 'dynamic-edit';
 // Existing editable base insoles (used in Basis/Ontwerp workflow)
 const DEFAULT_BASE_LEFT_STL = '/base/(Amina) Ruymen - voor Dion_L.stl';
 const DEFAULT_BASE_RIGHT_STL = '/base/(Amina) Ruymen - voor Dion_R.stl';
-
-// Demo scan pairs available for testing
-const DEMO_SCAN_PAIRS = [
-	{
-		id: 'ekrem',
-		label: 'Ekrem Zeneli',
-		leftUrl: '/STL/Ekrem_Zeneli_055037_000528_L.stl',
-		rightUrl: '/STL/Ekrem_Zeneli_055037_000528_R.stl',
-	},
-	{
-		id: 'kim',
-		label: 'Kim Heyerick',
-		leftUrl: '/STL/Kim_Heyerick_055037_000635_L.stl',
-		rightUrl: '/STL/Kim_Heyerick_055037_000635_R.stl',
-	},
-	{
-		id: 'mathis',
-		label: 'Mathis Bothuyne',
-		leftUrl: '/STL/Mathis_Bothuyne_055037_000614_L.stl',
-		rightUrl: '/STL/Mathis_Bothuyne_055037_000614_R.stl',
-	},
-] as const;
 
 type PickPointId =
 	| 'heel'
@@ -392,13 +375,58 @@ async function loadStlGeometry(url: string): Promise<THREE.BufferGeometry> {
 	return loader.parse(buffer);
 }
 
+export interface InitialDesign {
+	id: string;
+	projectId: string;
+	version: number;
+	parameters: Record<string, unknown>;
+	elements: unknown[];
+	landmarks: Record<string, unknown> | null;
+	scanMetadata: Record<string, unknown> | null;
+	matchTransform: Record<string, unknown> | null;
+	clientSettings?: Record<string, unknown> | null;
+	stlUrl: string | null;
+	gcodeUrl: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface OrgPrinter {
+	id: string;
+	name: string;
+	brand: string | null;
+	model: string | null;
+	settings: OrgPrinterSettings;
+}
+
 interface DesignPageClientProps {
 	project: ProjectDetail;
 	orgSlug: string;
+	initialDesign?: InitialDesign | null;
+	orgPrinters?: OrgPrinter[];
 }
 
-export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
+export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters }: DesignPageClientProps) {
 	const projectId = project.id;
+	const router = useRouter();
+
+	// ── Client settings ref for autosave ──
+	const clientSettingsGetterRef = useRef<ClientSettingsGetter | null>(null);
+
+	// ── Autosave hook ──
+	const { saveStatus, lastSavedAt, hydrateFromDesign, debouncedSave } = useDesignAutosave(
+		projectId,
+		initialDesign?.id ?? null,
+		clientSettingsGetterRef
+	);
+
+	// ── Scan upload state ──
+	const [showUploadScansModal, setShowUploadScansModal] = useState(false);
+	const [projectScans, setProjectScans] = useState(project.scans);
+
+	// Hydrate from saved design on mount (moved below useState declarations)
+	const hasHydratedRef = useRef(false);
+
 	const viewerRef = useRef<EnhancedSTLViewerRef>(null);
 	const [workflowStep, setWorkflowStep] = useState<WorkflowStep>('base');
 	const [selectedLeftScanId, setSelectedLeftScanId] = useState<string | null>(
@@ -533,17 +561,38 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		},
 		[generalNormalized, parameters, setParameters]
 	);
-	const [printerSettings, setPrinterSettings] = useState<PrinterSettings>({
-		printerModel: 'raise3d-e2',
-		brand: 'Raise3D',
-		printer: 'E2',
-		material: 'Footprint3D TPU-95A 2.3KG',
-		nozzle: '0.8',
-		extruder: 'Links',
-		topLayers: 1,
-		bottomLayers: 2,
-		adhesion: 'Geen',
-	});
+	// ── Derive initial printer settings from org printers ──
+	const orgDefaultPrinterSettings = useMemo<PrinterSettings>(() => {
+		const first = orgPrinters?.[0];
+		if (!first) {
+			// Fallback hard-coded defaults when no org printers exist
+			return {
+				printerModel: 'raise3d-e2',
+				brand: 'Raise3D',
+				printer: 'E2',
+				material: 'Footprint3D TPU-95A 2.3KG',
+				nozzle: '0.8',
+				extruder: 'Links',
+				topLayers: 1,
+				bottomLayers: 2,
+				adhesion: 'Geen',
+			};
+		}
+		const s = first.settings;
+		return {
+			printerModel: (first.model?.toLowerCase().includes('ir3') ? 'ir3-v2' : 'raise3d-e2') as PrinterSettings['printerModel'],
+			brand: first.brand ?? 'Raise3D',
+			printer: first.model ?? first.name ?? 'E2',
+			material: 'Footprint3D TPU-95A 2.3KG',
+			nozzle: String(s.nozzleDiameter ?? 0.8),
+			extruder: s.extruder ?? 'Links',
+			topLayers: s.overhang ?? 1,
+			bottomLayers: s.underlay ?? 2,
+			adhesion: s.adhesion ?? 'Geen',
+		};
+	}, [orgPrinters]);
+
+	const [printerSettings, setPrinterSettings] = useState<PrinterSettings>(orgDefaultPrinterSettings);
 
 	/* ── Step 3 – Print preparation state (per side) ── */
 	type SideHardness = {
@@ -573,24 +622,17 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 	const [step3Right, setStep3Right] = useState<SideHardness>({ ...DEFAULT_SIDE_HARDNESS });
 	const [step3Side, setStep3Side] = useState<'left' | 'right'>('left');
 	const [selectedZone, setSelectedZone] = useState<'front' | 'middle' | 'back' | null>(null);
-	const [hardnessProfiles, setHardnessProfiles] = useState<Record<HardnessKey, { infillPercent: number }> | null>(null);
+
+	// Derive hardness profiles from org printer settings (no need for client-side fetch)
+	const orgHardnessProfiles = useMemo(() => {
+		const first = orgPrinters?.[0];
+		return first?.settings?.hardnessProfiles ?? null;
+	}, [orgPrinters]);
+	const [hardnessProfiles, setHardnessProfiles] = useState<Record<HardnessKey, { infillPercent: number }> | null>(orgHardnessProfiles);
 	const activeProfiles = hardnessProfiles ?? DEFAULT_HARDNESS_PROFILES;
 
 	const step3Current = step3Side === 'left' ? step3Left : step3Right;
 	const setStep3Current = step3Side === 'left' ? setStep3Left : setStep3Right;
-
-	// Fetch hardness profiles from the first printer in the organisation
-	useEffect(() => {
-		let cancelled = false;
-		getPrinters().then((printers) => {
-			if (cancelled) return;
-			const first = printers[0];
-			if (first?.settings?.hardnessProfiles) {
-				setHardnessProfiles(first.settings.hardnessProfiles);
-			}
-		}).catch(() => { /* ignore – use defaults */ });
-		return () => { cancelled = true; };
-	}, []);
 
 	// Keep printerSettings in sync with Step 3 choices
 	useEffect(() => {
@@ -614,7 +656,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		}));
 	}, [step3Left, step3Right, activeProfiles]);
 	const [showScanModal, setShowScanModal] = useState(false);
-	const [selectedDemoPairId, setSelectedDemoPairId] = useState<string>('ekrem');
+	const [selectedPairId, setSelectedPairId] = useState<string | null>(null);
 	const [step4View, setStep4View] = useState<'export' | 'directProduce'>(
 		'export'
 	);
@@ -816,20 +858,117 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		if (!selectedInsoleSide) return;
 		setBoxEnabled((prev) => ({ ...prev, [selectedInsoleSide]: false }));
 	}, [selectedInsoleSide]);
+
+	// ── Client settings getter — supplies all local useState values to autosave ──
+	useEffect(() => {
+		clientSettingsGetterRef.current = () => ({
+			productionMethod,
+			selectedPairId,
+			selectedLeftScanId,
+			selectedRightScanId,
+			corrections,
+			activeCorrections,
+			savedBottomText,
+			step3Left,
+			step3Right,
+			printerSettings,
+			trimlineAdjustments,
+			activeDesignStep,
+			elementsModalSide,
+			workflowStep,
+			scansActive,
+			showOverlays,
+			hardnessProfiles,
+		});
+	});
+
+	// ── Hydrate local state from saved design on mount ──
+	useEffect(() => {
+		if (initialDesign && !hasHydratedRef.current) {
+			hasHydratedRef.current = true;
+			const cs = hydrateFromDesign(initialDesign);
+			if (cs && typeof cs === 'object') {
+				// Restore all persisted local state
+				if (cs.productionMethod !== undefined) setProductionMethod(cs.productionMethod as string);
+				if (cs.selectedPairId !== undefined) setSelectedPairId(cs.selectedPairId as string | null);
+				if (cs.selectedLeftScanId !== undefined) setSelectedLeftScanId(cs.selectedLeftScanId as string | null);
+				if (cs.selectedRightScanId !== undefined) setSelectedRightScanId(cs.selectedRightScanId as string | null);
+				if (cs.corrections !== undefined) setCorrections(cs.corrections as typeof corrections);
+				if (cs.activeCorrections !== undefined) setActiveCorrections(cs.activeCorrections as CorrectionKey[]);
+				if (cs.savedBottomText !== undefined) setSavedBottomText(cs.savedBottomText as typeof savedBottomText);
+				if (cs.step3Left !== undefined) setStep3Left(cs.step3Left as typeof step3Left);
+				if (cs.step3Right !== undefined) setStep3Right(cs.step3Right as typeof step3Right);
+				if (cs.printerSettings !== undefined) setPrinterSettings(cs.printerSettings as PrinterSettings);
+				if (cs.trimlineAdjustments !== undefined) setTrimlineAdjustments(cs.trimlineAdjustments as typeof trimlineAdjustments);
+				if (cs.activeDesignStep !== undefined) setActiveDesignStep(cs.activeDesignStep as number);
+				if (cs.elementsModalSide !== undefined) setElementsModalSide(cs.elementsModalSide as 'left' | 'right');
+				if (cs.workflowStep !== undefined) setWorkflowStep(cs.workflowStep as WorkflowStep);
+				if (cs.scansActive !== undefined) setScansActive(cs.scansActive as boolean);
+				if (cs.showOverlays !== undefined) setShowOverlays(cs.showOverlays as boolean);
+				if (cs.hardnessProfiles !== undefined) setHardnessProfiles(cs.hardnessProfiles as Record<HardnessKey, { infillPercent: number }> | null);
+			}
+		}
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [initialDesign]);
+
+	// ── Trigger debounced autosave when local state changes ──
+	const hydrationDoneRef = useRef(false);
+	useEffect(() => {
+		// Skip the first render cycle after hydration to avoid saving hydrated state back
+		if (!hasHydratedRef.current) return;
+		if (!hydrationDoneRef.current) {
+			hydrationDoneRef.current = true;
+			return;
+		}
+		debouncedSave();
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [
+		productionMethod, selectedPairId, selectedLeftScanId, selectedRightScanId,
+		corrections, activeCorrections, savedBottomText,
+		step3Left, step3Right, printerSettings,
+		trimlineAdjustments, activeDesignStep, elementsModalSide,
+		workflowStep, scansActive, showOverlays, hardnessProfiles,
+	]);
 	
 	// Normalize scans: footSide from DB is uppercase ('LEFT'/'RIGHT'), normalize to lowercase
 	const scans = useMemo(
 		() =>
-			(project.scans ?? []).map((s) => ({
+			(projectScans ?? []).map((s) => ({
 				...s,
 				footSide: s.footSide.toLowerCase(),
 			})),
-		[project.scans]
+		[projectScans]
 	);
-	const orderedScans = useMemo(
-		() => scans.slice().sort((a, b) => a.footSide.localeCompare(b.footSide)),
-		[scans]
-	);
+
+	// Group scans into pairs by pairId
+	const scanPairs = useMemo(() => {
+		const map = new Map<string, { pairId: string; name: string; left?: typeof scans[number]; right?: typeof scans[number] }>();
+		for (const scan of scans) {
+			const existing = map.get(scan.pairId);
+			if (existing) {
+				if (scan.footSide === 'left') existing.left = scan;
+				else existing.right = scan;
+			} else {
+				map.set(scan.pairId, {
+					pairId: scan.pairId,
+					name: scan.name || 'Naamloos',
+					left: scan.footSide === 'left' ? scan : undefined,
+					right: scan.footSide === 'right' ? scan : undefined,
+				});
+			}
+		}
+		return Array.from(map.values());
+	}, [scans]);
+
+	// Auto-select first complete pair if none selected
+	const activePair = useMemo(() => {
+		if (selectedPairId) {
+			return scanPairs.find(p => p.pairId === selectedPairId) ?? null;
+		}
+		// Default to first pair with both sides
+		return scanPairs.find(p => p.left && p.right) ?? scanPairs[0] ?? null;
+	}, [scanPairs, selectedPairId]);
+
 	const selectedLeftScan = selectedLeftScanId
 		? scans.find((s) => s.id === selectedLeftScanId)
 		: null;
@@ -838,17 +977,25 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		: null;
 	const leftScan =
 		selectedLeftScan ??
-		orderedScans.find((s) => s.footSide === 'left') ??
+		activePair?.left ??
 		null;
 	const rightScan =
 		selectedRightScan ??
-		orderedScans.find((s) => s.footSide === 'right') ??
+		activePair?.right ??
 		null;
 
-	// Use patient scans when available, fall back to selected demo pair
-	const activeDemoPair = DEMO_SCAN_PAIRS.find(p => p.id === selectedDemoPairId) ?? DEMO_SCAN_PAIRS[0];
-	const leftStlUrl = leftScan?.stlUrl ?? activeDemoPair.leftUrl;
-	const rightStlUrl = rightScan?.stlUrl ?? activeDemoPair.rightUrl;
+	// Scan STL URLs — no demo fallback, only real backend scans
+	const leftStlUrl = leftScan?.stlUrl ?? '';
+	const rightStlUrl = rightScan?.stlUrl ?? '';
+
+	// ── Ensure scan overlays are shown when scans are active and URLs are available ──
+	// This covers the case where showOverlays was not yet persisted in older saves,
+	// and ensures overlays always appear when we have active scans.
+	useEffect(() => {
+		if (scansActive && (leftStlUrl || rightStlUrl) && !showOverlays) {
+			setShowOverlays(true);
+		}
+	}, [scansActive, leftStlUrl, rightStlUrl, showOverlays]);
 
 	const currentPointStep = POINT_SEQUENCE[pointStepIndex];
 
@@ -2444,9 +2591,9 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 							onLeftSelect={(id) => setSelectedLeftScanId(id)}
 							onRightSelect={(id) => setSelectedRightScanId(id)}
 							onContinue={() => {
-								const rUrl = rightScan?.stlUrl ?? activeDemoPair.rightUrl;
-								const lUrl = leftScan?.stlUrl ?? activeDemoPair.leftUrl;
-								autoDetectAndApply(rUrl, lUrl);
+								const rUrl = rightStlUrl;
+								const lUrl = leftStlUrl;
+								if (rUrl && lUrl) autoDetectAndApply(rUrl, lUrl);
 							}}
 						/>
 					)}
@@ -2869,7 +3016,30 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 									<div className="flex-1 overflow-y-auto px-4 pb-4 pr-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-[rgba(255,255,255,0.18)]">
 										{renderStepContent()}
 									</div>
-									<div className="border-t border-ui-border px-4 py-3 flex items-center justify-end ">
+									<div className="border-t border-ui-border px-4 py-3 flex items-center justify-between">
+										{/* Autosave status */}
+										<div className="flex items-center gap-1.5 text-[11px]">
+											{saveStatus === 'saving' && (
+												<>
+													<Loader2 className="h-3 w-3 animate-spin text-ui-muted" />
+													<span className="text-ui-muted">Opslaan...</span>
+												</>
+											)}
+											{saveStatus === 'error' && (
+												<>
+													<AlertCircle className="h-3 w-3 text-red-400" />
+													<span className="text-red-400">Opslaan mislukt</span>
+												</>
+											)}
+											{(saveStatus === 'saved' || saveStatus === 'idle') && lastSavedAt && (
+												<>
+													<Check className="h-3 w-3 text-green-400" />
+													<span className="text-ui-muted">
+														Opgeslagen {lastSavedAt.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}
+													</span>
+												</>
+											)}
+										</div>
 										<Button
 											onClick={() => setActiveDesignStep(2)}
 											size="sm"
@@ -2894,21 +3064,21 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 					<>
 						<Button
 							variant="outline"
-							disabled={autoDetectStatus === 'detecting'}
+							disabled={autoDetectStatus === 'detecting' || !leftScan || !rightScan}
 							onClick={() => {
 								if (leftScan?.id) setSelectedLeftScanId(leftScan.id);
 								if (rightScan?.id) setSelectedRightScanId(rightScan.id);
 								setShowScanModal(false);
-								// Try automatic detection first; falls back to manual if confidence is low
-								const rUrl = rightScan?.stlUrl ?? activeDemoPair.rightUrl;
-								const lUrl = leftScan?.stlUrl ?? activeDemoPair.leftUrl;
-								autoDetectAndApply(rUrl, lUrl);
+								const rUrl = rightStlUrl;
+								const lUrl = leftStlUrl;
+								if (rUrl && lUrl) autoDetectAndApply(rUrl, lUrl);
 							}}
 						>
-							{autoDetectStatus === 'detecting' ? 'Detecteren...' : leftScan && rightScan ? 'Gebruik paar' : 'Gebruik scans'}
+							{autoDetectStatus === 'detecting' ? 'Detecteren...' : 'Gebruik paar'}
 						</Button>
 						<Button
 							variant="ghost"
+							disabled={!leftScan || !rightScan}
 							onClick={() => {
 								if (leftScan?.id) setSelectedLeftScanId(leftScan.id);
 								if (rightScan?.id) setSelectedRightScanId(rightScan.id);
@@ -2926,76 +3096,94 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 			>
 				<div className="grid grid-cols-[260px_1fr]">
 					<div className="border-r border-ui-border bg-[rgba(255,255,255,0.02)]">
-						{leftScan && rightScan && (
+						{/* Upload button */}
+						<div className="px-3 py-3 border-b border-ui-border">
+							<Button
+								onClick={() => {
+									setShowScanModal(false);
+									setShowUploadScansModal(true);
+								}}
+								className="w-full rounded-lg bg-ui-accent px-3 py-2 text-sm font-medium text-slate-900"
+							>
+								<Plus className="mr-1.5 h-4 w-4" />
+								Upload nieuwe scans
+							</Button>
+						</div>
+						{scanPairs.length === 0 ? (
+							<div className="px-4 py-8 text-center text-sm text-ui-muted">
+								Nog geen scans geüpload
+							</div>
+						) : (
 							<>
 								<div className="px-4 py-2 text-[11px] uppercase text-ui-muted">
-									Patiënt scans
+									Beschikbare scans
 								</div>
 								<div className="space-y-2 px-3 pb-3">
-									<button
-										type="button"
-										onClick={() => setSelectedDemoPairId('')}
-										className={cn(
-											'flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left transition',
-											!selectedDemoPairId
-												? 'border-ui-accent bg-[rgba(99,247,214,0.16)] text-foreground'
-												: 'border-ui-border bg-[rgba(255,255,255,0.02)] text-ui-text hover:bg-[rgba(255,255,255,0.04)]'
-										)}
-									>
-										<div className="flex flex-col">
-											<span className="text-sm font-semibold">Patiënt scan</span>
-											<span className="text-[11px] uppercase text-ui-muted">
-												Links &amp; Rechts
-											</span>
-										</div>
-									</button>
+									{scanPairs.map((pair) => (
+										<button
+											key={pair.pairId}
+											type="button"
+											onClick={() => {
+												setSelectedPairId(pair.pairId);
+												if (pair.left) setSelectedLeftScanId(pair.left.id);
+												if (pair.right) setSelectedRightScanId(pair.right.id);
+											}}
+											className={cn(
+												'flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left transition',
+												(selectedPairId === pair.pairId || (!selectedPairId && activePair?.pairId === pair.pairId))
+													? 'border-ui-accent bg-[rgba(99,247,214,0.16)] text-foreground'
+													: 'border-ui-border bg-[rgba(255,255,255,0.02)] text-ui-text hover:bg-[rgba(255,255,255,0.04)]'
+											)}
+										>
+											<div className="flex flex-col">
+												<span className="text-sm font-semibold">{pair.name}</span>
+												<span className="text-[11px] uppercase text-ui-muted">
+													{pair.left ? 'Links' : ''}{pair.left && pair.right ? ' & ' : ''}{pair.right ? 'Rechts' : ''}
+												</span>
+											</div>
+											<div className="flex gap-1">
+												{pair.left && (
+													<span className="rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-400">L</span>
+												)}
+												{pair.right && (
+													<span className="rounded-md bg-purple-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-purple-400">R</span>
+												)}
+											</div>
+										</button>
+									))}
 								</div>
 							</>
 						)}
-						<div className="px-4 py-2 text-[11px] uppercase text-ui-muted">
-							Test scans
-						</div>
-						<div className="space-y-2 px-3 pb-3">
-							{DEMO_SCAN_PAIRS.map((pair) => (
-								<button
-									key={pair.id}
-									type="button"
-									onClick={() => setSelectedDemoPairId(pair.id)}
-									className={cn(
-										'flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left transition',
-										selectedDemoPairId === pair.id
-											? 'border-ui-accent bg-[rgba(99,247,214,0.16)] text-foreground'
-											: 'border-ui-border bg-[rgba(255,255,255,0.02)] text-ui-text hover:bg-[rgba(255,255,255,0.04)]'
-									)}
-								>
-									<div className="flex flex-col">
-										<span className="text-sm font-semibold">{pair.label}</span>
-										<span className="text-[11px] uppercase text-ui-muted">
-											Links &amp; Rechts
-										</span>
-									</div>
-									<span className="rounded-full border border-ui-border px-2 py-1 text-[11px] uppercase text-ui-muted">
-										Demo
-									</span>
-								</button>
-							))}
-						</div>
 					</div>
 					<div className="h-[60vh] bg-[rgba(255,255,255,0.02)]">
-						<div className="grid h-full grid-cols-2 divide-x divide-ui-border">
-							<div className="relative h-full bg-[rgba(255,255,255,0.01)]">
-								<MiniSTLPreview url={(!selectedDemoPairId && leftScan?.stlUrl) || activeDemoPair.leftUrl} />
-								<div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-[10px] text-ui-muted">
-									Links
+						{leftScan || rightScan ? (
+							<div className="grid h-full grid-cols-2 divide-x divide-ui-border">
+								<div className="relative h-full bg-[rgba(255,255,255,0.01)]">
+									{leftScan?.stlUrl ? (
+										<MiniSTLPreview url={leftScan.stlUrl} />
+									) : (
+										<div className="flex h-full items-center justify-center text-sm text-ui-muted">Geen linker scan</div>
+									)}
+									<div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-[10px] text-ui-muted">
+										Links
+									</div>
+								</div>
+								<div className="relative h-full bg-[rgba(255,255,255,0.01)]">
+									{rightScan?.stlUrl ? (
+										<MiniSTLPreview url={rightScan.stlUrl} />
+									) : (
+										<div className="flex h-full items-center justify-center text-sm text-ui-muted">Geen rechter scan</div>
+									)}
+									<div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-[10px] text-ui-muted">
+										Rechts
+									</div>
 								</div>
 							</div>
-							<div className="relative h-full bg-[rgba(255,255,255,0.01)]">
-								<MiniSTLPreview url={(!selectedDemoPairId && rightScan?.stlUrl) || activeDemoPair.rightUrl} />
-								<div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-[10px] text-ui-muted">
-									Rechts
-								</div>
+						) : (
+							<div className="flex h-full items-center justify-center text-sm text-ui-muted">
+								Upload scans om een preview te zien
 							</div>
-						</div>
+						)}
 					</div>
 				</div>
 			</BaseModal>
@@ -3018,6 +3206,33 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 					onClose={() => setShowMillingModeSelector(false)}
 				/>
 			)}
+
+			{/* Upload scans modal */}
+			<UploadScansModal
+				open={showUploadScansModal}
+				onClose={() => setShowUploadScansModal(false)}
+				projectId={projectId}
+				onUploadComplete={(newScans) => {
+					setProjectScans((prev) => [...prev, ...newScans.map((s) => ({
+						id: s.id,
+						name: s.name,
+						pairId: s.pairId,
+						footSide: s.footSide.toUpperCase(),
+						stlUrl: s.stlUrl,
+					}))]);
+					// Select the newly uploaded pair
+					if (newScans.length > 0) {
+						setSelectedPairId(newScans[0].pairId);
+						const newLeft = newScans.find(s => s.footSide.toLowerCase() === 'left');
+						const newRight = newScans.find(s => s.footSide.toLowerCase() === 'right');
+						if (newLeft) setSelectedLeftScanId(newLeft.id);
+						if (newRight) setSelectedRightScanId(newRight.id);
+					}
+					setShowUploadScansModal(false);
+					// Re-open scan selection modal to show the new scans
+					setShowScanModal(true);
+				}}
+			/>
 		</>
 	);
 }

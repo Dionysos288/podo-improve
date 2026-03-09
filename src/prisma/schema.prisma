@@ -203,6 +203,8 @@ enum ProjectStatus {
 model Scan {
   id         String   @id @default(uuid())
   projectId  String   @map("project_id")
+  name       String   @default("")
+  pairId     String   @default(uuid()) @map("pair_id") // Groups left + right scans together
   footSide   FootSide
   stlUrl     String   @map("stl_url")
   uploadedBy String?  @map("uploaded_by")
@@ -213,6 +215,7 @@ model Scan {
   uploader User?   @relation(fields: [uploadedBy], references: [id])
 
   @@index([projectId])
+  @@index([pairId])
   @@map("scans")
 }
 
@@ -233,6 +236,7 @@ model Design {
   matchTransform Json?     @map("match_transform")
   landmarks      Json?     @default("{}") // ThreePointLandmarks + DerivedLandmarks + FootGeometry
   scanMetadata   Json?     @map("scan_metadata") @default("{}") // bounding box, units, vertex count for re-import validation
+  clientSettings Json?     @map("client_settings") @default("{}") // Local UI state: corrections, printer settings, hardness, etc.
   stlUrl         String?   @map("stl_url")
   gcodeUrl       String?   @map("gcode_url")
   version        Int       @default(1)

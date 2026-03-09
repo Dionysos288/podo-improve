@@ -242,3 +242,28 @@ export async function getProjectScans(projectId: string) {
 
 	return scans;
 }
+
+export async function deleteScanPair(pairId: string) {
+	const { orgId } = await requireOrganization();
+
+	const scansInPair = await prisma.scan.findMany({
+		where: {
+			pairId,
+			project: { patient: { orgId }, deletedAt: null },
+		},
+	});
+
+	if (scansInPair.length === 0) {
+		throw new Error('Scan niet gevonden');
+	}
+
+	const projectId = scansInPair[0].projectId;
+
+	await prisma.scan.deleteMany({ where: { pairId } });
+
+	revalidatePath('/[orgSlug]/projects');
+	revalidatePath(`/[orgSlug]/projects/${projectId}`);
+	revalidatePath(`/[orgSlug]/design/${projectId}`);
+
+	return { success: true };
+}

@@ -1,0 +1,355 @@
+'use client';
+
+import { useEffect, useRef, useCallback, useState } from 'react';
+import { useDesignStore } from '@/src/shared/core/store/designStore';
+import { useElementsStore } from '@/src/features/design/elements';
+
+export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+
+interface DesignSnapshot {
+	parameters: Record<string, unknown>;
+	elements: unknown[];
+	landmarks: Record<string, unknown>;
+	scanMetadata: Record<string, unknown>;
+	matchTransform: Record<string, unknown> | null;
+	clientSettings: Record<string, unknown>;
+}
+
+const AUTOSAVE_DEBOUNCE_MS = 2000;
+
+/**
+ * A getter function that DesignPageClient provides to supply all local
+ * useState values (corrections, printer settings, hardness, etc.) for saving.
+ */
+export type ClientSettingsGetter = () => Record<string, unknown>;
+
+/**
+ * Hook that manages autosaving the design & elements store state to the backend.
+ *
+ * - Creates a design record on first meaningful change if none exists.
+ * - Debounces saves to avoid excessive API calls (2s debounce).
+ * - Returns current designId and save status for UI indicators.
+ */
+export function useDesignAutosave(
+	projectId: string,
+	initialDesignId?: string | null,
+	clientSettingsGetterRef?: React.RefObject<ClientSettingsGetter | null>
+) {
+	const [designId, setDesignId] = useState<string | null>(initialDesignId ?? null);
+	const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+	const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+	const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const lastSavedSnapshotRef = useRef<string>('');
+	const isSavingRef = useRef(false);
+	const designIdRef = useRef(designId);
+	const isCreatingRef = useRef(false);
+
+	// Keep ref in sync
+	useEffect(() => {
+		designIdRef.current = designId;
+	}, [designId]);
+
+	/**
+	 * Build a snapshot of the current design state from both stores + client settings.
+	 */
+	const buildSnapshot = useCallback((): DesignSnapshot => {
+		const designState = useDesignStore.getState();
+		const elementsState = useElementsStore.getState();
+		const clientSettings = clientSettingsGetterRef?.current?.() ?? {};
+
+		return {
+			parameters: {
+				...designState.parameters,
+				selectedTemplate: designState.selectedTemplate,
+				selectedBaseSTL: designState.selectedBaseSTL,
+				gridEdits: designState.gridEdits,
+				zoneAdjustments: designState.zoneAdjustments,
+			},
+			elements: elementsState.placedElements.map((el) => ({
+				...el,
+			})),
+			landmarks: {
+				threePointLandmarks: designState.threePointLandmarks,
+				derivedLandmarks: designState.derivedLandmarks,
+				completeLandmarks: designState.completeLandmarks,
+				landmarks: designState.landmarks,
+			},
+			scanMetadata: {
+				footGeometry: designState.footGeometry,
+				plantarData: designState.plantarData,
+				insoleConfig: designState.insoleConfig,
+				scanValidation: designState.scanValidation,
+				insoleAttributes: designState.insoleAttributes,
+			},
+			matchTransform: designState.matchTransform,
+			clientSettings,
+		};
+	}, [clientSettingsGetterRef]);
+
+	/**
+	 * Create a new design record on the backend.
+	 */
+	const createDesignRecord = useCallback(
+		async (snapshot: DesignSnapshot): Promise<string | null> => {
+			if (isCreatingRef.current) return null;
+			isCreatingRef.current = true;
+			try {
+				const response = await fetch(`/api/projects/${projectId}/designs`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(snapshot),
+				});
+				if (!response.ok) {
+					throw new Error('Failed to create design');
+				}
+				const design = await response.json();
+				return design.id;
+			} catch (err) {
+				console.error('[Autosave] Failed to create design:', err);
+				return null;
+			} finally {
+				isCreatingRef.current = false;
+			}
+		},
+		[projectId]
+	);
+
+	/**
+	 * Save the current snapshot to the backend.
+	 */
+	const saveSnapshot = useCallback(
+		async (snapshot: DesignSnapshot) => {
+			const snapshotStr = JSON.stringify(snapshot);
+
+			// Skip if nothing changed
+			if (snapshotStr === lastSavedSnapshotRef.current) return;
+
+			// Skip if already saving
+			if (isSavingRef.current) return;
+
+			isSavingRef.current = true;
+			setSaveStatus('saving');
+
+			try {
+				let currentDesignId = designIdRef.current;
+
+				// Create design if none exists
+				if (!currentDesignId) {
+					currentDesignId = await createDesignRecord(snapshot);
+					if (!currentDesignId) {
+						setSaveStatus('error');
+						return;
+					}
+					setDesignId(currentDesignId);
+					designIdRef.current = currentDesignId;
+					lastSavedSnapshotRef.current = snapshotStr;
+					setSaveStatus('saved');
+					setLastSavedAt(new Date());
+					return;
+				}
+
+				// Update existing design
+				const response = await fetch(`/api/projects/${projectId}/designs`, {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						designId: currentDesignId,
+						...snapshot,
+					}),
+				});
+
+				if (!response.ok) {
+					throw new Error('Failed to save design');
+				}
+
+				lastSavedSnapshotRef.current = snapshotStr;
+				setSaveStatus('saved');
+				setLastSavedAt(new Date());
+			} catch (err) {
+				console.error('[Autosave] Save failed:', err);
+				setSaveStatus('error');
+			} finally {
+				isSavingRef.current = false;
+			}
+		},
+		[projectId, createDesignRecord]
+	);
+
+	/**
+	 * Trigger a debounced save.
+	 */
+	const debouncedSave = useCallback(() => {
+		if (debounceTimerRef.current) {
+			clearTimeout(debounceTimerRef.current);
+		}
+
+		debounceTimerRef.current = setTimeout(() => {
+			const snapshot = buildSnapshot();
+			saveSnapshot(snapshot);
+		}, AUTOSAVE_DEBOUNCE_MS);
+	}, [buildSnapshot, saveSnapshot]);
+
+	/**
+	 * Subscribe to both stores and trigger debounced save on changes.
+	 */
+	useEffect(() => {
+		const unsubDesign = useDesignStore.subscribe(() => {
+			debouncedSave();
+		});
+
+		const unsubElements = useElementsStore.subscribe(() => {
+			debouncedSave();
+		});
+
+		return () => {
+			unsubDesign();
+			unsubElements();
+			if (debounceTimerRef.current) {
+				clearTimeout(debounceTimerRef.current);
+			}
+		};
+	}, [debouncedSave]);
+
+	/**
+	 * No longer auto-reset 'saved' → 'idle'. The UI shows lastSavedAt time instead.
+	 * Only reset on next save start.
+	 */
+
+	/**
+	 * Hydrate stores from a loaded design record. Returns clientSettings for the caller to apply.
+	 */
+	const hydrateFromDesign = useCallback(
+		(design: {
+			id: string;
+			parameters: Record<string, unknown>;
+			elements: unknown[];
+			landmarks: Record<string, unknown> | null;
+			scanMetadata: Record<string, unknown> | null;
+			matchTransform: Record<string, unknown> | null;
+			clientSettings?: Record<string, unknown> | null;
+		}): Record<string, unknown> | null => {
+			setDesignId(design.id);
+			designIdRef.current = design.id;
+
+			const designStore = useDesignStore.getState();
+			const elementsStore = useElementsStore.getState();
+
+			// Hydrate design store parameters
+			const params = design.parameters as Record<string, unknown>;
+			if (params) {
+				const {
+					selectedTemplate,
+					selectedBaseSTL,
+					gridEdits,
+					zoneAdjustments,
+					...restParams
+				} = params;
+
+				designStore.setParameters(restParams);
+				if (selectedTemplate !== undefined) {
+					designStore.setSelectedTemplate(selectedTemplate as string | null);
+				}
+				if (selectedBaseSTL !== undefined) {
+					designStore.setSelectedBaseSTL(selectedBaseSTL as string | null);
+				}
+				if (Array.isArray(gridEdits)) {
+					// Clear and re-add grid edits
+					designStore.clearGridEdits();
+					for (const edit of gridEdits) {
+						designStore.addGridEdit(edit);
+					}
+				}
+				if (Array.isArray(zoneAdjustments)) {
+					designStore.clearZoneAdjustments();
+					for (const adj of zoneAdjustments) {
+						designStore.addZoneAdjustment(adj);
+					}
+				}
+			}
+
+			// Hydrate landmarks
+			const landmarks = design.landmarks as Record<string, unknown> | null;
+			if (landmarks) {
+				if (landmarks.threePointLandmarks !== undefined) {
+					designStore.setThreePointLandmarks(landmarks.threePointLandmarks as never);
+				}
+				if (landmarks.derivedLandmarks !== undefined) {
+					designStore.setDerivedLandmarks(landmarks.derivedLandmarks as never);
+				}
+				if (landmarks.completeLandmarks !== undefined) {
+					designStore.setCompleteLandmarks(landmarks.completeLandmarks as never);
+				}
+				if (landmarks.landmarks !== undefined) {
+					designStore.setLandmarks(landmarks.landmarks as never);
+				}
+			}
+
+			// Hydrate scan metadata
+			const scanMeta = design.scanMetadata as Record<string, unknown> | null;
+			if (scanMeta) {
+				if (scanMeta.footGeometry !== undefined) {
+					designStore.setFootGeometry(scanMeta.footGeometry as never);
+				}
+				if (scanMeta.plantarData !== undefined) {
+					designStore.setPlantarData(scanMeta.plantarData as never);
+				}
+				if (scanMeta.insoleConfig !== undefined) {
+					designStore.setInsoleConfig(scanMeta.insoleConfig as never);
+				}
+				if (scanMeta.scanValidation !== undefined) {
+					designStore.setScanValidation(scanMeta.scanValidation as never);
+				}
+				if (scanMeta.insoleAttributes !== undefined) {
+					designStore.setInsoleAttributes(scanMeta.insoleAttributes as never);
+				}
+			}
+
+			// Hydrate match transform
+			if (design.matchTransform) {
+				designStore.setMatchTransform(design.matchTransform as never);
+			}
+
+			// Hydrate placed elements
+			const elements = design.elements as Array<Record<string, unknown>>;
+			if (Array.isArray(elements) && elements.length > 0) {
+				elementsStore.clearAll();
+				for (const el of elements) {
+					// Directly populate placedElements rather than going through addElement
+					// since addElement requires a libraryKey lookup
+					useElementsStore.setState((state) => ({
+						placedElements: [...state.placedElements, el as never],
+					}));
+				}
+			}
+
+			// Store the initial snapshot to avoid immediate re-save
+			const snapshot = buildSnapshot();
+			lastSavedSnapshotRef.current = JSON.stringify(snapshot);
+
+			// Return clientSettings so the caller can hydrate its local useState
+			return (design.clientSettings as Record<string, unknown>) ?? null;
+		},
+		[buildSnapshot]
+	);
+
+	/**
+	 * Force an immediate save (for explicit "save" actions).
+	 */
+	const forceSave = useCallback(() => {
+		if (debounceTimerRef.current) {
+			clearTimeout(debounceTimerRef.current);
+		}
+		const snapshot = buildSnapshot();
+		saveSnapshot(snapshot);
+	}, [buildSnapshot, saveSnapshot]);
+
+	return {
+		designId,
+		saveStatus,
+		lastSavedAt,
+		hydrateFromDesign,
+		forceSave,
+		/** Trigger a debounced save (call when local state changes outside Zustand) */
+		debouncedSave,
+	};
+}
