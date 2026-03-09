@@ -470,6 +470,7 @@ export function DesignPageClient({ project, orgSlug }: DesignPageClientProps) {
 		showRight: true,
 		transparent: false,
 		heatmap: false,
+		deviationMap: false,
 		clampDebug: false,
 		showInsoles: true,
 		showModel: true,

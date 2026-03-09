@@ -54,6 +54,7 @@ interface STLMeshProps {
 	showZones?: boolean;
 	heatmap?: boolean;
 	clampDebug?: boolean;
+	deviationMap?: boolean;
 	transparentMode?: boolean;
 	probeEnabled?: boolean;
 	onProbe?: (payload: {
@@ -406,6 +407,104 @@ function weldAndSmoothNormals(
 	}
 }
 
+/**
+ * Removes high-frequency scan topography from the insole top surface using
+ * frequency separation: a heavily-smoothed reference captures the large-scale
+ * foot shape; the difference (scan bumps, toe impressions, metatarsal ridges)
+ * is reduced to `residualFactor` (default 6%).
+ *
+ * Also stores per-vertex normalised deviation in geometry.userData.scanDeviations
+ * so the "Scan artefacten" overlay can highlight problem areas white→orange→red.
+ */
+function smoothInsoleTopSurface(
+	geometry: THREE.BufferGeometry,
+	refPasses = 250,
+	residualFactor = 0.06,
+	normalThreshold = 0.35,
+): THREE.BufferGeometry {
+	if (!geometry.index) return geometry;
+	const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute | null;
+	const normalAttr = geometry.getAttribute('normal') as THREE.BufferAttribute | null;
+	if (!posAttr || !normalAttr) return geometry;
+
+	const vertCount = posAttr.count;
+	const idxArr = geometry.index.array;
+	const faceCount = idxArr.length / 3;
+
+	// Determine height axis (smallest bbox extent = insole thickness direction)
+	geometry.computeBoundingBox();
+	const bbox = geometry.boundingBox!;
+	const sz = bbox.getSize(new THREE.Vector3());
+	const hAxisIdx: 0 | 1 | 2 = sz.x <= sz.y && sz.x <= sz.z ? 0 : sz.y <= sz.z ? 1 : 2;
+
+	// Build 1-ring neighbour sets
+	const neighborSets: Set<number>[] = Array.from({ length: vertCount }, () => new Set<number>());
+	for (let f = 0; f < faceCount; f++) {
+		const a = idxArr[f * 3], b = idxArr[f * 3 + 1], c = idxArr[f * 3 + 2];
+		neighborSets[a].add(b); neighborSets[a].add(c);
+		neighborSets[b].add(a); neighborSets[b].add(c);
+		neighborSets[c].add(a); neighborSets[c].add(b);
+	}
+
+	// Mark top-facing vertices (normal pointing mostly along height axis)
+	const normals = normalAttr.array as Float32Array;
+	const topFacing = new Uint8Array(vertCount);
+	for (let v = 0; v < vertCount; v++) {
+		if (normals[v * 3 + hAxisIdx] > normalThreshold) topFacing[v] = 1;
+	}
+
+	// Extract original heights along height axis
+	const pos = posAttr.array as Float32Array;
+	const origHeights = new Float32Array(vertCount);
+	for (let v = 0; v < vertCount; v++) origHeights[v] = pos[v * 3 + hAxisIdx];
+
+	// Compute heavily-smoothed reference.
+	// CRITICAL: use ALL 1-ring neighbours (not just topFacing) so that ridge tops
+	// get averaged against the side-faces and valleys between them — otherwise
+	// ridge peaks only average with other peaks and never flatten.
+	// Only topFacing vertices are updated each pass; side/bottom stay fixed,
+	// acting as anchors that pull the ridge tops down toward the true surface.
+	const smoothRef = origHeights.slice();
+	const tmp = new Float32Array(vertCount);
+	const alpha = 0.35;
+	for (let p = 0; p < refPasses; p++) {
+		for (let v = 0; v < vertCount; v++) {
+			if (!topFacing[v]) { tmp[v] = smoothRef[v]; continue; }
+			const nbs = neighborSets[v];
+			if (nbs.size === 0) { tmp[v] = smoothRef[v]; continue; }
+			let sum = 0;
+			for (const nb of nbs) sum += smoothRef[nb]; // ALL neighbours
+			tmp[v] = smoothRef[v] + alpha * (sum / nbs.size - smoothRef[v]);
+		}
+		smoothRef.set(tmp);
+	}
+
+	// Store normalised deviation for the "Scan artefacten" diagnostic colour overlay
+	let maxDev = 1e-6;
+	for (let v = 0; v < vertCount; v++) {
+		if (topFacing[v]) {
+			const d = Math.abs(origHeights[v] - smoothRef[v]);
+			if (d > maxDev) maxDev = d;
+		}
+	}
+	const deviations = new Float32Array(vertCount);
+	for (let v = 0; v < vertCount; v++) {
+		if (topFacing[v]) deviations[v] = Math.abs(origHeights[v] - smoothRef[v]) / maxDev;
+	}
+	geometry.userData.scanDeviations = deviations;
+
+	// Frequency separation: output = smooth_ref + residualFactor × (original − smooth_ref)
+	// residualFactor = 0.06 → keeps only 6 % of scan topography, removes 94 %.
+	for (let v = 0; v < vertCount; v++) {
+		if (!topFacing[v]) continue;
+		pos[v * 3 + hAxisIdx] = smoothRef[v] + residualFactor * (origHeights[v] - smoothRef[v]);
+	}
+
+	posAttr.needsUpdate = true;
+	geometry.computeVertexNormals();
+	return geometry;
+}
+
 function removeDegenerateTriangles(
 	geometry: THREE.BufferGeometry,
 	areaEpsilon = 1e-12
@@ -618,6 +717,27 @@ function applyHeightmapColors(geometry: THREE.BufferGeometry): void {
 		colors[i * 3] = temp.r;
 		colors[i * 3 + 1] = temp.g;
 		colors[i * 3 + 2] = temp.b;
+	}
+
+	geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+}
+
+/** Colour each vertex by how much its height deviated from the smooth reference
+ *  computed by smoothInsoleTopSurface.  White = clean surface, orange/red = scan
+ *  artefact.  Requires geometry.userData.scanDeviations to be set. */
+function applyDeviationColors(geometry: THREE.BufferGeometry): void {
+	const positions = geometry.getAttribute('position') as THREE.BufferAttribute;
+	const deviations = geometry.userData.scanDeviations as Float32Array | undefined;
+	const count = positions.count;
+	const colors = new Float32Array(count * 3);
+
+	for (let v = 0; v < count; v++) {
+		// Amplify ×2.5 so subtle bumps become visible; clamp to [0, 1]
+		const d = deviations ? Math.min(1, deviations[v] * 2.5) : 0;
+		// Ramp: white (d=0) → orange (d≈0.5) → red (d=1)
+		colors[v * 3]     = 1.0;
+		colors[v * 3 + 1] = Math.max(0, 1 - d * 1.5);
+		colors[v * 3 + 2] = Math.max(0, 1 - d * 3.0);
 	}
 
 	geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -1236,6 +1356,7 @@ function STLMesh({
 	showZones = false,
 	heatmap = false,
 	clampDebug = false,
+	deviationMap = false,
 	transparentMode = false,
 	probeEnabled = false,
 	onProbe,
@@ -1864,7 +1985,7 @@ function STLMesh({
 		// Recompute normals for better lighting. For STL inputs we also weld
 		// duplicate vertices first, otherwise smooth shading can look striped.
 		const smoothedGeometry = meshRole === 'insole'
-			? weldAndSmoothNormals(cloned)
+			? smoothInsoleTopSurface(weldAndSmoothNormals(cloned))
 			: (() => {
 				cloned.computeVertexNormals();
 				return cloned;
@@ -2145,6 +2266,7 @@ function STLMesh({
 			// Keep colors in sync when showing heatmap/zones.
 			if (showZones) applyZoneColors(existing);
 			else if (heatmap) applyHeightmapColors(existing);
+			else if (deviationMap) applyDeviationColors(existing);
 			else if (clampDebug && meshRole === 'insole') {
 				const applied = applyForefootClampDebugColors(existing, {
 					side,
@@ -2170,7 +2292,7 @@ function STLMesh({
 		animRafRef.current = requestAnimationFrame(step);
 		// We no longer need the target geometry object.
 		target.dispose();
-	}, [gridEditMode, showZones, heatmap, clampDebug, placedElements, applyOrientation, onGeometryReady, mmToWorld, rebuildElementOverlays, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments]);
+	}, [gridEditMode, showZones, heatmap, clampDebug, deviationMap, placedElements, applyOrientation, onGeometryReady, mmToWorld, rebuildElementOverlays, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments]);
 
 	const rebuildFinalGeometryFromCorrected = useCallback(() => {
 		const corrected = correctedGeometryRef.current;
@@ -2182,6 +2304,10 @@ function STLMesh({
 		}
 		// Re-weld to keep mesh as one continuous, watertight piece
 		const finalGeometry = weldAndSmoothNormals(workingGeometry);
+		// Carry scan-deviation data so the diagnostic overlay still works
+		if (workingGeometry.userData.scanDeviations) {
+			finalGeometry.userData.scanDeviations = workingGeometry.userData.scanDeviations;
+		}
 		// Apply element height displacements (raised pads)
 		if (placedElements && placedElements.length > 0) {
 			applyElements(finalGeometry, placedElements, { mmToWorld: mmToWorld || 1 });
@@ -2292,6 +2418,10 @@ function STLMesh({
 			applyHeightmapColors(geometry);
 			return;
 		}
+		if (deviationMap) {
+			applyDeviationColors(geometry);
+			return;
+		}
 		if (clampDebug && meshRole === 'insole') {
 			const applied = applyForefootClampDebugColors(geometry, {
 				side,
@@ -2311,7 +2441,7 @@ function STLMesh({
 		} else {
 			setElementOverlays(prev => { prev.forEach(d => d.geometry.dispose()); return []; });
 		}
-	}, [geometry, showZones, heatmap, clampDebug, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments, placedElements, mmToWorld, rebuildElementOverlays]);
+	}, [geometry, showZones, heatmap, clampDebug, deviationMap, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments, placedElements, mmToWorld, rebuildElementOverlays]);
 
 	const probeRafRef = useRef<number | null>(null);
 	const pendingProbeRef = useRef<{
@@ -2452,9 +2582,9 @@ function STLMesh({
 			} : undefined}
 		>
 			<meshStandardMaterial
-				key={(showZones || heatmap || clampDebug) ? 'colored' : 'normal'}
+				key={(showZones || heatmap || clampDebug || deviationMap) ? 'colored' : 'normal'}
 				color={showZones ? '#ffffff' : pointPickMode ? '#d9b5a1' : color}
-				vertexColors={showZones || heatmap || clampDebug}
+				vertexColors={showZones || heatmap || clampDebug || deviationMap}
 				side={THREE.DoubleSide}
 				shadowSide={THREE.DoubleSide}
 				roughness={0.3}
@@ -2529,6 +2659,7 @@ function STLMesh({
 
 						if (showZones) applyZoneColors(geometry);
 						else if (heatmap) applyHeightmapColors(geometry);
+						else if (deviationMap) applyDeviationColors(geometry);
 						else geometry.deleteAttribute('color');
 
 						working.dispose();
@@ -2573,6 +2704,7 @@ interface EnhancedSTLViewerProps {
 	transparent?: boolean;
 	heatmap?: boolean;
 	clampDebug?: boolean;
+	deviationMap?: boolean;
 	showInsoles?: boolean;
 	showModel?: boolean;
 	viewPreset?: 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom' | 'iso';
@@ -2688,6 +2820,7 @@ export const EnhancedSTLViewer = forwardRef<
 			transparent = false,
 			heatmap = false,
 			clampDebug = false,
+			deviationMap = false,
 			showInsoles = true,
 			showModel,
 			viewPreset = 'iso',
@@ -3441,6 +3574,7 @@ export const EnhancedSTLViewer = forwardRef<
 									showZones={showZones}
 									heatmap={heatmap}
 									clampDebug={clampDebug}
+									deviationMap={deviationMap}
 									transparentMode={transparent}
 									probeEnabled={analysisEnabled}
 									onProbe={(payload) => {
@@ -3498,6 +3632,7 @@ export const EnhancedSTLViewer = forwardRef<
 									showZones={showZones}
 									heatmap={heatmap}
 									clampDebug={clampDebug}
+									deviationMap={deviationMap}
 									transparentMode={transparent}
 									probeEnabled={analysisEnabled}
 									onProbe={(payload) => {

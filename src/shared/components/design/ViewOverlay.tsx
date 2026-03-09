@@ -14,7 +14,7 @@ import {
 	Box,
 	Layers,
 	Thermometer,
-	Bug,
+	Activity,
 	ChevronDown,
 } from 'lucide-react';
 import { useState } from 'react';
@@ -26,7 +26,7 @@ export type ViewSettings = {
 	showRight: boolean;
 	transparent: boolean;
 	heatmap: boolean;
-	clampDebug: boolean;
+	deviationMap: boolean;
 	showInsoles: boolean;
 	showModel: boolean;
 };
@@ -51,7 +51,7 @@ const toggleItems: Array<{
 	{ key: 'showRight', label: 'Rechts', icon: Footprints },
 	{ key: 'transparent', label: 'Transparant', icon: Layers },
 	{ key: 'heatmap', label: 'Hoogtemap', icon: Thermometer },
-	{ key: 'clampDebug', label: 'Clamp debug', icon: Bug },
+	{ key: 'deviationMap', label: 'Scan artefacten', icon: Activity },
 	{ key: 'showInsoles', label: 'Steunzool', icon: Footprints },
 	{ key: 'showModel', label: '3D model', icon: Box },
 ];
