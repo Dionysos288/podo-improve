@@ -1742,20 +1742,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 					<Card>
 						<CardContent>
 							<Select
-								label="Patroon"
-								value={selectedTemplate ?? 'classic'}
-								onChange={(val) => setSelectedTemplate(val)}
-								options={[
-									{ value: 'classic', label: 'Classic' },
-									{ value: 'dunes', label: 'Dunes' },
-									{ value: 'finncomfort', label: 'Finncomfort' },
-									{ value: 'man', label: 'Man' },
-									{ value: 'woman', label: 'Woman' },
-									{ value: '3quarter', label: '3 Quarter' },
-								]}
-							/>
-
-							<Select
 								label="Productiemethode"
 								value={productionMethod}
 								onChange={(val) => setProductionMethod(val)}
@@ -1844,18 +1830,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									Algemeen
 								</h4>
 								<div className="mt-3 space-y-2 text-sm">
-									<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
-										<span>Maatlabel</span>
-										<InlineSelect
-											value={generalNormalized.sizeLabel}
-											onChange={(val) => updateGeneral({ sizeLabel: val as 'EU' | 'US' | 'UK' })}
-											options={[
-												{ value: 'EU', label: 'EU' },
-												{ value: 'US', label: 'US' },
-												{ value: 'UK', label: 'UK' },
-											]}
-										/>
-									</div>
 									<div className="rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
 										<div className="flex items-center justify-between">
 											<span>Schoenmaat</span>
