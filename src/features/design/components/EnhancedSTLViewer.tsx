@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import {
 	Suspense,
@@ -24,6 +24,9 @@ import {
 	type LandmarkPoints,
 } from '@/src/features/design/utils/landmarkFitting';
 import { applyAllCorrections } from '@/src/features/design/utils/insoleCorrections';
+import { buildSurfaceModel } from '@/src/features/design/utils/insoleSurfaceModel';
+import { computeWidthFitTargets } from '@/src/features/design/utils/scanCorrespondence';
+import { solveConstrainedDeformation } from '@/src/features/design/utils/constrainedDeformation';
 import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpPanel';
 import type { CorrectionKey } from '@/src/shared/components/design/correctionsCatalog';
 import type { PlacedElement } from '@/src/features/design/elements/types';
@@ -138,13 +141,13 @@ function fillMeshHoles(
 ): THREE.BufferGeometry {
 	if (!geometry.index) return geometry;
 
-	const idx    = geometry.index.array as Uint16Array | Uint32Array;
+	const idx = geometry.index.array as Uint16Array | Uint32Array;
 	const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
 	if (!posAttr) return geometry;
 
-	const faceCount  = idx.length / 3;
-	const vertCount  = posAttr.count;
-	const positions  = posAttr.array as Float32Array;
+	const faceCount = idx.length / 3;
+	const vertCount = posAttr.count;
+	const positions = posAttr.array as Float32Array;
 
 	// ── Build directed half-edge set ──────────────────────────────────────
 	// Encode directed edge (a→b) as a * vertCount + b  (safe up to ~3M verts).
@@ -205,7 +208,7 @@ function fillMeshHoles(
 	if (loopsToFill.length === 0) return geometry;
 
 	// ── Fan-triangulate each hole from its centroid ───────────────────────
-	const newIndices    = Array.from(idx);
+	const newIndices = Array.from(idx);
 	const extraPositions: number[] = [];
 	const baseVertCount = posAttr.count;
 
@@ -345,12 +348,15 @@ function weldAndSmoothNormals(
 
 		// ---- Laplacian position smoothing at crease vertices ----
 		const pos = posAttr.array as Float32Array;
+		const preSmoothFn = new Float32Array(fn);
 		const tmp = new Float32Array(pos.length);
+		const prePass = new Float32Array(pos.length);
 
 		const POSITION_PASSES = 4;
 		const POSITION_ALPHA = 0.30;
 
 		for (let pass = 0; pass < POSITION_PASSES; pass++) {
+			prePass.set(pos);
 			tmp.set(pos);
 			for (let v = 0; v < vertCount; v++) {
 				if (!isCrease[v]) continue;
@@ -363,11 +369,32 @@ function weldAndSmoothNormals(
 				const avg_x = sx / nbs.size;
 				const avg_y = sy / nbs.size;
 				const avg_z = sz / nbs.size;
-				tmp[v * 3]     = pos[v * 3]     + POSITION_ALPHA * (avg_x - pos[v * 3]);
+				tmp[v * 3] = pos[v * 3] + POSITION_ALPHA * (avg_x - pos[v * 3]);
 				tmp[v * 3 + 1] = pos[v * 3 + 1] + POSITION_ALPHA * (avg_y - pos[v * 3 + 1]);
 				tmp[v * 3 + 2] = pos[v * 3 + 2] + POSITION_ALPHA * (avg_z - pos[v * 3 + 2]);
 			}
 			pos.set(tmp);
+
+			// Revert vertices that caused a face normal to flip
+			for (let f = 0; f < faceCount; f++) {
+				const a = indices[f * 3], b = indices[f * 3 + 1], c = indices[f * 3 + 2];
+				const pax = pos[a * 3], pay = pos[a * 3 + 1], paz = pos[a * 3 + 2];
+				const e1x = pos[b * 3] - pax, e1y = pos[b * 3 + 1] - pay, e1z = pos[b * 3 + 2] - paz;
+				const e2x = pos[c * 3] - pax, e2y = pos[c * 3 + 1] - pay, e2z = pos[c * 3 + 2] - paz;
+				const cnx = e1y * e2z - e1z * e2y;
+				const cny = e1z * e2x - e1x * e2z;
+				const cnz = e1x * e2y - e1y * e2x;
+				const dot = cnx * preSmoothFn[f * 3] + cny * preSmoothFn[f * 3 + 1] + cnz * preSmoothFn[f * 3 + 2];
+
+				if (dot < 0) {
+					for (const vi of [a, b, c]) {
+						if (!isCrease[vi]) continue;
+						pos[vi * 3] = prePass[vi * 3];
+						pos[vi * 3 + 1] = prePass[vi * 3 + 1];
+						pos[vi * 3 + 2] = prePass[vi * 3 + 2];
+					}
+				}
+			}
 		}
 		posAttr.needsUpdate = true;
 
@@ -418,8 +445,8 @@ function weldAndSmoothNormals(
  */
 function smoothInsoleTopSurface(
 	geometry: THREE.BufferGeometry,
-	refPasses = 250,
-	residualFactor = 0.06,
+	refPasses = 50,
+	residualFactor = 0.08,
 	normalThreshold = 0.35,
 ): THREE.BufferGeometry {
 	if (!geometry.index) return geometry;
@@ -431,13 +458,13 @@ function smoothInsoleTopSurface(
 	const idxArr = geometry.index.array;
 	const faceCount = idxArr.length / 3;
 
-	// Determine height axis (smallest bbox extent = insole thickness direction)
 	geometry.computeBoundingBox();
 	const bbox = geometry.boundingBox!;
 	const sz = bbox.getSize(new THREE.Vector3());
 	const hAxisIdx: 0 | 1 | 2 = sz.x <= sz.y && sz.x <= sz.z ? 0 : sz.y <= sz.z ? 1 : 2;
+	const heightSpan = sz.getComponent(hAxisIdx);
+	const maxHeightDrift = heightSpan * 0.35;
 
-	// Build 1-ring neighbour sets
 	const neighborSets: Set<number>[] = Array.from({ length: vertCount }, () => new Set<number>());
 	for (let f = 0; f < faceCount; f++) {
 		const a = idxArr[f * 3], b = idxArr[f * 3 + 1], c = idxArr[f * 3 + 2];
@@ -446,24 +473,16 @@ function smoothInsoleTopSurface(
 		neighborSets[c].add(a); neighborSets[c].add(b);
 	}
 
-	// Mark top-facing vertices (normal pointing mostly along height axis)
 	const normals = normalAttr.array as Float32Array;
 	const topFacing = new Uint8Array(vertCount);
 	for (let v = 0; v < vertCount; v++) {
 		if (normals[v * 3 + hAxisIdx] > normalThreshold) topFacing[v] = 1;
 	}
 
-	// Extract original heights along height axis
 	const pos = posAttr.array as Float32Array;
 	const origHeights = new Float32Array(vertCount);
 	for (let v = 0; v < vertCount; v++) origHeights[v] = pos[v * 3 + hAxisIdx];
 
-	// Compute heavily-smoothed reference.
-	// CRITICAL: use ALL 1-ring neighbours (not just topFacing) so that ridge tops
-	// get averaged against the side-faces and valleys between them — otherwise
-	// ridge peaks only average with other peaks and never flatten.
-	// Only topFacing vertices are updated each pass; side/bottom stay fixed,
-	// acting as anchors that pull the ridge tops down toward the true surface.
 	const smoothRef = origHeights.slice();
 	const tmp = new Float32Array(vertCount);
 	const alpha = 0.35;
@@ -473,13 +492,12 @@ function smoothInsoleTopSurface(
 			const nbs = neighborSets[v];
 			if (nbs.size === 0) { tmp[v] = smoothRef[v]; continue; }
 			let sum = 0;
-			for (const nb of nbs) sum += smoothRef[nb]; // ALL neighbours
+			for (const nb of nbs) sum += smoothRef[nb];
 			tmp[v] = smoothRef[v] + alpha * (sum / nbs.size - smoothRef[v]);
 		}
 		smoothRef.set(tmp);
 	}
 
-	// Store normalised deviation for the "Scan artefacten" diagnostic colour overlay
 	let maxDev = 1e-6;
 	for (let v = 0; v < vertCount; v++) {
 		if (topFacing[v]) {
@@ -493,11 +511,15 @@ function smoothInsoleTopSurface(
 	}
 	geometry.userData.scanDeviations = deviations;
 
-	// Frequency separation: output = smooth_ref + residualFactor × (original − smooth_ref)
-	// residualFactor = 0.06 → keeps only 6 % of scan topography, removes 94 %.
 	for (let v = 0; v < vertCount; v++) {
 		if (!topFacing[v]) continue;
-		pos[v * 3 + hAxisIdx] = smoothRef[v] + residualFactor * (origHeights[v] - smoothRef[v]);
+		let newH = smoothRef[v] + residualFactor * (origHeights[v] - smoothRef[v]);
+		const drift = Math.abs(newH - origHeights[v]);
+		if (drift > maxHeightDrift) {
+			const sign = newH > origHeights[v] ? 1 : -1;
+			newH = origHeights[v] + sign * maxHeightDrift;
+		}
+		pos[v * 3 + hAxisIdx] = newH;
 	}
 
 	posAttr.needsUpdate = true;
@@ -556,10 +578,10 @@ function removeDegenerateTriangles(
 // Calculate zone weights for a vertex position
 function getZoneWeights(relativeY: number, relativeZ: number): { heel: number; midfoot: number; forefoot: number; arch: number } {
 	const transitionWidth = 0.1;
-	
+
 	// Heel weight
 	const heel = smoothstep(0.2 + transitionWidth, 0.2 - transitionWidth, relativeY);
-	
+
 	// Midfoot weight
 	let midfoot = 0;
 	if (relativeY < 0.2 + transitionWidth) {
@@ -569,10 +591,10 @@ function getZoneWeights(relativeY: number, relativeZ: number): { heel: number; m
 	} else {
 		midfoot = 1;
 	}
-	
+
 	// Forefoot weight
 	const forefoot = smoothstep(0.5 - transitionWidth, 0.5 + transitionWidth, relativeY);
-	
+
 	// Arch weight (based on Z height)
 	const archZ = smoothstep(0.2, 0.6, relativeZ);
 	let archY = 1;
@@ -582,7 +604,7 @@ function getZoneWeights(relativeY: number, relativeZ: number): { heel: number; m
 		archY = smoothstep(1.0, 0.8, relativeY);
 	}
 	const arch = archZ * archY;
-	
+
 	return { heel, midfoot, forefoot, arch };
 }
 
@@ -590,21 +612,21 @@ function getZoneWeights(relativeY: number, relativeZ: number): { heel: number; m
 function applyZoneColors(geometry: THREE.BufferGeometry): void {
 	const positions = geometry.attributes.position as THREE.BufferAttribute;
 	const colors = new Float32Array(positions.count * 3);
-	
+
 	// Compute bounding box
 	geometry.computeBoundingBox();
 	const bbox = geometry.boundingBox!;
-	
+
 	// Determine which axis is the length (heel-to-toe) - it's the longest one
 	const sizeX = bbox.max.x - bbox.min.x;
 	const sizeY = bbox.max.y - bbox.min.y;
 	const sizeZ = bbox.max.z - bbox.min.z;
-	
+
 	// For insoles, typically Y is the longest (length), Z is height
 	// But we need to detect this dynamically
 	let lengthAxis: string = 'y';
 	let heightAxis: string = 'z';
-	
+
 	if (sizeX > sizeY && sizeX > sizeZ) {
 		lengthAxis = 'x';
 		heightAxis = 'z';
@@ -615,36 +637,36 @@ function applyZoneColors(geometry: THREE.BufferGeometry): void {
 		lengthAxis = 'z';
 		heightAxis = 'y';
 	}
-	
+
 	const minLength = lengthAxis === 'x' ? bbox.min.x : lengthAxis === 'y' ? bbox.min.y : bbox.min.z;
 	const maxLength = lengthAxis === 'x' ? bbox.max.x : lengthAxis === 'y' ? bbox.max.y : bbox.max.z;
 	const minHeight = heightAxis === 'x' ? bbox.min.x : heightAxis === 'y' ? bbox.min.y : bbox.min.z;
 	const maxHeight = heightAxis === 'x' ? bbox.max.x : heightAxis === 'y' ? bbox.max.y : bbox.max.z;
-	
+
 	const lengthSpan = maxLength - minLength;
 	const heightSpan = maxHeight - minHeight;
-	
+
 	const tempColor = new THREE.Color();
-	
+
 	console.log('Zone coloring - length axis:', lengthAxis, 'height axis:', heightAxis);
 	console.log('Bounding box:', { sizeX, sizeY, sizeZ });
-	
+
 	for (let i = 0; i < positions.count; i++) {
 		const x = positions.getX(i);
 		const y = positions.getY(i);
 		const z = positions.getZ(i);
-		
+
 		const lengthVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
 		const heightVal = heightAxis === 'x' ? x : heightAxis === 'y' ? y : z;
-		
+
 		const relativeLength = lengthSpan > 0 ? (lengthVal - minLength) / lengthSpan : 0;
 		const relativeHeight = heightSpan > 0 ? (heightVal - minHeight) / heightSpan : 0;
-		
+
 		const weights = getZoneWeights(relativeLength, relativeHeight);
-		
+
 		// Find dominant zone
 		const maxWeight = Math.max(weights.heel, weights.midfoot, weights.forefoot, weights.arch);
-		
+
 		if (maxWeight < 0.1) {
 			tempColor.copy(ZONE_COLORS.neutral);
 		} else if (weights.arch > 0.3 && weights.arch >= maxWeight * 0.8) {
@@ -657,12 +679,12 @@ function applyZoneColors(geometry: THREE.BufferGeometry): void {
 		} else {
 			tempColor.copy(ZONE_COLORS.midfoot);
 		}
-		
+
 		colors[i * 3] = tempColor.r;
 		colors[i * 3 + 1] = tempColor.g;
 		colors[i * 3 + 2] = tempColor.b;
 	}
-	
+
 	geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 	console.log('Zone colors applied to', positions.count, 'vertices');
 }
@@ -735,7 +757,7 @@ function applyDeviationColors(geometry: THREE.BufferGeometry): void {
 		// Amplify ×2.5 so subtle bumps become visible; clamp to [0, 1]
 		const d = deviations ? Math.min(1, deviations[v] * 2.5) : 0;
 		// Ramp: white (d=0) → orange (d≈0.5) → red (d=1)
-		colors[v * 3]     = 1.0;
+		colors[v * 3] = 1.0;
 		colors[v * 3 + 1] = Math.max(0, 1 - d * 1.5);
 		colors[v * 3 + 2] = Math.max(0, 1 - d * 3.0);
 	}
@@ -1415,7 +1437,7 @@ function STLMesh({
 			rotationOffset[2] ?? 0
 		);
 	}, [rotationOffset]);
-	
+
 	// Create a memoized processed geometry (base without corrections)
 	const { baseGeometry, mmToWorld } = useMemo(() => {
 		const euSizeToLengthMm = (eu: number) => (eu * 10) / 1.5;
@@ -1424,7 +1446,7 @@ function STLMesh({
 
 		// Clone the geometry so we don't modify the cached one
 		const cloned = rawGeometry.clone();
-		
+
 		// Canonicalize: heel-anchored along length axis with centered width/height,
 		// then apply a global mm->world scale (same for every mesh).
 		cloned.computeBoundingBox();
@@ -1537,12 +1559,12 @@ function STLMesh({
 		const nextMmToWorld = MM_TO_WORLD;
 		cloned.applyMatrix4(new THREE.Matrix4().makeScale(nextMmToWorld, nextMmToWorld, nextMmToWorld));
 
-		// Apply Algemeen params directly to the *white STL* so changes are visible.
-		// IMPORTANT: apply changes as *deltas* relative to the original model,
-		// so it remains the same sole and only adjusts length/thickness/side height.
-		cloned.computeBoundingBox();
-		const bbox = cloned.boundingBox;
-		const posAttr = cloned.getAttribute('position') as THREE.BufferAttribute | undefined;
+		// Weld early for insoles so constrained deformation has indexed topology
+		const indexed = meshRole === 'insole' ? weldAndSmoothNormals(cloned) : cloned;
+
+		indexed.computeBoundingBox();
+		const bbox = indexed.boundingBox;
+		const posAttr = indexed.getAttribute('position') as THREE.BufferAttribute | undefined;
 		if (bbox && posAttr && applyGeneral) {
 			const size = bbox.getSize(new THREE.Vector3());
 			const axes: Array<'x' | 'y' | 'z'> = ['x', 'y', 'z'];
@@ -1625,356 +1647,24 @@ function STLMesh({
 				posAttr.needsUpdate = true;
 			}
 
-			// 2) Auto width fitting from scan profile +2mm trimline envelope.
-			if (targetTrimlineProfile && targetTrimlineProfile.halfWidthsWorld.length > 1) {
-				const halfW = Math.max(
-					1e-6,
-					(widthAxis === 'x'
-						? size.x
-						: widthAxis === 'y'
-							? size.y
-							: size.z) * 0.5
-				);
-				const medialSign = side === 'left' ? 1 : -1;
-				const toeSymReliefWorld = 0.6 * nextMmToWorld;
-				const halluxReliefWorld = 1.8 * nextMmToWorld;
-				const medialHeelReliefWorld = 0.8 * nextMmToWorld;
-				const applyToeAndMedialRelief = (widthValue: number, tLen: number) => {
-					const dist = widthValue - centerW;
-					const absDistNorm = Math.max(0, Math.min(1, Math.abs(dist) / halfW));
-					const signedNorm = Math.max(-1, Math.min(1, (dist / halfW) * medialSign));
-					const edgeWeight = smoothstep(0.22, 1.0, absDistNorm);
-					const medialWeight = smoothstep(0.08, 0.95, signedNorm);
-					const toeWeight = smoothstep(0.74, 0.995, tLen);
-					const halluxToeWeight = smoothstep(0.84, 0.998, tLen);
-					const heelWeight = 1 - smoothstep(0.2, 0.42, tLen);
-
-					const sign = dist > 0 ? 1 : dist < 0 ? -1 : 0;
-					const symmetricToeShift = sign * toeSymReliefWorld * edgeWeight * toeWeight;
-					const halluxShift = medialSign * halluxReliefWorld * medialWeight * halluxToeWeight;
-					const medialHeelShift = medialSign * medialHeelReliefWorld * medialWeight * heelWeight;
-					return widthValue + symmetricToeShift + halluxShift + medialHeelShift;
-				};
-
-				const sampleTrimHalfWidth = (t: number) => {
-					const arr = targetTrimlineProfile.halfWidthsWorld;
-					const tt = Math.max(0, Math.min(1, t));
-					const x = tt * (arr.length - 1);
-					const i0 = Math.floor(x);
-					const i1 = Math.min(arr.length - 1, i0 + 1);
-					const a = arr[i0];
-					const b = arr[i1];
-					const baseHalf = a + (b - a) * (x - i0) + trimOffsetWorld;
-
-					// Apply per-region trimline adjustments with smooth blending
-					if (!trimlineAdjustments) return baseHalf;
-					const { heel, midfoot, forefoot, toe } = trimlineAdjustments;
-					// Region boundaries: heel [0, 0.25], midfoot [0.25, 0.55], forefoot [0.55, 0.82], toe [0.82, 1]
-					// Use smoothstep blending between regions (6% overlap zones)
-					const ss = (e0: number, e1: number, v: number) => {
-						const c = Math.max(0, Math.min(1, (v - e0) / Math.max(1e-6, e1 - e0)));
-						return c * c * (3 - 2 * c);
-					};
-					const heelW   = 1 - ss(0.22, 0.28, tt);
-					const midW    = ss(0.22, 0.28, tt) * (1 - ss(0.52, 0.58, tt));
-					const foreW   = ss(0.52, 0.58, tt) * (1 - ss(0.79, 0.85, tt));
-					const toeW    = ss(0.79, 0.85, tt);
-					const regionOffset = (heel * heelW + midfoot * midW + forefoot * foreW + toe * toeW) * nextMmToWorld;
-					return Math.max(0, baseHalf + regionOffset);
-				};
-
-				// Build current insole half-width profile
-				const bins = Math.max(64, targetTrimlineProfile.halfWidthsWorld.length);
-				const currentHalfW = new Float32Array(bins).fill(0);
-				const binHits = new Uint16Array(bins);
-				const centerW =
-					widthAxis === 'x'
-						? (bbox.min.x + bbox.max.x) * 0.5
-						: widthAxis === 'y'
-							? (bbox.min.y + bbox.max.y) * 0.5
-							: (bbox.min.z + bbox.max.z) * 0.5;
-
-				for (let i = 0; i < posAttr.count; i++) {
-					const x = posAttr.getX(i);
-					const y = posAttr.getY(i);
-					const z = posAttr.getZ(i);
-					const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
-					const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
-					const t = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
-					const idx = Math.min(bins - 1, Math.max(0, Math.round(t * (bins - 1))));
-					const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
-					const halfW = Math.abs(wVal - centerW);
-					if (halfW > currentHalfW[idx]) currentHalfW[idx] = halfW;
-					binHits[idx]++;
-				}
-
-			// Fill empty bins and smooth profile to avoid terracing artifacts.
-			for (let i = 0; i < bins; i++) {
-				if (binHits[i] > 0) continue;
-				let l = i - 1;
-				while (l >= 0 && binHits[l] === 0) l--;
-				let r = i + 1;
-				while (r < bins && binHits[r] === 0) r++;
-				if (l >= 0 && r < bins) currentHalfW[i] = (currentHalfW[l] + currentHalfW[r]) * 0.5;
-				else if (l >= 0) currentHalfW[i] = currentHalfW[l];
-				else if (r < bins) currentHalfW[i] = currentHalfW[r];
-			}
-
-			const smoothedCurrent = new Float32Array(bins);
-			for (let i = 0; i < bins; i++) {
-				const a = currentHalfW[Math.max(0, i - 2)];
-				const b = currentHalfW[Math.max(0, i - 1)];
-				const c = currentHalfW[i];
-				const d = currentHalfW[Math.min(bins - 1, i + 1)];
-				const e = currentHalfW[Math.min(bins - 1, i + 2)];
-				smoothedCurrent[i] = a * 0.1 + b * 0.2 + c * 0.4 + d * 0.2 + e * 0.1;
-			}
-
-			const sampleCurrentHalfWidth = (t: number) => {
-				const tt = Math.max(0, Math.min(1, t));
-				const x = tt * (bins - 1);
-				const i0 = Math.floor(x);
-				const i1 = Math.min(bins - 1, i0 + 1);
-				return smoothedCurrent[i0] + (smoothedCurrent[i1] - smoothedCurrent[i0]) * (x - i0);
-			};
-
-			const sourceForeHalf = Math.max(
-				1e-6,
-				sampleCurrentHalfWidth(0.72),
-				sampleCurrentHalfWidth(0.82),
-				sampleCurrentHalfWidth(0.92)
-			);
-			const targetForeHalf = Math.max(
-				1e-6,
-				sampleTrimHalfWidth(0.72),
-				sampleTrimHalfWidth(0.82),
-				sampleTrimHalfWidth(0.92)
-			);
-			const globalScale = Math.max(0.9, Math.min(1.22, targetForeHalf / sourceForeHalf));
-
-			const sourceHeelHalf = Math.max(
-				1e-6,
-				sampleCurrentHalfWidth(0.02),
-				sampleCurrentHalfWidth(0.08),
-				sampleCurrentHalfWidth(0.14)
-			);
-			const targetHeelHalf = Math.max(
-				1e-6,
-				sampleTrimHalfWidth(0.02),
-				sampleTrimHalfWidth(0.08),
-				sampleTrimHalfWidth(0.14)
-			);
-			const heelScale = Math.max(0.9, Math.min(1.24, targetHeelHalf / sourceHeelHalf));
-
-			const sourceToePadHalf = Math.max(
-				1e-6,
-				sampleCurrentHalfWidth(0.9),
-				sampleCurrentHalfWidth(0.95),
-				sampleCurrentHalfWidth(0.99)
-			);
-			const targetToePadHalf = Math.max(
-				1e-6,
-				sampleTrimHalfWidth(0.9),
-				sampleTrimHalfWidth(0.95),
-				sampleTrimHalfWidth(0.99)
-			);
-			const toeScale = Math.max(0.9, Math.min(1.26, targetToePadHalf / sourceToePadHalf));
-			const toeShoulderHalf = Math.max(
-				1e-6,
-				sampleCurrentHalfWidth(0.75),
-				sampleCurrentHalfWidth(0.78),
-				sampleCurrentHalfWidth(0.82),
-				sampleCurrentHalfWidth(0.88),
-				sampleTrimHalfWidth(0.75),
-				sampleTrimHalfWidth(0.78),
-				sampleTrimHalfWidth(0.82),
-				sampleTrimHalfWidth(0.88)
-			);
-			const toeTipMinHalf = toeShoulderHalf * 0.38;
-			const toeTipMaxHalf = toeShoulderHalf * 0.88;
-			const applyToeCapTemplate = (widthValue: number, tLen: number) => {
-				const toeFillBlend = smoothstep(0.84, 0.995, tLen);
-				const toeTipClampBlend = smoothstep(0.92, 0.998, tLen);
-				if (toeFillBlend <= 1e-6 && toeTipClampBlend <= 1e-6) return widthValue;
-				// Elliptical cap: stays wide at shoulder, narrows smoothly toward tip
-				const u = Math.max(0, Math.min(1, (tLen - 0.78) / 0.22));
-				const cap = Math.sqrt(Math.max(0, 1 - u * u));
-				const minHalf = toeTipMinHalf + (toeShoulderHalf - toeTipMinHalf) * cap;
-				const maxHalf = toeTipMaxHalf + (toeShoulderHalf - toeTipMaxHalf) * cap;
-				const dist = widthValue - centerW;
-				if (Math.abs(dist) < 1e-6) return widthValue;
-				const sign = dist > 0 ? 1 : -1;
-				const absDist = Math.abs(dist);
-				// Fill dents: gently push concavities toward the min envelope
-				const edgeBand = smoothstep(0.15, 0.85, Math.min(1, absDist / Math.max(1e-6, toeShoulderHalf)));
-				if (edgeBand <= 1e-6) return widthValue;
-				const fillStrength = toeFillBlend * (0.08 + edgeBand * 0.12);
-				const filledAbs = absDist + (Math.max(minHalf, absDist) - absDist) * fillStrength;
-				// Clamp over-expansion toward max envelope
-				const clampStrength = toeTipClampBlend * edgeBand;
-				const correctedAbs = filledAbs + (Math.min(maxHalf, filledAbs) - filledAbs) * clampStrength;
-				return centerW + sign * correctedAbs;
-			};
-
-				for (let i = 0; i < posAttr.count; i++) {
-					const x = posAttr.getX(i);
-					const y = posAttr.getY(i);
-					const z = posAttr.getZ(i);
-					const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
-					const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
-					const tLen = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
-					const sourceHalfW = Math.max(1e-6, sampleCurrentHalfWidth(tLen));
-					const targetHalfW = Math.max(1e-6, sampleTrimHalfWidth(tLen));
-					const rawLocalScale = Math.max(0.88, Math.min(1.24, targetHalfW / sourceHalfW));
-					const smoothstep = (edge0: number, edge1: number, v: number) => {
-						const t = Math.max(0, Math.min(1, (v - edge0) / Math.max(1e-6, edge1 - edge0)));
-						return t * t * (3 - 2 * t);
-					};
-					const heelBlend = 1 - smoothstep(0.1, 0.28, tLen);
-					const toeBlend = smoothstep(0.78, 0.98, tLen);
-					const scaleDelta =
-						(globalScale - 1) * 0.45 +
-						(rawLocalScale - 1) * 0.35 +
-						(heelScale - 1) * heelBlend * 0.2 +
-						(toeScale - 1) * toeBlend * 0.3;
-					const localScale = 1 + scaleDelta;
-					const blend = smoothstep(0.04, 0.99, tLen);
-					const noShrinkToe = smoothstep(0.72, 0.98, tLen);
-					const noShrinkHeel = 1 - smoothstep(0.04, 0.22, tLen);
-					const noShrinkBlend = Math.max(noShrinkToe, noShrinkHeel);
-					const minScale = 1 - (1 - noShrinkBlend) * 0.03;
-					const finalScale = Math.max(minScale, Math.min(1.3, 1 + (localScale - 1) * blend));
-
-					const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
-					const wScaled = centerW + (wVal - centerW) * finalScale;
-					const wRelief = applyToeAndMedialRelief(wScaled, tLen);
-					const wTemplated = applyToeCapTemplate(wRelief, tLen);
-					const maxAllowedHalf = targetHalfW + (1.5 * nextMmToWorld);
-					const distTemplated = wTemplated - centerW;
-					const distSign = distTemplated >= 0 ? 1 : -1;
-					const wNext = Math.abs(distTemplated) > maxAllowedHalf
-						? centerW + distSign * maxAllowedHalf
-						: wTemplated;
-					if (widthAxis === 'x') posAttr.setX(i, wNext);
-					else if (widthAxis === 'y') posAttr.setY(i, wNext);
-					else posAttr.setZ(i, wNext);
-				}
-				posAttr.needsUpdate = true;
-			} else if (
-				typeof targetForefootWidthMm === 'number' &&
-				Number.isFinite(targetForefootWidthMm) &&
-				targetForefootWidthMm > 0
-			) {
-				const targetWidthWorld = targetForefootWidthMm * nextMmToWorld;
-				const toeStart = heelAtMin ? minLen + lenSpan * 0.55 : maxLen - lenSpan * 0.75;
-				const toeEnd = heelAtMin ? minLen + lenSpan * 0.9 : maxLen - lenSpan * 0.4;
-
-				let foreMinW = Number.POSITIVE_INFINITY;
-				let foreMaxW = Number.NEGATIVE_INFINITY;
-				let foreCount = 0;
-				for (let i = 0; i < posAttr.count; i++) {
-					const x = posAttr.getX(i);
-					const y = posAttr.getY(i);
-					const z = posAttr.getZ(i);
-					const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
-					const inForefoot =
-						(heelAtMin && lenVal >= toeStart && lenVal <= toeEnd) ||
-						(!heelAtMin && lenVal <= toeStart && lenVal >= toeEnd);
-					if (!inForefoot) continue;
-					const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
-					foreMinW = Math.min(foreMinW, wVal);
-					foreMaxW = Math.max(foreMaxW, wVal);
-					foreCount++;
-				}
-
-				const currentForeWidth =
-					foreCount > 12 ? Math.max(1e-6, foreMaxW - foreMinW) : Math.max(1e-6, size[widthAxis]);
-				const widthScale = Math.max(0.82, Math.min(1.28, targetWidthWorld / currentForeWidth));
-				const toeShoulderHalf = Math.max(1e-6, currentForeWidth * 0.5);
-				const toeTipMinHalf = toeShoulderHalf * 0.38;
-				const toeTipMaxHalf = toeShoulderHalf * 0.88;
-
-				if (Number.isFinite(widthScale) && Math.abs(widthScale - 1) > 1e-3) {
-					const centerW = widthAxis === 'x' ? (bbox.min.x + bbox.max.x) * 0.5 : widthAxis === 'y' ? (bbox.min.y + bbox.max.y) * 0.5 : (bbox.min.z + bbox.max.z) * 0.5;
-					const halfW = Math.max(
-						1e-6,
-						(widthAxis === 'x'
-							? size.x
-							: widthAxis === 'y'
-								? size.y
-								: size.z) * 0.5
-					);
-					const medialSign = side === 'left' ? 1 : -1;
-					const toeSymReliefWorld = 0.6 * nextMmToWorld;
-					const halluxReliefWorld = 1.8 * nextMmToWorld;
-					const medialHeelReliefWorld = 0.8 * nextMmToWorld;
-					const applyToeAndMedialRelief = (widthValue: number, tLen: number) => {
-						const dist = widthValue - centerW;
-						const absDistNorm = Math.max(0, Math.min(1, Math.abs(dist) / halfW));
-						const signedNorm = Math.max(-1, Math.min(1, (dist / halfW) * medialSign));
-						const edgeWeight = smoothstep(0.22, 1.0, absDistNorm);
-						const medialWeight = smoothstep(0.08, 0.95, signedNorm);
-						const toeWeight = smoothstep(0.74, 0.995, tLen);
-						const halluxToeWeight = smoothstep(0.84, 0.998, tLen);
-						const heelWeight = 1 - smoothstep(0.2, 0.42, tLen);
-
-						const sign = dist > 0 ? 1 : dist < 0 ? -1 : 0;
-						const symmetricToeShift = sign * toeSymReliefWorld * edgeWeight * toeWeight;
-						const halluxShift = medialSign * halluxReliefWorld * medialWeight * halluxToeWeight;
-						const medialHeelShift = medialSign * medialHeelReliefWorld * medialWeight * heelWeight;
-						return widthValue + symmetricToeShift + halluxShift + medialHeelShift;
-					};
-					const applyToeCapTemplate = (widthValue: number, tLen: number) => {
-						const toeFillBlend = smoothstep(0.84, 0.995, tLen);
-						const toeTipClampBlend = smoothstep(0.92, 0.998, tLen);
-						if (toeFillBlend <= 1e-6 && toeTipClampBlend <= 1e-6) return widthValue;
-						// Elliptical cap: stays wide at shoulder, narrows smoothly toward tip
-						const u = Math.max(0, Math.min(1, (tLen - 0.78) / 0.22));
-						const cap = Math.sqrt(Math.max(0, 1 - u * u));
-						const minHalf = toeTipMinHalf + (toeShoulderHalf - toeTipMinHalf) * cap;
-						const maxHalf = toeTipMaxHalf + (toeShoulderHalf - toeTipMaxHalf) * cap;
-						const dist = widthValue - centerW;
-						if (Math.abs(dist) < 1e-6) return widthValue;
-						const sign = dist > 0 ? 1 : -1;
-						const absDist = Math.abs(dist);
-						// Fill dents: gently push concavities toward the min envelope
-						const edgeBand = smoothstep(0.15, 0.85, Math.min(1, absDist / Math.max(1e-6, toeShoulderHalf)));
-						if (edgeBand <= 1e-6) return widthValue;
-						const fillStrength = toeFillBlend * (0.08 + edgeBand * 0.12);
-						const filledAbs = absDist + (Math.max(minHalf, absDist) - absDist) * fillStrength;
-						// Clamp over-expansion toward max envelope
-						const clampStrength = toeTipClampBlend * edgeBand;
-						const correctedAbs = filledAbs + (Math.min(maxHalf, filledAbs) - filledAbs) * clampStrength;
-						return centerW + sign * correctedAbs;
-					};
-					const smoothstep = (edge0: number, edge1: number, v: number) => {
-						const t = Math.max(0, Math.min(1, (v - edge0) / Math.max(1e-6, edge1 - edge0)));
-						return t * t * (3 - 2 * t);
-					};
-
-					for (let i = 0; i < posAttr.count; i++) {
-						const x = posAttr.getX(i);
-						const y = posAttr.getY(i);
-						const z = posAttr.getZ(i);
-						const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
-						const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
-						const tLen = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
-						const blend = smoothstep(0.08, 0.98, tLen);
-						const localScale = 1 + (widthScale - 1) * blend;
-						const noShrinkToe = smoothstep(0.72, 0.98, tLen);
-						const noShrinkHeel = 1 - smoothstep(0.04, 0.22, tLen);
-						const noShrinkBlend = Math.max(noShrinkToe, noShrinkHeel);
-						const minScale = 1 - (1 - noShrinkBlend) * 0.03;
-						const safeScale = Math.max(minScale, localScale);
-						const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
-						const wScaled = centerW + (wVal - centerW) * safeScale;
-						const wRelief = applyToeAndMedialRelief(wScaled, tLen);
-						const wNext = applyToeCapTemplate(wRelief, tLen);
-
-						if (widthAxis === 'x') posAttr.setX(i, wNext);
-						else if (widthAxis === 'y') posAttr.setY(i, wNext);
-						else posAttr.setZ(i, wNext);
-					}
+			// 2) Width fitting: constrained deformation preserving base curvature
+			if (indexed.index) {
+				const surfaceModel = buildSurfaceModel(indexed);
+				const widthField = computeWidthFitTargets(indexed, surfaceModel, {
+					side,
+					mmToWorld: nextMmToWorld,
+					trimlineProfile: targetTrimlineProfile ?? undefined,
+					trimOffsetWorld,
+					trimlineAdjustments: trimlineAdjustments ?? undefined,
+					targetForefootWidthWorld:
+						typeof targetForefootWidthMm === 'number' &&
+						Number.isFinite(targetForefootWidthMm) &&
+						targetForefootWidthMm > 0
+							? targetForefootWidthMm * nextMmToWorld
+							: undefined,
+				});
+				if (widthField) {
+					solveConstrainedDeformation(indexed, surfaceModel, widthField);
 					posAttr.needsUpdate = true;
 				}
 			}
@@ -1982,15 +1672,13 @@ function STLMesh({
 			// Sole thickness + rim height are applied later as a fast post-step so slider edits blend smoothly.
 		}
 
-		// Recompute normals for better lighting. For STL inputs we also weld
-		// duplicate vertices first, otherwise smooth shading can look striped.
 		const smoothedGeometry = meshRole === 'insole'
-			? smoothInsoleTopSurface(weldAndSmoothNormals(cloned))
+			? smoothInsoleTopSurface(indexed)
 			: (() => {
-				cloned.computeVertexNormals();
-				return cloned;
+				indexed.computeVertexNormals();
+				return indexed;
 			})();
-		
+
 		return {
 			baseGeometry: smoothedGeometry,
 			mmToWorld: nextMmToWorld,
@@ -2005,7 +1693,7 @@ function STLMesh({
 		trimlineOffsetMm,
 		trimlineAdjustments,
 	]);
-	
+
 	// Create a working geometry that includes corrections
 	const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
 	useEffect(() => {
@@ -2118,7 +1806,7 @@ function STLMesh({
 
 		return { geometry: blockGeom };
 	}, [evaBlockMode, geometry]);
-	
+
 	// Debounced corrections application to prevent UI blocking
 	const pendingCorrectionsRef = useRef<OntwerpCorrections | undefined>(undefined);
 	const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2174,7 +1862,7 @@ function STLMesh({
 		},
 		[soleThicknessMm, mmToWorld, smoothstep01]
 	);
-	
+
 	const applyRimHeightAfterCorrections = useCallback((geom: THREE.BufferGeometry) => {
 		const DEFAULT_RIM_HEIGHT_MM = 10;
 		const rimDeltaMm = (rimHeightMm ?? DEFAULT_RIM_HEIGHT_MM) - DEFAULT_RIM_HEIGHT_MM;
@@ -2326,23 +2014,23 @@ function STLMesh({
 
 		// Only recompute corrected geometry if base/corrections/side are unchanged
 		if (signature === correctedSignatureRef.current && correctedGeometryRef.current) return;
-		
+
 		// Store pending corrections
 		pendingCorrectionsRef.current = corrections;
-		
+
 		// Clear existing timer
 		if (debounceTimerRef.current) {
 			clearTimeout(debounceTimerRef.current);
 		}
-		
+
 		// Debounce the expensive geometry update (150ms delay)
 		debounceTimerRef.current = setTimeout(() => {
 			const pendingCorrections = pendingCorrectionsRef.current;
 			lastCorrectionsRef.current = pendingSignatureRef.current;
-			
+
 			// Clone base geometry for modifications
 			const workingGeometry = baseGeometry.clone();
-			
+
 			// Apply corrections if provided
 			if (applyGeneral && pendingCorrections) {
 				try {
@@ -2370,7 +2058,7 @@ function STLMesh({
 			correctedSignatureRef.current = pendingSignatureRef.current;
 			rebuildFinalGeometryFromCorrected();
 		}, 150);
-		
+
 		// Cleanup timer on unmount or re-render
 		return () => {
 			if (debounceTimerRef.current) {
@@ -2384,7 +2072,7 @@ function STLMesh({
 		placedElements,
 		side,
 		mmToWorld,
-			applyGeneral,
+		applyGeneral,
 		rebuildFinalGeometryFromCorrected,
 	]);
 
@@ -2406,7 +2094,7 @@ function STLMesh({
 			}
 		};
 	}, [applyGeneral, soleThicknessMm, rimHeightMm, rebuildFinalGeometryFromCorrected]);
-	
+
 	// Apply zone colors / rebuild element overlays whenever visual mode changes
 	useEffect(() => {
 		if (!geometry) return;
@@ -2458,7 +2146,7 @@ function STLMesh({
 		const worldBox = new THREE.Box3().setFromObject(meshRef.current);
 		setBaselineZ(worldBox.min.z);
 	}, [geometry, applyOrientation]);
-	
+
 	// Clone the base geometry when entering grid edit mode (for non-destructive editing)
 	useEffect(() => {
 		if (!geometry || !showBoxGrid || !gridEditMode) {
@@ -2889,8 +2577,8 @@ export const EnhancedSTLViewer = forwardRef<
 					: 1;
 			const rimHeightWorld =
 				typeof maxInsoleHeightMm === 'number' &&
-				Number.isFinite(maxInsoleHeightMm) &&
-				maxInsoleHeightMm > 0
+					Number.isFinite(maxInsoleHeightMm) &&
+					maxInsoleHeightMm > 0
 					? maxInsoleHeightMm * mmToWorld
 					: 10 * mmToWorld;
 

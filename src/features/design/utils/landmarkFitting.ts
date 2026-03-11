@@ -57,14 +57,20 @@ const toVec = (p: [number, number, number]) =>
 export function computeFootGeometryFrom3Points(
 	landmarks: ThreePointLandmarks,
 	footMesh: THREE.BufferGeometry,
-	filename?: string
-): { footGeometry: FootGeometry; derived: DerivedLandmarks; complete: CompleteLandmarkSet } {
+	filename?: string,
+): {
+	footGeometry: FootGeometry;
+	derived: DerivedLandmarks;
+	complete: CompleteLandmarkSet;
+} {
 	const pHeel = toVec(landmarks.heel);
 	const pM1 = toVec(landmarks.meta1);
 	const pM5 = toVec(landmarks.meta5);
 
 	// 1. Compute foot axis: heel → midpoint(M1, M5)
-	const forefootMid = new THREE.Vector3().addVectors(pM1, pM5).multiplyScalar(0.5);
+	const forefootMid = new THREE.Vector3()
+		.addVectors(pM1, pM5)
+		.multiplyScalar(0.5);
 	const footAxisVec = new THREE.Vector3().subVectors(forefootMid, pHeel);
 	const heelToForefootDist = footAxisVec.length();
 	const footAxisNorm = footAxisVec.clone().normalize();
@@ -85,7 +91,9 @@ export function computeFootGeometryFrom3Points(
 	}
 
 	// 3. Lateral axis: perpendicular to footAxis within the ground plane
-	const lateralAxis = new THREE.Vector3().crossVectors(groundNormal, footAxisNorm).normalize();
+	const lateralAxis = new THREE.Vector3()
+		.crossVectors(groundNormal, footAxisNorm)
+		.normalize();
 
 	// If lateral axis is degenerate, recalculate
 	if (lateralAxis.length() < 1e-6) {
@@ -137,7 +145,9 @@ export function computeFootGeometryFrom3Points(
 		const tU = u / heelToForefootDist;
 		if (tU > 0.25 && tU < 0.65) {
 			// Check if on medial side (opposite to M5 direction)
-			const m5Side = new THREE.Vector3().subVectors(pM5, pHeel).dot(lateralAxis);
+			const m5Side = new THREE.Vector3()
+				.subVectors(pM5, pHeel)
+				.dot(lateralAxis);
 			const isMedial = m5Side > 0 ? v < 0 : v > 0;
 			if (isMedial && w > bestNavicularHeight) {
 				bestNavicularHeight = w;
@@ -153,7 +163,9 @@ export function computeFootGeometryFrom3Points(
 
 		// Lateral edge: most lateral vertex in the midfoot
 		if (tU > 0.2 && tU < 0.8) {
-			const m5Side = new THREE.Vector3().subVectors(pM5, pHeel).dot(lateralAxis);
+			const m5Side = new THREE.Vector3()
+				.subVectors(pM5, pHeel)
+				.dot(lateralAxis);
 			const lateralV = m5Side > 0 ? v : -v;
 			if (lateralV > maxLateralV) {
 				maxLateralV = lateralV;
@@ -171,9 +183,19 @@ export function computeFootGeometryFrom3Points(
 	let side: 'left' | 'right' | 'unknown' = 'unknown';
 	if (filename) {
 		const lower = filename.toLowerCase();
-		if (lower.includes('_l.') || lower.includes('_l_') || lower.includes('left') || lower.endsWith('_l')) {
+		if (
+			lower.includes('_l.') ||
+			lower.includes('_l_') ||
+			lower.includes('left') ||
+			lower.endsWith('_l')
+		) {
 			side = 'left';
-		} else if (lower.includes('_r.') || lower.includes('_r_') || lower.includes('right') || lower.endsWith('_r')) {
+		} else if (
+			lower.includes('_r.') ||
+			lower.includes('_r_') ||
+			lower.includes('right') ||
+			lower.endsWith('_r')
+		) {
 			side = 'right';
 		}
 	}
@@ -209,7 +231,9 @@ export function computeFootGeometryFrom3Points(
  * Convert a CompleteLandmarkSet (new 3-point system) into the legacy LandmarkPoints
  * format needed by the existing insole generation and corrections pipeline.
  */
-export function completeLandmarksToLegacy(complete: CompleteLandmarkSet): LandmarkPoints {
+export function completeLandmarksToLegacy(
+	complete: CompleteLandmarkSet,
+): LandmarkPoints {
 	return {
 		meta1: complete.meta1,
 		meta5: complete.meta5,
@@ -225,7 +249,7 @@ export function completeLandmarksToLegacy(complete: CompleteLandmarkSet): Landma
 // ============================================
 
 export function computeFootReference(
-	points: LandmarkPoints
+	points: LandmarkPoints,
 ): FootReferenceFrame {
 	const pHeel = toVec(points.heel);
 	const p1 = toVec(points.meta1);
@@ -276,7 +300,7 @@ export function computeFootReference(
 
 export function generateSlicePlanes(
 	frame: FootReferenceFrame,
-	sliceSpacing = 0.004
+	sliceSpacing = 0.004,
 ): SlicePlane[] {
 	const { origin, longAxis, normal, footLength } = frame;
 	const count = Math.max(5, Math.floor(footLength / sliceSpacing));
@@ -299,7 +323,7 @@ export interface InsoleDesignPlan {
 
 export function buildInsolePlan(
 	points: LandmarkPoints,
-	options?: { sliceSpacing?: number }
+	options?: { sliceSpacing?: number },
 ): InsoleDesignPlan {
 	const frame = computeFootReference(points);
 	const slices = generateSlicePlanes(frame, options?.sliceSpacing ?? 0.004);
@@ -321,7 +345,7 @@ export function tupleToVec(p: [number, number, number]) {
 
 export function mapToFrame(
 	p: THREE.Vector3,
-	frame: FootReferenceFrame
+	frame: FootReferenceFrame,
 ): { u: number; v: number; w: number } {
 	const rel = p.clone().sub(frame.origin);
 	return {
@@ -344,7 +368,7 @@ export interface InsoleGenerationOptions {
 export function buildInsoleGeometry(
 	footGeometry: THREE.BufferGeometry,
 	points: LandmarkPoints,
-	options?: InsoleGenerationOptions
+	options?: InsoleGenerationOptions,
 ): THREE.BufferGeometry | null {
 	const frame = computeFootReference(points);
 	const thickness = options?.thickness ?? 0.004; // 4 mm
@@ -368,7 +392,7 @@ export function buildInsoleGeometry(
 		const p = new THREE.Vector3(
 			posAttr.getX(i),
 			posAttr.getY(i),
-			posAttr.getZ(i)
+			posAttr.getZ(i),
 		);
 		const t = mapToFrame(p, frame);
 		verts.push(t);
@@ -484,7 +508,7 @@ export function buildInsoleGeometry(
 		b: number,
 		c: number,
 		d: number,
-		invert = false
+		invert = false,
 	) => {
 		if (!invert) {
 			indices.push(a, b, d, b, c, d);
@@ -549,7 +573,7 @@ export function fitTemplateInsole(
 	baseGeometry: THREE.BufferGeometry,
 	footGeometry: THREE.BufferGeometry,
 	points: LandmarkPoints,
-	options?: TemplateFitOptions
+	options?: TemplateFitOptions,
 ): THREE.BufferGeometry | null {
 	const frame = computeFootReference(points);
 	const thickness = options?.thickness ?? 0.004; // 4 mm shell
@@ -579,10 +603,10 @@ export function fitTemplateInsole(
 	const m = new THREE.Matrix4()
 		.makeTranslation(-tCenter.x, -tCenter.y, -tCenter.z)
 		.multiply(
-			new THREE.Matrix4().makeScale(uniformScale, uniformScale, uniformScale)
+			new THREE.Matrix4().makeScale(uniformScale, uniformScale, uniformScale),
 		)
 		.multiply(
-			new THREE.Matrix4().makeTranslation(fCenter.x, fCenter.y, fCenter.z)
+			new THREE.Matrix4().makeTranslation(fCenter.x, fCenter.y, fCenter.z),
 		);
 	template.applyMatrix4(m);
 	template.computeBoundingBox();
@@ -602,7 +626,7 @@ export function fitTemplateInsole(
 		const p = new THREE.Vector3(
 			posAttr.getX(i),
 			posAttr.getY(i),
-			posAttr.getZ(i)
+			posAttr.getZ(i),
 		);
 		const { u, v } = mapToFrame(p, frame);
 
@@ -660,7 +684,7 @@ export interface BasicInsoleOptions extends InsoleGenerationOptions {
 export function buildBasicInsole(
 	footGeometry: THREE.BufferGeometry,
 	points: LandmarkPoints,
-	options?: BasicInsoleOptions
+	options?: BasicInsoleOptions,
 ): THREE.BufferGeometry | null {
 	const frame = computeFootReference(points);
 	const padScale = options?.padScale ?? 1.02;
@@ -682,7 +706,10 @@ export function buildBasicInsole(
 		return t * t * (3 - 2 * t);
 	};
 
-	if (typeof targetArchHeight === 'number' && Number.isFinite(targetArchHeight)) {
+	if (
+		typeof targetArchHeight === 'number' &&
+		Number.isFinite(targetArchHeight)
+	) {
 		const denom = frame.archHeight;
 		if (Math.abs(denom) > 1e-8) {
 			archBoost = targetArchHeight / denom;
@@ -787,7 +814,7 @@ export function buildBasicInsole(
 		b: number,
 		c: number,
 		d: number,
-		invert = false
+		invert = false,
 	) => {
 		if (!invert) {
 			indices.push(a, b, d, b, c, d);

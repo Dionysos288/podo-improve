@@ -908,7 +908,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				if (cs.hardnessProfiles !== undefined) setHardnessProfiles(cs.hardnessProfiles as Record<HardnessKey, { infillPercent: number }> | null);
 			}
 		}
-	// eslint-disable-next-line react-hooks/exhaustive-deps
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [initialDesign]);
 
 	// ── Trigger debounced autosave when local state changes ──
@@ -921,7 +921,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			return;
 		}
 		debouncedSave();
-	// eslint-disable-next-line react-hooks/exhaustive-deps
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [
 		productionMethod, selectedPairId, selectedLeftScanId, selectedRightScanId,
 		corrections, activeCorrections, savedBottomText,
@@ -929,7 +929,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		trimlineAdjustments, activeDesignStep, elementsModalSide,
 		workflowStep, scansActive, showOverlays, hardnessProfiles,
 	]);
-	
+
 	// Normalize scans: footSide from DB is uppercase ('LEFT'/'RIGHT'), normalize to lowercase
 	const scans = useMemo(
 		() =>
@@ -2031,7 +2031,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										/>
 									</label>
 
-										<div className="mt-3 grid grid-cols-1 gap-2">
+									<div className="mt-3 grid grid-cols-1 gap-2">
 										<label className="flex flex-col gap-1">
 											<span className="text-xs uppercase tracking-wide text-(--ui-text)/70">Grootte (mm)</span>
 											<input
@@ -2040,11 +2040,11 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 												className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm text-ui-text"
 												value={draftBottomText.sizeMm}
 												onChange={(e) =>
-												setDraftBottomText((p) => ({
-													...p,
-													sizeMm: Math.max(1, Number(e.target.value) || 1),
-												}))
-											}
+													setDraftBottomText((p) => ({
+														...p,
+														sizeMm: Math.max(1, Number(e.target.value) || 1),
+													}))
+												}
 												min={1}
 												max={40}
 												step={0.5}
@@ -2750,219 +2750,219 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									rightStlUrl={DEFAULT_BASE_RIGHT_STL}
 								/>
 							) : (
-							<>
-							<EnhancedSTLViewer
-								ref={viewerRef}
-								leftUrl={DEFAULT_BASE_LEFT_STL}
-								rightUrl={DEFAULT_BASE_RIGHT_STL}
-								leftOverlayUrl={showOverlays ? leftStlUrl : undefined}
-								rightOverlayUrl={showOverlays ? rightStlUrl : undefined}
-								targetForefootWidthMm={targetForefootWidthMm}
-								showGrid={true}
-								showBasePreview={false}
-								lockTopView={false}
-								hideScans={false}
-								landmarkPoints={designPlan.points ?? undefined}
-								showGeneratedInsole={false}
-								showZones={showZones || (activeDesignStep === 3 && step3Current.elementsSplit)}
-								showLeft={viewSettings.showLeft}
-								showRight={viewSettings.showRight}
-								transparent={viewSettings.transparent}
-								heatmap={viewSettings.heatmap}
-								clampDebug={viewSettings.clampDebug}
-								showInsoles={viewSettings.showInsoles}
-								showModel={viewSettings.showModel}
-								viewPreset={viewerViewPreset}
-								controlMode={viewerControlMode}
-								analysisEnabled={leftPanelTab === 'analysis'}
-								onProbe={(payload) => setAnalysisProbe(payload)}
-								corrections={corrections}
-								activeCorrections={activeCorrections}
-								bottomTextOverlay={bottomTextOverlay}
-								textPlacementEnabled={false}
-								selectedSide={activeDesignStep === 3 ? null : selectedInsoleSide}
-								onSelectSide={activeDesignStep === 3 ? undefined : (side) => setSelectedInsoleSide(side)}
-								onDeselectSide={activeDesignStep === 3 ? undefined : () => setSelectedInsoleSide(null)}
-								onZoneClick={activeDesignStep === 3 && step3Current.elementsSplit ? (zone, side) => { setSelectedZone(zone); setStep3Side(side); } : undefined}
-								boxEnabled={boxEnabled}
-								gridEditMode={isSelectedGridModeOn}
-								leftPlacedElements={leftPlacedElements}
-								rightPlacedElements={rightPlacedElements}
-								evaBlockMode={isEvaMethod}
-								trimlineAdjustments={trimlineAdjustments}
-								trimlineEditSide={trimlineEditSide}
-								onPendingTrimlineChange={(side: 'left' | 'right', adj: TrimlineAdjustments) =>
-									setPendingTrimlineAdj((prev) => ({
-										...prev,
-										[side]: adj,
-									}))
-								}
-							/>
-							{isFitting && (
-								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel px-4 py-2 text-xs font-semibold text-ui-text shadow-lg">
-									Berekenen… steunzool wordt aangepast
-								</div>
-							)}
-							{autoDetectStatus === 'detecting' && !isFitting && (
-								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel px-4 py-2 text-xs font-semibold text-ui-text shadow-lg animate-pulse">
-									{autoDetectMessage || 'Landmarks automatisch detecteren...'}
-								</div>
-							)}
-							{autoDetectStatus === 'success' && !isFitting && (
-								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-emerald-500/30 bg-emerald-950/80 px-4 py-2 text-xs font-semibold text-emerald-300 shadow-lg">
-									✓ {autoDetectMessage}
-								</div>
-							)}
-							{autoDetectStatus === 'failed' && !isFitting && (
-								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-950/80 px-4 py-2 text-xs font-semibold text-amber-300 shadow-lg">
-									<span>⚠</span>
-									<span>{autoDetectMessage}</span>
-									<button
-										type="button"
-										className="ml-1 text-amber-400 hover:text-amber-200"
-										onClick={() => { setAutoDetectStatus('idle'); setAutoDetectMessage(''); }}
-									>
-										✕
-									</button>
-								</div>
-							)}
-							<ViewOverlay
-								tab={leftPanelTab}
-								onTabChange={(nextTab) => {
-									setLeftPanelTab(nextTab);
-									if (nextTab === 'analysis') {
-										setViewerViewPreset('back');
-									}
-								}}
-								viewSettings={viewSettings}
-								onToggle={handleToggleViewSetting}
-								onView={handleOverlayView}
-								analysisHeightMm={analysisProbe?.heightMm ?? null}
-								analysisSide={analysisProbe?.side ?? null}
-								className="absolute left-6 top-6 z-20"
-							/>
-							{/* Element action panel – bottom-left corner of canvas */}
-							{selectedPlacedElement && !selectedInsoleSide && (
-								<ElementActionsPanel
-									element={selectedPlacedElement}
-									className="absolute bottom-6 left-6 z-20 w-[280px]"
-								/>
-							)}
-							{selectedInsoleSide && !isSelectedGridModeOn && !trimlineEditSide && (
-								<GeneratedInsoleOverlay
-									selectedSide={selectedInsoleSide}
-									boxEnabled={boxEnabled}
-									onToggleBox={(side) => {
-										setBoxEnabled((prev) => ({ ...prev, [side]: !prev[side] }));
-										setBoxEditTool('rotate');
-									}}
-									onMirrorToOther={mirrorCorrectionsToOtherSide}
-									onTrimlineEdit={(side) => {
-										setTrimlineEditSide(side);
-										setPendingTrimlineAdj({ ...trimlineAdjustments });
-										setViewerViewPreset('top');
-									}}
-									className="absolute left-6 bottom-6 z-20"
-								/>
-							)}
-
-							{trimlineEditSide && (
-								<div className="absolute left-6 bottom-6 z-20 ui-overlay-card w-[320px] rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
-									<div className="flex items-center justify-between">
-										<div>
-											<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">
-												Trimline aanpassen
-											</div>
-											<div className="mt-0.5 text-xs text-(--ui-muted)">
-												{trimlineEditSide === 'left' ? 'Links' : 'Rechts'} — sleep de punten om de rand te wijzigen
-											</div>
+								<>
+									<EnhancedSTLViewer
+										ref={viewerRef}
+										leftUrl={DEFAULT_BASE_LEFT_STL}
+										rightUrl={DEFAULT_BASE_RIGHT_STL}
+										leftOverlayUrl={showOverlays ? leftStlUrl : undefined}
+										rightOverlayUrl={showOverlays ? rightStlUrl : undefined}
+										targetForefootWidthMm={targetForefootWidthMm}
+										showGrid={true}
+										showBasePreview={false}
+										lockTopView={false}
+										hideScans={false}
+										landmarkPoints={designPlan.points ?? undefined}
+										showGeneratedInsole={false}
+										showZones={showZones || (activeDesignStep === 3 && step3Current.elementsSplit)}
+										showLeft={viewSettings.showLeft}
+										showRight={viewSettings.showRight}
+										transparent={viewSettings.transparent}
+										heatmap={viewSettings.heatmap}
+										clampDebug={viewSettings.clampDebug}
+										showInsoles={viewSettings.showInsoles}
+										showModel={viewSettings.showModel}
+										viewPreset={viewerViewPreset}
+										controlMode={viewerControlMode}
+										analysisEnabled={leftPanelTab === 'analysis'}
+										onProbe={(payload) => setAnalysisProbe(payload)}
+										corrections={corrections}
+										activeCorrections={activeCorrections}
+										bottomTextOverlay={bottomTextOverlay}
+										textPlacementEnabled={false}
+										selectedSide={activeDesignStep === 3 ? null : selectedInsoleSide}
+										onSelectSide={activeDesignStep === 3 ? undefined : (side) => setSelectedInsoleSide(side)}
+										onDeselectSide={activeDesignStep === 3 ? undefined : () => setSelectedInsoleSide(null)}
+										onZoneClick={activeDesignStep === 3 && step3Current.elementsSplit ? (zone, side) => { setSelectedZone(zone); setStep3Side(side); } : undefined}
+										boxEnabled={boxEnabled}
+										gridEditMode={isSelectedGridModeOn}
+										leftPlacedElements={leftPlacedElements}
+										rightPlacedElements={rightPlacedElements}
+										evaBlockMode={isEvaMethod}
+										trimlineAdjustments={trimlineAdjustments}
+										trimlineEditSide={trimlineEditSide}
+										onPendingTrimlineChange={(side: 'left' | 'right', adj: TrimlineAdjustments) =>
+											setPendingTrimlineAdj((prev) => ({
+												...prev,
+												[side]: adj,
+											}))
+										}
+									/>
+									{isFitting && (
+										<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel px-4 py-2 text-xs font-semibold text-ui-text shadow-lg">
+											Berekenen… steunzool wordt aangepast
 										</div>
-										<button
-											type="button"
-											onClick={() => setTrimlineEditSide(null)}
-											className="rounded-lg border border-(--ui-border) px-2.5 py-1 text-xs text-(--ui-muted) transition hover:bg-[rgba(255,255,255,0.08)] hover:text-(--ui-text)"
-										>
-											Sluiten
-										</button>
-									</div>
-									<div className="mt-3 space-y-1.5">
-										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
-											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#ef4444]" />
-											<span>Hiel</span>
-											<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].heel > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].heel.toFixed(1)} mm</span>
+									)}
+									{autoDetectStatus === 'detecting' && !isFitting && (
+										<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel px-4 py-2 text-xs font-semibold text-ui-text shadow-lg animate-pulse">
+											{autoDetectMessage || 'Landmarks automatisch detecteren...'}
 										</div>
-										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
-											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#22c55e]" />
-											<span>Middenvoet</span>
-											<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].midfoot > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].midfoot.toFixed(1)} mm</span>
+									)}
+									{autoDetectStatus === 'success' && !isFitting && (
+										<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-emerald-500/30 bg-emerald-950/80 px-4 py-2 text-xs font-semibold text-emerald-300 shadow-lg">
+											✓ {autoDetectMessage}
 										</div>
-										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
-											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#3b82f6]" />
-											<span>Voorvoet</span>
-											<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].forefoot > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].forefoot.toFixed(1)} mm</span>
-										</div>
-										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
-											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#f59e0b]" />
-											<span>Teen</span>
-											<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].toe > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].toe.toFixed(1)} mm</span>
-										</div>
-									</div>
-									<div className="mt-3 flex gap-2">
-										{/* Save — commit pending adjustments to the geometry */}
-										<button
-											type="button"
-											onClick={() => {
-												setTrimlineAdjustments({ ...pendingTrimlineAdj });
-											}}
-											disabled={
-												JSON.stringify(pendingTrimlineAdj[trimlineEditSide]) ===
-												JSON.stringify(trimlineAdjustments[trimlineEditSide])
-											}
-											className="flex-1 rounded-lg bg-[#56f2d6] px-3 py-2 text-xs font-semibold text-gray-900 transition hover:bg-[#3ddbb8] disabled:opacity-30 disabled:cursor-not-allowed"
-										>
-											Opslaan
-										</button>
-										{Object.values(pendingTrimlineAdj[trimlineEditSide]).some((v) => v !== 0) && (
+									)}
+									{autoDetectStatus === 'failed' && !isFitting && (
+										<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-950/80 px-4 py-2 text-xs font-semibold text-amber-300 shadow-lg">
+											<span>⚠</span>
+											<span>{autoDetectMessage}</span>
 											<button
 												type="button"
-												onClick={() => {
-													const reset = { global: 0, heel: 0, midfoot: 0, forefoot: 0, toe: 0 };
-													setTrimlineAdjustments((prev) => ({ ...prev, [trimlineEditSide!]: reset }));
-													setPendingTrimlineAdj((prev) => ({ ...prev, [trimlineEditSide!]: reset }));
-												}}
-												className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.04)] px-3 py-2 text-xs text-(--ui-muted) transition hover:bg-[rgba(255,255,255,0.08)] hover:text-(--ui-text)"
+												className="ml-1 text-amber-400 hover:text-amber-200"
+												onClick={() => { setAutoDetectStatus('idle'); setAutoDetectMessage(''); }}
 											>
-												Reset
+												✕
 											</button>
-										)}
-									</div>
-								</div>
-							)}
+										</div>
+									)}
+									<ViewOverlay
+										tab={leftPanelTab}
+										onTabChange={(nextTab) => {
+											setLeftPanelTab(nextTab);
+											if (nextTab === 'analysis') {
+												setViewerViewPreset('back');
+											}
+										}}
+										viewSettings={viewSettings}
+										onToggle={handleToggleViewSetting}
+										onView={handleOverlayView}
+										analysisHeightMm={analysisProbe?.heightMm ?? null}
+										analysisSide={analysisProbe?.side ?? null}
+										className="absolute left-6 top-6 z-20"
+									/>
+									{/* Element action panel – bottom-left corner of canvas */}
+									{selectedPlacedElement && !selectedInsoleSide && (
+										<ElementActionsPanel
+											element={selectedPlacedElement}
+											className="absolute bottom-6 left-6 z-20 w-[280px]"
+										/>
+									)}
+									{selectedInsoleSide && !isSelectedGridModeOn && !trimlineEditSide && (
+										<GeneratedInsoleOverlay
+											selectedSide={selectedInsoleSide}
+											boxEnabled={boxEnabled}
+											onToggleBox={(side) => {
+												setBoxEnabled((prev) => ({ ...prev, [side]: !prev[side] }));
+												setBoxEditTool('rotate');
+											}}
+											onMirrorToOther={mirrorCorrectionsToOtherSide}
+											onTrimlineEdit={(side) => {
+												setTrimlineEditSide(side);
+												setPendingTrimlineAdj({ ...trimlineAdjustments });
+												setViewerViewPreset('top');
+											}}
+											className="absolute left-6 bottom-6 z-20"
+										/>
+									)}
 
-							{selectedInsoleSide && isSelectedGridModeOn && (
-								<>
-									<BoxEditToolsOverlay
-										selectedSide={selectedInsoleSide}
-										activeTool={boxEditTool}
-										onToolChange={setBoxEditTool}
-										className="absolute left-6 bottom-6 z-20"
-									/>
-									<BoxEditConfirmOverlay
-										onCancel={exitGridMode}
-										onConfirm={exitGridMode}
-										className="absolute right-6 top-6 z-20"
-									/>
+									{trimlineEditSide && (
+										<div className="absolute left-6 bottom-6 z-20 ui-overlay-card w-[320px] rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
+											<div className="flex items-center justify-between">
+												<div>
+													<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">
+														Trimline aanpassen
+													</div>
+													<div className="mt-0.5 text-xs text-(--ui-muted)">
+														{trimlineEditSide === 'left' ? 'Links' : 'Rechts'} — sleep de punten om de rand te wijzigen
+													</div>
+												</div>
+												<button
+													type="button"
+													onClick={() => setTrimlineEditSide(null)}
+													className="rounded-lg border border-(--ui-border) px-2.5 py-1 text-xs text-(--ui-muted) transition hover:bg-[rgba(255,255,255,0.08)] hover:text-(--ui-text)"
+												>
+													Sluiten
+												</button>
+											</div>
+											<div className="mt-3 space-y-1.5">
+												<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
+													<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#ef4444]" />
+													<span>Hiel</span>
+													<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].heel > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].heel.toFixed(1)} mm</span>
+												</div>
+												<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
+													<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#22c55e]" />
+													<span>Middenvoet</span>
+													<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].midfoot > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].midfoot.toFixed(1)} mm</span>
+												</div>
+												<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
+													<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#3b82f6]" />
+													<span>Voorvoet</span>
+													<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].forefoot > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].forefoot.toFixed(1)} mm</span>
+												</div>
+												<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
+													<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#f59e0b]" />
+													<span>Teen</span>
+													<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].toe > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].toe.toFixed(1)} mm</span>
+												</div>
+											</div>
+											<div className="mt-3 flex gap-2">
+												{/* Save — commit pending adjustments to the geometry */}
+												<button
+													type="button"
+													onClick={() => {
+														setTrimlineAdjustments({ ...pendingTrimlineAdj });
+													}}
+													disabled={
+														JSON.stringify(pendingTrimlineAdj[trimlineEditSide]) ===
+														JSON.stringify(trimlineAdjustments[trimlineEditSide])
+													}
+													className="flex-1 rounded-lg bg-[#56f2d6] px-3 py-2 text-xs font-semibold text-gray-900 transition hover:bg-[#3ddbb8] disabled:opacity-30 disabled:cursor-not-allowed"
+												>
+													Opslaan
+												</button>
+												{Object.values(pendingTrimlineAdj[trimlineEditSide]).some((v) => v !== 0) && (
+													<button
+														type="button"
+														onClick={() => {
+															const reset = { global: 0, heel: 0, midfoot: 0, forefoot: 0, toe: 0 };
+															setTrimlineAdjustments((prev) => ({ ...prev, [trimlineEditSide!]: reset }));
+															setPendingTrimlineAdj((prev) => ({ ...prev, [trimlineEditSide!]: reset }));
+														}}
+														className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.04)] px-3 py-2 text-xs text-(--ui-muted) transition hover:bg-[rgba(255,255,255,0.08)] hover:text-(--ui-text)"
+													>
+														Reset
+													</button>
+												)}
+											</div>
+										</div>
+									)}
+
+									{selectedInsoleSide && isSelectedGridModeOn && (
+										<>
+											<BoxEditToolsOverlay
+												selectedSide={selectedInsoleSide}
+												activeTool={boxEditTool}
+												onToolChange={setBoxEditTool}
+												className="absolute left-6 bottom-6 z-20"
+											/>
+											<BoxEditConfirmOverlay
+												onCancel={exitGridMode}
+												onConfirm={exitGridMode}
+												className="absolute right-6 top-6 z-20"
+											/>
+										</>
+									)}
+									{designPlan.plan && (
+										<div className="absolute left-1/2 top-4 z-20 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel/90 px-4 py-2 text-xs text-ui-text">
+											Steunzool gegenereerd — lengte{' '}
+											{(designPlan.plan.frame.footLength * planWorldToMm).toFixed(1)} mm, breedte{' '}
+											{(designPlan.plan.frame.forefootWidth * planWorldToMm).toFixed(1)} mm, boog{' '}
+											{(designPlan.plan.frame.archHeight * planWorldToMm).toFixed(1)} mm
+										</div>
+									)}
 								</>
-							)}
-							{designPlan.plan && (
-								<div className="absolute left-1/2 top-4 z-20 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel/90 px-4 py-2 text-xs text-ui-text">
-									Steunzool gegenereerd — lengte{' '}
-									{(designPlan.plan.frame.footLength * planWorldToMm).toFixed(1)} mm, breedte{' '}
-									{(designPlan.plan.frame.forefootWidth * planWorldToMm).toFixed(1)} mm, boog{' '}
-									{(designPlan.plan.frame.archHeight * planWorldToMm).toFixed(1)} mm
-								</div>
-							)}
-							</>
 							)}
 							{leftPanelTab !== 'analysis' && !selectedInsoleSide && selectedPlacedElement && (
 								<div className="absolute right-4 top-4 z-20 w-[320px]">
