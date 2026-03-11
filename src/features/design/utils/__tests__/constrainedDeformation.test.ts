@@ -467,18 +467,30 @@ describe('computeWidthFitTargets - region-aware budgets', () => {
 });
 
 describe('surface model - deformable mask', () => {
-	it('arch and heel regions are never deformable', () => {
+	it('arch and heel regions are explicitly protected and stiffened', () => {
 		const geom = makeInsoleGeometry();
 		const model = buildSurfaceModel(geom);
 
+		let archProtected = 0;
+		let heelProtected = 0;
+
 		for (let i = 0; i < model.vertCount; i++) {
-			if (
-				model.regions[i] === AnatomicalRegion.ArchMidfoot ||
-				model.regions[i] === AnatomicalRegion.Heel
-			) {
-				expect(model.deformableMask[i]).toBe(0);
+			if (model.archSupportMask[i] === 1) {
+				archProtected++;
+				expect(model.protectedMask[i]).toBe(1);
+				expect(model.shapePreservingWeight[i]).toBeGreaterThan(0.8);
+				expect(model.tangentialAllowance[i]).toBeGreaterThan(0);
+			}
+			if (model.heelSupportMask[i] === 1) {
+				heelProtected++;
+				expect(model.protectedMask[i]).toBe(1);
+				expect(model.shapePreservingWeight[i]).toBeGreaterThan(0.85);
+				expect(model.tangentialAllowance[i]).toBeGreaterThan(0);
 			}
 		}
+
+		expect(archProtected).toBeGreaterThan(0);
+		expect(heelProtected).toBeGreaterThan(0);
 	});
 
 	it('top-to-wall and heel-arch transitions are never deformable', () => {
@@ -488,6 +500,7 @@ describe('surface model - deformable mask', () => {
 		for (let i = 0; i < model.vertCount; i++) {
 			if (model.topToWallTransition[i] === 1 || model.heelArchTransition[i] === 1) {
 				expect(model.deformableMask[i]).toBe(0);
+				expect(model.smoothingExclusionMask[i]).toBe(1);
 			}
 		}
 	});

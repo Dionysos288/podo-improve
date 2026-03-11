@@ -35,6 +35,7 @@ export interface InsoleSurfaceModel {
 	zones: Uint8Array;
 	regions: Uint8Array;
 	vertCount: number;
+	referenceNormals: Float32Array;
 	bottomPlaneH: number;
 	rimEdgeMask: Uint8Array;
 	curvature: Float32Array;
@@ -43,7 +44,19 @@ export interface InsoleSurfaceModel {
 	topToWallTransition: Uint8Array;
 	/** 1 = vertex is in heel-arch or arch-forefoot transition band; must not deform */
 	heelArchTransition: Uint8Array;
-	/** 1 = interior Top only; safe to deform. 0 = Rim, Wall, Bottom, or Top adjacent to Rim */
+	/** 1 = top arch vertices that should remain shape-preserving under width fit */
+	archSupportMask: Uint8Array;
+	/** 1 = top heel vertices that should remain strongly anchored to the base */
+	heelSupportMask: Uint8Array;
+	/** 1 = any vertex that should receive extra rigidity / no broad smoothing */
+	protectedMask: Uint8Array;
+	/** 1 = vertex must be excluded from global top cleanup smoothing */
+	smoothingExclusionMask: Uint8Array;
+	/** 0..1 per-vertex rigidity weight for the deformation solver */
+	shapePreservingWeight: Float32Array;
+	/** per-vertex tangential drift allowance relative to the base */
+	tangentialAllowance: Float32Array;
+	/** 1 = interior Top only; safe to receive directional deformation. 0 = Rim, Wall, Bottom, or Top adjacent to Rim */
 	deformableMask: Uint8Array;
 }
 
@@ -175,10 +188,22 @@ export function buildSurfaceModel(geometry: THREE.BufferGeometry): InsoleSurface
 	const { heightAxis, widthAxis, bbox, heightSpan, widthSpan } = axes;
 	const pos = geometry.getAttribute('position') as THREE.BufferAttribute;
 	const vertCount = pos.count;
+	if (!geometry.getAttribute('normal')) geometry.computeVertexNormals();
+	const normalAttr = geometry.getAttribute('normal') as THREE.BufferAttribute | undefined;
 	const heelMapper = createHeelToToeMapper(pos, axes);
 	const minH = bbox.min[heightAxis];
 	const centerW = (bbox.min[widthAxis] + bbox.max[widthAxis]) * 0.5;
 	const halfW = widthSpan * 0.5;
+	const referenceNormals = new Float32Array(vertCount * 3);
+	for (let i = 0; i < vertCount; i++) {
+		const nx = normalAttr?.getX(i) ?? 0;
+		const ny = normalAttr?.getY(i) ?? 0;
+		const nz = normalAttr?.getZ(i) ?? 1;
+		const len = Math.hypot(nx, ny, nz) || 1;
+		referenceNormals[i * 3] = nx / len;
+		referenceNormals[i * 3 + 1] = ny / len;
+		referenceNormals[i * 3 + 2] = nz / len;
+	}
 
 	// Build per-vertex downward-facing score from face normals so we can
 	// reliably classify underside vertices even near the perimeter.
@@ -290,6 +315,12 @@ export function buildSurfaceModel(geometry: THREE.BufferGeometry): InsoleSurface
 
 	const topToWallTransition = new Uint8Array(vertCount);
 	const heelArchTransition = new Uint8Array(vertCount);
+	const archSupportMask = new Uint8Array(vertCount);
+	const heelSupportMask = new Uint8Array(vertCount);
+	const protectedMask = new Uint8Array(vertCount);
+	const smoothingExclusionMask = new Uint8Array(vertCount);
+	const shapePreservingWeight = new Float32Array(vertCount);
+	const tangentialAllowance = new Float32Array(vertCount);
 	const deformableMask = new Uint8Array(vertCount);
 
 	for (let i = 0; i < vertCount; i++) {
@@ -301,23 +332,68 @@ export function buildSurfaceModel(geometry: THREE.BufferGeometry): InsoleSurface
 			n => zones[n] === VertexZone.Wall || zones[n] === VertexZone.Rim,
 		);
 		const isTopOrRim = zone === VertexZone.Top || zone === VertexZone.Rim;
+		const isInteriorTop = zone === VertexZone.Top && !hasWallOrRimNeighbor;
+		const isArch = region === AnatomicalRegion.ArchMidfoot;
+		const isHeel = region === AnatomicalRegion.Heel;
 
 		if (isTopOrRim && hasWallOrRimNeighbor) topToWallTransition[i] = 1;
 		if (trans > 0.3) heelArchTransition[i] = 1;
 
-		const isInteriorTop =
-			zone === VertexZone.Top &&
-			!hasWallOrRimNeighbor &&
-			trans < 0.2 &&
-			(region === AnatomicalRegion.Forefoot || region === AnatomicalRegion.Toe);
+		if (isInteriorTop && isArch) archSupportMask[i] = 1;
+		if (isInteriorTop && isHeel) heelSupportMask[i] = 1;
 
-		if (isInteriorTop) deformableMask[i] = 1;
+		const regionRigidity =
+			isHeel ? 0.94
+			: isArch ? 0.9
+			: region === AnatomicalRegion.Forefoot ? 0.38
+			: 0.3;
+		shapePreservingWeight[i] = Math.min(
+			0.98,
+			regionRigidity + (topToWallTransition[i] ? 0.06 : 0) + (heelArchTransition[i] ? 0.06 : 0),
+		);
+
+		tangentialAllowance[i] =
+			zone !== VertexZone.Top ? 0
+			: heelSupportMask[i] === 1 ? widthSpan * 0.002
+			: archSupportMask[i] === 1 ? widthSpan * 0.004
+			: trans > 0.3 ? widthSpan * 0.003
+			: region === AnatomicalRegion.Forefoot ? widthSpan * 0.02
+			: widthSpan * 0.012;
+
+		if (
+			topToWallTransition[i] === 1 ||
+			heelArchTransition[i] === 1 ||
+			archSupportMask[i] === 1 ||
+			heelSupportMask[i] === 1
+		) {
+			protectedMask[i] = 1;
+		}
+
+		if (
+			protectedMask[i] === 1 ||
+			zone === VertexZone.Rim ||
+			zone === VertexZone.Wall ||
+			zone === VertexZone.Bottom
+		) {
+			smoothingExclusionMask[i] = 1;
+		}
+
+		const isDirectionalInteriorTop =
+			isInteriorTop &&
+			trans < 0.35 &&
+			topToWallTransition[i] === 0 &&
+			heelArchTransition[i] === 0;
+
+		if (isDirectionalInteriorTop) deformableMask[i] = 1;
 	}
 
 	return {
 		axes, heelMapper, zones, regions, vertCount,
+		referenceNormals,
 		bottomPlaneH, rimEdgeMask, curvature, regionTransition,
-		topToWallTransition, heelArchTransition, deformableMask,
+		topToWallTransition, heelArchTransition,
+		archSupportMask, heelSupportMask, protectedMask, smoothingExclusionMask,
+		shapePreservingWeight, tangentialAllowance, deformableMask,
 	};
 }
 

@@ -285,12 +285,21 @@ export function computeWidthFitTargets(
 	const targets = new Float32Array(vertCount * 3);
 	const weights = new Float32Array(vertCount);
 	const budgets = new Float32Array(vertCount);
+	const primaryDirections = new Float32Array(vertCount * 3);
+	const secondaryDirections = new Float32Array(vertCount * 3);
+	const tangentialBudgets = new Float32Array(vertCount);
+	const anchorStrengths = new Float32Array(vertCount);
+	const rigidityWeights = new Float32Array(vertCount);
 	const wIdx = widthAxis === 'x' ? 0 : widthAxis === 'y' ? 1 : 2;
 
 	for (let v = 0; v < vertCount; v++) {
 		targets[v * 3] = pos.getX(v);
 		targets[v * 3 + 1] = pos.getY(v);
 		targets[v * 3 + 2] = pos.getZ(v);
+		primaryDirections[v * 3 + wIdx] = 1;
+		secondaryDirections[v * 3] = model.referenceNormals[v * 3];
+		secondaryDirections[v * 3 + 1] = model.referenceNormals[v * 3 + 1];
+		secondaryDirections[v * 3 + 2] = model.referenceNormals[v * 3 + 2];
 
 		const deformable = model.deformableMask[v] === 1;
 		const inProtectedTransition =
@@ -304,6 +313,9 @@ export function computeWidthFitTargets(
 			targets[v * 3 + wIdx] = wIdx === 0 ? pos.getX(v) : wIdx === 1 ? pos.getY(v) : pos.getZ(v);
 			weights[v] = 0;
 			budgets[v] = 0;
+			tangentialBudgets[v] = 0;
+			anchorStrengths[v] = 1;
+			rigidityWeights[v] = 1;
 			continue;
 		}
 
@@ -311,12 +323,53 @@ export function computeWidthFitTargets(
 
 		const curvAtten = 1 / (1 + model.curvature[v] * 6.0);
 		const transAtten = 1 - model.regionTransition[v] * 0.7;
-		weights[v] = curvAtten * transAtten;
 
-		const regionScale =
-			model.regions[v] === AnatomicalRegion.ArchMidfoot ? 0
-			: model.regions[v] === AnatomicalRegion.Heel ? 0
-			: 1.0;
+		let weightScale = 0.85;
+		let budgetScale = 0.08;
+		let anchor = 0.4;
+		let tangentialScale = 0.01;
+		let rigidity = model.shapePreservingWeight[v];
+
+		switch (model.regions[v]) {
+			case AnatomicalRegion.Heel:
+				weightScale = 0.08;
+				budgetScale = 0.012;
+				anchor = 0.94;
+				tangentialScale = 0.0015;
+				break;
+			case AnatomicalRegion.ArchMidfoot:
+				weightScale = 0.18;
+				budgetScale = 0.025;
+				anchor = 0.88;
+				tangentialScale = 0.003;
+				break;
+			case AnatomicalRegion.Forefoot:
+				weightScale = 0.95;
+				budgetScale = 0.12;
+				anchor = 0.22;
+				tangentialScale = 0.008;
+				break;
+			case AnatomicalRegion.Toe:
+			default:
+				weightScale = 0.72;
+				budgetScale = 0.08;
+				anchor = 0.3;
+				tangentialScale = 0.006;
+				break;
+		}
+
+		if (model.protectedMask[v] === 1) {
+			weightScale *= 0.6;
+			budgetScale *= 0.6;
+			anchor = Math.max(anchor, 0.86);
+			tangentialScale *= 0.5;
+			rigidity = Math.max(rigidity, 0.88);
+		}
+
+		weights[v] = curvAtten * transAtten * weightScale;
+		anchorStrengths[v] = anchor;
+		rigidityWeights[v] = rigidity;
+		tangentialBudgets[v] = Math.min(model.tangentialAllowance[v], widthSpan * tangentialScale);
 
 		switch (model.zones[v]) {
 			case VertexZone.Bottom:
@@ -329,12 +382,22 @@ export function computeWidthFitTargets(
 				budgets[v] = 0;
 				break;
 			default:
-				budgets[v] = widthSpan * 0.12 * regionScale;
+				budgets[v] = widthSpan * budgetScale;
 				break;
 		}
 	}
 
-	return { targetPositions: targets, weights, budgets, confidence: 1.0 };
+	return {
+		targetPositions: targets,
+		weights,
+		budgets,
+		primaryDirections,
+		secondaryDirections,
+		tangentialBudgets,
+		anchorStrengths,
+		rigidityWeights,
+		confidence: 1.0,
+	};
 }
 
 function computeForefootTargets(

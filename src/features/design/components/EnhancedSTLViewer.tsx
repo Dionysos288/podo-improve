@@ -24,7 +24,7 @@ import {
 	type LandmarkPoints,
 } from '@/src/features/design/utils/landmarkFitting';
 import { applyAllCorrections } from '@/src/features/design/utils/insoleCorrections';
-import { buildSurfaceModel } from '@/src/features/design/utils/insoleSurfaceModel';
+import { buildSurfaceModel, VertexZone } from '@/src/features/design/utils/insoleSurfaceModel';
 import { computeWidthFitTargets } from '@/src/features/design/utils/scanCorrespondence';
 import { solveConstrainedDeformation } from '@/src/features/design/utils/constrainedDeformation';
 import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpPanel';
@@ -445,6 +445,7 @@ function weldAndSmoothNormals(
  */
 function smoothInsoleTopSurface(
 	geometry: THREE.BufferGeometry,
+	surfaceModel?: { zones: Uint8Array; smoothingExclusionMask: Uint8Array },
 	refPasses = 50,
 	residualFactor = 0.08,
 	normalThreshold = 0.35,
@@ -475,8 +476,15 @@ function smoothInsoleTopSurface(
 
 	const normals = normalAttr.array as Float32Array;
 	const topFacing = new Uint8Array(vertCount);
+	const eligible = new Uint8Array(vertCount);
 	for (let v = 0; v < vertCount; v++) {
-		if (normals[v * 3 + hAxisIdx] > normalThreshold) topFacing[v] = 1;
+		if (normals[v * 3 + hAxisIdx] > normalThreshold) {
+			topFacing[v] = 1;
+			const isProtected = surfaceModel
+				? surfaceModel.zones[v] !== VertexZone.Top || surfaceModel.smoothingExclusionMask[v] === 1
+				: false;
+			if (!isProtected) eligible[v] = 1;
+		}
 	}
 
 	const pos = posAttr.array as Float32Array;
@@ -488,12 +496,21 @@ function smoothInsoleTopSurface(
 	const alpha = 0.35;
 	for (let p = 0; p < refPasses; p++) {
 		for (let v = 0; v < vertCount; v++) {
-			if (!topFacing[v]) { tmp[v] = smoothRef[v]; continue; }
+			if (!eligible[v]) { tmp[v] = smoothRef[v]; continue; }
 			const nbs = neighborSets[v];
 			if (nbs.size === 0) { tmp[v] = smoothRef[v]; continue; }
 			let sum = 0;
-			for (const nb of nbs) sum += smoothRef[nb];
-			tmp[v] = smoothRef[v] + alpha * (sum / nbs.size - smoothRef[v]);
+			let count = 0;
+			for (const nb of nbs) {
+				if (!eligible[nb]) continue;
+				sum += smoothRef[nb];
+				count++;
+			}
+			if (count === 0) {
+				tmp[v] = smoothRef[v];
+				continue;
+			}
+			tmp[v] = smoothRef[v] + alpha * (sum / count - smoothRef[v]);
 		}
 		smoothRef.set(tmp);
 	}
@@ -512,7 +529,7 @@ function smoothInsoleTopSurface(
 	geometry.userData.scanDeviations = deviations;
 
 	for (let v = 0; v < vertCount; v++) {
-		if (!topFacing[v]) continue;
+		if (!eligible[v]) continue;
 		let newH = smoothRef[v] + residualFactor * (origHeights[v] - smoothRef[v]);
 		const drift = Math.abs(newH - origHeights[v]);
 		if (drift > maxHeightDrift) {
@@ -1565,6 +1582,7 @@ function STLMesh({
 		indexed.computeBoundingBox();
 		const bbox = indexed.boundingBox;
 		const posAttr = indexed.getAttribute('position') as THREE.BufferAttribute | undefined;
+		let surfaceModel = meshRole === 'insole' && indexed.index ? buildSurfaceModel(indexed) : null;
 		if (bbox && posAttr && applyGeneral) {
 			const size = bbox.getSize(new THREE.Vector3());
 			const axes: Array<'x' | 'y' | 'z'> = ['x', 'y', 'z'];
@@ -1648,8 +1666,7 @@ function STLMesh({
 			}
 
 			// 2) Width fitting: constrained deformation preserving base curvature
-			if (indexed.index) {
-				const surfaceModel = buildSurfaceModel(indexed);
+			if (surfaceModel && indexed.index) {
 				const widthField = computeWidthFitTargets(indexed, surfaceModel, {
 					side,
 					mmToWorld: nextMmToWorld,
@@ -1673,7 +1690,7 @@ function STLMesh({
 		}
 
 		const smoothedGeometry = meshRole === 'insole'
-			? smoothInsoleTopSurface(indexed)
+			? smoothInsoleTopSurface(indexed, surfaceModel ?? undefined)
 			: (() => {
 				indexed.computeVertexNormals();
 				return indexed;
