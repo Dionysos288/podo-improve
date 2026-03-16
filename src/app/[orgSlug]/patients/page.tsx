@@ -1,5 +1,11 @@
+import type { Metadata } from 'next';
 import { getPatients } from '@/src/features/patients/server/actions';
 import { PatientsClient } from '@/src/features/patients/components/PatientsClient';
+
+export const metadata: Metadata = {
+	title: 'Patiënten',
+	description: 'Overzicht van al uw patiënten. Voeg nieuwe patiënten toe of bekijk bestaande dossiers.',
+};
 
 interface PatientsPageProps {
 	params: Promise<{ orgSlug: string }>;

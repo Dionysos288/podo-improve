@@ -1,9 +1,19 @@
 'use server';
 
+import { CompanyPlan } from '@prisma/client';
 import { prisma } from '@/src/shared/core/db/prisma';
 import { requireSession, requireOrganization } from '@/src/shared/core/auth/get-session';
+import {
+	redeemRegistrationAccessKey,
+	validateRegistrationAccessKey,
+} from '@/src/shared/core/platform/access-keys';
+import { normalizeStlLimit } from '@/src/shared/core/platform/plans';
 
-export async function createOrganization(data: { name: string; slug: string }) {
+export async function createOrganization(data: {
+	name: string;
+	slug: string;
+	accessKey: string;
+}) {
 	const session = await requireSession();
 
 	// Validate slug format
@@ -15,6 +25,15 @@ export async function createOrganization(data: { name: string; slug: string }) {
 	if (data.slug.length < 3) {
 		throw new Error('URL moet minimaal 3 tekens bevatten');
 	}
+
+	if (!data.accessKey?.trim()) {
+		throw new Error('Toegangssleutel is verplicht');
+	}
+
+	const accessKey = await validateRegistrationAccessKey(
+		data.accessKey,
+		session.user.email
+	);
 
 	// Check if slug is already taken
 	const existing = await prisma.organization.findUnique({
@@ -30,6 +49,9 @@ export async function createOrganization(data: { name: string; slug: string }) {
 		data: {
 			name: data.name,
 			slug: data.slug,
+			plan: accessKey.plan,
+			stlLimit: normalizeStlLimit(accessKey.plan as CompanyPlan, accessKey.stlLimit),
+			billingStatus: 'offline-approved',
 			users: {
 				connect: { id: session.user.id },
 			},
@@ -43,6 +65,12 @@ export async function createOrganization(data: { name: string; slug: string }) {
 			orgId: organization.id,
 			role: 'ADMIN',
 		},
+	});
+
+	await redeemRegistrationAccessKey({
+		code: accessKey.code,
+		organizationId: organization.id,
+		userId: session.user.id,
 	});
 
 	return organization;

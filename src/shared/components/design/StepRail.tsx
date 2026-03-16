@@ -22,26 +22,31 @@ interface StepRailProps {
 	onStepChange: (step: number) => void;
 	/** Override default step labels by step id */
 	stepLabels?: Partial<Record<number, string>>;
+	/** Step IDs that are visible. If omitted, all steps are shown. */
+	visibleSteps?: number[];
 }
 
 export function StepRail({
 	activeStep,
 	onStepChange,
 	stepLabels,
+	visibleSteps,
 }: StepRailProps) {
-	const steps = DEFAULT_STEPS.map((step) => ({
-		...step,
-		label: stepLabels?.[step.id] ?? step.label,
-	}));
+	const steps = DEFAULT_STEPS
+		.filter((step) => !visibleSteps || visibleSteps.includes(step.id))
+		.map((step) => ({
+			...step,
+			label: stepLabels?.[step.id] ?? step.label,
+		}));
 
 	return (
 		<div className="flex ">
-			{steps.map((step) => (
+			{steps.map((step, idx) => (
 				<button
 					type="button"
 					key={step.id}
 					className={tabStyles({ active: activeStep === step.id })}
-					style={step.id === 4 ? { borderRight: '0px' } : undefined}
+					style={idx === steps.length - 1 ? { borderRight: '0px' } : undefined}
 					onClick={() => onStepChange(step.id)}
 				>
 					{step.label}

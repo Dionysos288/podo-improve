@@ -74,6 +74,10 @@ export interface ElementLibraryItem {
 	outline: [number, number][];
 	/** Optional: default scale factors */
 	defaultScale?: [number, number];
+	/** Optional: URL to a pre-built STL mesh for this element (relative to public/) */
+	stlUrl?: string;
+	/** Intrinsic size of the STL in mm [width, depth] for correct scaling */
+	stlSizeMm?: [number, number];
 }
 
 /** How the element sits relative to the insole surface */

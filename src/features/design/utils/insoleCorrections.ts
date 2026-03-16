@@ -538,22 +538,18 @@ export function applyGladstrijken(
 	positions.needsUpdate = true;
 }
 
-/**
- * PRONATIE (Pronation Correction)
- * Tilts the insole to correct inward rolling of the foot
- * Raises the medial (inner) side
- */
-export function applyPronatie(
+function applyFrontalTilt(
 	geometry: THREE.BufferGeometry,
-	amount: number, // in degrees (0-10)
+	amount: number,
 	region: 'gehele-zool' | 'voorvoet' | 'hiel',
-	isLeftFoot: boolean
+	isLeftFoot: boolean,
+	raiseMedialSide: boolean
 ): void {
 	if (amount === 0) return;
-	
+
 	const positions = geometry.attributes.position as THREE.BufferAttribute;
 	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
-	
+
 	const minWidth = getMinForAxis(bbox, widthAxis);
 	const centerWidth = minWidth + widthSpan / 2;
 	const heelToToe = createHeelToToeMapper({
@@ -563,18 +559,17 @@ export function applyPronatie(
 		bbox,
 		lengthSpan,
 	});
-	
-	// Convert degrees to radians and calculate height change per mm of width
+
 	const angleRad = (amount * Math.PI) / 180;
 	const heightPerWidth = Math.tan(angleRad);
-	
+	const medialDirection = isLeftFoot ? 1 : -1;
+	const sideDirection = raiseMedialSide ? medialDirection : -medialDirection;
+
 	for (let i = 0; i < positions.count; i++) {
 		const lengthVal = getAxisValue(positions, i, lengthAxis);
 		const widthVal = getAxisValue(positions, i, widthAxis);
-		
 		const t = heelToToe.getT(lengthVal);
-		
-		// Determine if this vertex is in the affected region
+
 		let regionWeight = 0;
 		switch (region) {
 			case 'gehele-zool':
@@ -587,43 +582,45 @@ export function applyPronatie(
 				regionWeight = smoothstep(0.28, 0.06, t);
 				break;
 		}
-		
-		if (regionWeight > 0.01) {
-			// Distance from center (positive = medial side for pronation correction)
-			// For pronation: raise medial side, which is different for left/right foot
-			const distFromCenter = widthVal - centerWidth;
-			
-			// For left foot: medial is positive X, for right foot: medial is negative X
-			const medialDirection = isLeftFoot ? 1 : -1;
-			const signedDist = distFromCenter * medialDirection;
-			
-			// Height adjustment based on distance from center
-			const heightAdjust = signedDist * heightPerWidth * regionWeight;
-			
-			const currentHeight = getAxisValue(positions, i, heightAxis);
-			setAxisValue(positions, i, heightAxis, currentHeight + heightAdjust);
-		}
+
+		if (regionWeight <= 0.01) continue;
+
+		const distFromCenter = widthVal - centerWidth;
+		const signedDist = distFromCenter * sideDirection;
+		const heightAdjust = signedDist * heightPerWidth * regionWeight;
+		const currentHeight = getAxisValue(positions, i, heightAxis);
+		setAxisValue(positions, i, heightAxis, currentHeight + heightAdjust);
 	}
-	
+
 	positions.needsUpdate = true;
 }
 
 /**
- * SUPINATIE (Supination Correction)
- * Tilts the insole to correct outward rolling of the foot
- * Raises the lateral (outer) side
+ * PRONATIE (Pronation Correction)
+ * Tilts the insole to correct inward rolling of the foot.
+ * User expectation in this project: raise the lateral (outer) side.
  */
-export function applySupinatie(
+export function applyPronatie(
 	geometry: THREE.BufferGeometry,
-	amount: number, // in degrees (0-10)
+	amount: number,
 	region: 'gehele-zool' | 'voorvoet' | 'hiel',
 	isLeftFoot: boolean
 ): void {
-	if (amount === 0) return;
-	
-	// Supination is the opposite of pronation - raise the lateral side
-	// We can implement this by calling pronation with inverted foot side
-	applyPronatie(geometry, amount, region, !isLeftFoot);
+	applyFrontalTilt(geometry, amount, region, isLeftFoot, false);
+}
+
+/**
+ * SUPINATIE (Supination Correction)
+ * Tilts the insole to correct outward rolling of the foot.
+ * User expectation in this project: raise the medial (inner) side.
+ */
+export function applySupinatie(
+	geometry: THREE.BufferGeometry,
+	amount: number,
+	region: 'gehele-zool' | 'voorvoet' | 'hiel',
+	isLeftFoot: boolean
+): void {
+	applyFrontalTilt(geometry, amount, region, isLeftFoot, true);
 }
 
 /**

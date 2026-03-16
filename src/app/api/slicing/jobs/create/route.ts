@@ -1,7 +1,19 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { Prisma } from '@prisma/client';
 import { requireOrganization } from '@/src/shared/core/auth/get-session';
 import { prisma } from '@/src/shared/core/db/prisma';
+import { recordUsageEvent } from '@/src/shared/core/platform/usage';
+
+// Prevent Next.js from caching / cloning the Response body internally
+export const dynamic = 'force-dynamic';
+
+/** Helper – build a plain JSON Response (avoids NextResponse.json body-lock bug in Next 16) */
+function jsonResponse(data: unknown, status = 200): Response {
+	return new Response(JSON.stringify(data), {
+		status,
+		headers: { 'Content-Type': 'application/json' },
+	});
+}
 
 type CreateSlicingJobBody = {
 	stlBase64?: string;
@@ -19,9 +31,20 @@ export async function POST(req: NextRequest) {
 		let printerSettings: Record<string, unknown> = {};
 
 		if (contentType.includes('application/octet-stream')) {
-			const arr = await req.arrayBuffer();
+			let arr: ArrayBuffer;
+			try {
+				arr = await req.arrayBuffer();
+			} catch (bodyErr) {
+				// Body stream can be "disturbed or locked" when the STL exceeds
+				// the proxy body-size limit (proxyClientMaxBodySize in next.config).
+				console.error('Failed to read request body:', bodyErr);
+				return jsonResponse(
+					{ error: 'STL-upload mislukt: bestand is te groot of verbinding is verbroken. Maximaal 50 MB.' },
+					413,
+				);
+			}
 			if (!arr || arr.byteLength === 0) {
-				return NextResponse.json({ error: 'Leeg STL-bestand ontvangen.' }, { status: 400 });
+				return jsonResponse({ error: 'Leeg STL-bestand ontvangen.' }, 400);
 			}
 			stlBase64 = Buffer.from(arr).toString('base64');
 			filename = req.headers.get('x-filename') || filename;
@@ -41,7 +64,7 @@ export async function POST(req: NextRequest) {
 		}
 
 		if (!stlBase64) {
-			return NextResponse.json({ error: 'stlBase64 is verplicht.' }, { status: 400 });
+			return jsonResponse({ error: 'stlBase64 is verplicht.' }, 400);
 		}
 
 		const prismaAny = prisma as unknown as {
@@ -71,13 +94,25 @@ export async function POST(req: NextRequest) {
 			},
 		});
 
-		return NextResponse.json({ jobId: job.id });
+		await recordUsageEvent({
+			orgId,
+			userId: session.user.id,
+			eventType: 'PRINT_STARTED',
+			resourceId: job.id,
+			metadata: {
+				filename,
+				printer: printerSettings.printer,
+				material: printerSettings.material,
+			},
+		});
+
+		return jsonResponse({ jobId: job.id });
 	} catch (error) {
-		return NextResponse.json(
+		return jsonResponse(
 			{
 				error: error instanceof Error ? error.message : 'Slicing job aanmaken mislukt.',
 			},
-			{ status: 400 }
+			400,
 		);
 	}
 }

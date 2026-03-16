@@ -27,6 +27,7 @@ export default function RegisterPage() {
 	const [email, setEmail] = useState('');
 	const [password, setPassword] = useState('');
 	const [confirmPassword, setConfirmPassword] = useState('');
+	const [accessKey, setAccessKey] = useState('');
 
 	// Organization fields
 	const [orgName, setOrgName] = useState('');
@@ -59,6 +60,11 @@ export default function RegisterPage() {
 			return;
 		}
 
+		if (!accessKey.trim()) {
+			setError('Een toegangssleutel is verplicht om een account aan te maken');
+			return;
+		}
+
 		setStep('organization');
 	};
 
@@ -74,6 +80,16 @@ export default function RegisterPage() {
 		}
 
 		try {
+			const accessKeyValidation = await fetch(
+				`/api/access-keys/validate?code=${encodeURIComponent(accessKey.trim())}&email=${encodeURIComponent(email.trim())}`
+			);
+
+			if (!accessKeyValidation.ok) {
+				const data = await accessKeyValidation.json().catch(() => ({}));
+				setError(data.error || 'Toegangssleutel is ongeldig');
+				return;
+			}
+
 			// First, create the user
 			const result = await signUp.email({
 				email,
@@ -93,6 +109,7 @@ export default function RegisterPage() {
 				body: JSON.stringify({
 					name: orgName,
 					slug: orgSlug,
+					accessKey: accessKey.trim(),
 				}),
 			});
 
@@ -185,6 +202,28 @@ export default function RegisterPage() {
 								className="w-full rounded-lg border border-ui-border bg-ui-card px-4 py-3 text-foreground placeholder:text-ui-muted focus:border-ui-accent focus:outline-none focus:ring-1 focus:ring-ui-accent"
 							/>
 						</div>
+
+							<div className="space-y-2">
+								<label
+									htmlFor="accessKey"
+									className="text-xs uppercase tracking-wide text-ui-muted"
+								>
+									Toegangssleutel
+								</label>
+								<Input
+									id="accessKey"
+									type="text"
+									value={accessKey}
+									onChange={(e) => setAccessKey(e.target.value.toUpperCase())}
+									placeholder="PODO-XXXX-XXXX"
+									required
+									autoComplete="off"
+									className="w-full rounded-lg border border-ui-border bg-ui-card px-4 py-3 text-foreground placeholder:text-ui-muted focus:border-ui-accent focus:outline-none focus:ring-1 focus:ring-ui-accent"
+								/>
+								<p className="text-xs text-ui-muted">
+									Je ontvangt deze sleutel nadat een betaling offline is bevestigd.
+								</p>
+							</div>
 
 						<div className="space-y-2">
 							<label

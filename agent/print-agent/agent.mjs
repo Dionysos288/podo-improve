@@ -222,6 +222,133 @@ function generateFlatConfig(bundleSections, settings, outputDir) {
 		merged['nozzle_diameter'] = String(settings.nozzle).replace(/\s*mm$/i, '').split(',')[0].trim();
 	}
 
+	// ── Material-aware tuning ────────────────────────────────────────────
+	// The community bundle profiles are generic.  We apply material-specific
+	// overrides so that speeds, flow rates, widths and retraction match what
+	// the E2 direct-drive can actually handle for each material.
+	{
+		const filType = (merged['filament_type'] || '').toUpperCase();
+		const nozzleDia = parseFloat(merged['nozzle_diameter']) || 0.6;
+		const layerH = parseFloat(merged['layer_height']) || 0.2;
+
+		// ── 1. Extrusion widths ──────────────────────────────────────────
+		// The bundle's 0.6 profile hardcodes 0.65-0.68mm widths.  If the
+		// actual nozzle is larger (0.8, 1.0) these are too narrow → more
+		// passes → more time.  Standard rule of thumb: width ≈ 1.1 × nozzle.
+		const profileNozzle = parseFloat(merged['extrusion_width']) || nozzleDia;
+		if (nozzleDia > profileNozzle + 0.05) {
+			const w  = Math.round(nozzleDia * 1.1  * 100) / 100;  // general
+			const ew = Math.round(nozzleDia * 1.05 * 100) / 100;  // external (slightly tighter)
+			const fw = Math.round(nozzleDia * 1.0  * 100) / 100;  // first layer
+			console.log(`  Adjusting extrusion widths for ${nozzleDia}mm nozzle: general=${w} external=${ew} first_layer=${fw}`);
+			merged['extrusion_width']                    = String(w);
+			merged['perimeter_extrusion_width']          = String(w);
+			merged['external_perimeter_extrusion_width'] = String(ew);
+			merged['infill_extrusion_width']             = String(w);
+			merged['solid_infill_extrusion_width']       = String(w);
+			merged['top_infill_extrusion_width']         = String(ew);
+			merged['first_layer_extrusion_width']        = String(fw);
+		}
+
+		// ── 2. Material-specific speed & flow tuning ─────────────────────
+		if (filType === 'FLEX' || filType === 'TPU') {
+			// --- Volumetric flow limit ---
+			// Bundle ships 1.2 mm³/s for FLEX – way too low for direct-drive.
+			// Safe values for TPU 95A on Raise3D E2 direct-drive:
+			let maxVol;
+			if (nozzleDia <= 0.4)      maxVol = 2.5;
+			else if (nozzleDia <= 0.6)  maxVol = 4;
+			else if (nozzleDia <= 0.8)  maxVol = 5;
+			else                        maxVol = 6;
+
+			const oldVol = parseFloat(merged['filament_max_volumetric_speed']) || 0;
+			if (oldVol > 0 && oldVol < maxVol) {
+				console.log(`  FLEX: volumetric flow ${oldVol} → ${maxVol} mm³/s (nozzle=${nozzleDia}mm)`);
+				merged['filament_max_volumetric_speed'] = String(maxVol);
+			}
+
+			// --- Speeds ---
+			// TPU likes moderate, steady speeds.  Too fast → under-extrusion
+			// on corners; too slow → oozing and blobs.
+			// These are linear speeds in mm/s.  The volumetric limit above
+			// acts as the real safety cap.
+			const speedTable = {
+				'perimeter_speed':              nozzleDia >= 0.6 ? 40 : 30,
+				'external_perimeter_speed':     nozzleDia >= 0.6 ? 30 : 25,
+				'infill_speed':                 nozzleDia >= 0.6 ? 50 : 40,
+				'solid_infill_speed':           nozzleDia >= 0.6 ? 40 : 35,
+				'top_solid_infill_speed':       nozzleDia >= 0.6 ? 30 : 25,
+				'small_perimeter_speed':        20,
+				'gap_fill_speed':               nozzleDia >= 0.6 ? 30 : 20,
+				'bridge_speed':                 20,
+				'first_layer_speed':            15,
+				'travel_speed':                 150,
+				'max_print_speed':              nozzleDia >= 0.6 ? 60 : 50,
+			};
+			const speedChanges = [];
+			for (const [key, val] of Object.entries(speedTable)) {
+				const old = parseFloat(merged[key]) || 0;
+				// Only override if the profile value is significantly different
+				// (avoid overriding sensible custom values)
+				if (old > 0 && Math.abs(old - val) > 5) {
+					merged[key] = String(val);
+					speedChanges.push(`${key}: ${old}→${val}`);
+				} else if (old === 0) {
+					merged[key] = String(val);
+					speedChanges.push(`${key}: (unset)→${val}`);
+				}
+			}
+			if (speedChanges.length > 0) {
+				console.log(`  FLEX speed tuning: ${speedChanges.join(', ')}`);
+			}
+
+			// --- Retraction ---
+			// TPU is flexible – long/fast retractions cause jams.
+			// Direct-drive E2 needs very little retraction.
+			const retLen = parseFloat(merged['retract_length']) || 0;
+			if (retLen > 1.5) {
+				console.log(`  FLEX: retract_length ${retLen} → 0.8mm (direct-drive TPU)`);
+				merged['retract_length'] = '0.8';
+			}
+			const retSpeed = parseFloat(merged['retract_speed']) || 0;
+			if (retSpeed > 30) {
+				console.log(`  FLEX: retract_speed ${retSpeed} → 25mm/s (gentle for TPU)`);
+				merged['retract_speed'] = '25';
+			}
+
+			// --- Cooling ---
+			// TPU benefits from moderate cooling to set the layer before the
+			// next one, but not full blast (causes warping on thin sections).
+			merged['cooling'] = '1';
+			merged['fan_always_on'] = '0';
+			merged['min_fan_speed'] = '30';
+			merged['max_fan_speed'] = '50';
+			merged['bridge_fan_speed'] = '80';
+			merged['disable_fan_first_layers'] = '3';
+			merged['slowdown_below_layer_time'] = '10';
+			merged['min_print_speed'] = '10';
+
+			console.log(`  FLEX: cooling=moderate (30-50%), retract=${merged['retract_length']}mm@${merged['retract_speed']}mm/s`);
+
+		} else if (filType === 'PLA') {
+			// PLA is forgiving – the bundle speeds are fine.
+			// Just ensure volumetric limit isn't needlessly restrictive.
+			const oldVol = parseFloat(merged['filament_max_volumetric_speed']) || 0;
+			const maxVol = nozzleDia >= 0.6 ? 15 : 11;
+			if (oldVol > 0 && oldVol < maxVol) {
+				merged['filament_max_volumetric_speed'] = String(maxVol);
+			}
+
+		} else if (filType === 'PET' || filType === 'PETG') {
+			// PETG – moderate speeds, good cooling needed
+			const oldVol = parseFloat(merged['filament_max_volumetric_speed']) || 0;
+			const maxVol = nozzleDia >= 0.6 ? 10 : 8;
+			if (oldVol > 0 && oldVol < maxVol) {
+				merged['filament_max_volumetric_speed'] = String(maxVol);
+			}
+		}
+	}
+
 	// Disable multi-extruder / multi-material features
 	merged['single_extruder_multi_material'] = '0';
 	merged['wipe_tower'] = '0';

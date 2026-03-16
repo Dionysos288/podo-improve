@@ -1,6 +1,12 @@
+import type { Metadata } from 'next';
 import { getServerSession } from '@/src/shared/core/auth/get-session';
 import { prisma } from '@/src/shared/core/db/prisma';
 import { unstable_cache } from 'next/cache';
+
+export const metadata: Metadata = {
+	title: 'Dashboard',
+	description: 'Overzicht van uw organisatie: patiënten, projecten en recente activiteit.',
+};
 import {
 	StatCard,
 	SectionCard,

@@ -353,7 +353,11 @@ export interface ElementOverlayData {
 export function buildElementOverlayGeometries(
 	insoleGeometry: THREE.BufferGeometry,
 	elements: PlacedElement[],
-	options?: { mmToWorld?: number }
+	options?: {
+		mmToWorld?: number;
+		/** Pre-loaded STL geometries keyed by URL (from catalog stlUrl) */
+		stlGeometries?: Map<string, THREE.BufferGeometry>;
+	}
 ): ElementOverlayData[] {
 	if (!elements || elements.length === 0) return [];
 
@@ -460,6 +464,7 @@ export function buildElementOverlayGeometries(
 	};
 
 	const mmToWorld    = options?.mmToWorld ?? 1;
+	const stlGeometries = options?.stlGeometries;
 	const LIFT         = 0.6 * mmToWorld; // mm above surface
 	const ELEMENT_SIZE_U = 0.18;
 	const ELEMENT_SIZE_V = 0.22;
@@ -470,6 +475,78 @@ export function buildElementOverlayGeometries(
 		const item = getElementByKey(el.libraryKey);
 		if (!item) continue;
 
+		// ── STL-based overlay (preferred when stlUrl is available) ──
+		if (item.stlUrl && stlGeometries?.has(item.stlUrl)) {
+			const srcGeom = stlGeometries.get(item.stlUrl)!;
+			const geom = srcGeom.clone();
+
+			// The STL is in mm, centred at origin in X, Y starts at 0.
+			// We need to:
+			// 1. Scale from mm to world units
+			// 2. Position at the element's UV placement on the insole
+			// 3. Snap the bottom to the insole surface height
+
+			// Scale mm → world
+			const scaleXY = mmToWorld * el.scaleU;
+			const scaleZ = mmToWorld * el.scaleV;
+
+			const pos = geom.getAttribute('position') as THREE.BufferAttribute;
+			const vtxCount = pos.count;
+
+			// Compute the STL bounding box in mm (before scaling)
+			geom.computeBoundingBox();
+			const stlBBox = geom.boundingBox!;
+			const stlCenterX = (stlBBox.min.x + stlBBox.max.x) / 2;
+			const stlCenterY = (stlBBox.min.y + stlBBox.max.y) / 2;
+
+			// Where to place the element centre on the insole (world coords)
+			const centreU = el.positionU;
+			const centreV = el.positionV;
+			const surfaceH = sampleHeight(centreU, centreV);
+
+			// Build rotation matrix for the element
+			const cos = Math.cos(el.rotationRad);
+			const sin = Math.sin(el.rotationRad);
+
+			// Transform each vertex:
+			// 1. Centre the STL at origin
+			// 2. Scale mm → world
+			// 3. Rotate
+			// 4. Translate to world position
+			for (let i = 0; i < vtxCount; i++) {
+				// STL local coords (mm, centred)
+				let lx = (pos.getX(i) - stlCenterX) * scaleXY;
+				let ly = (pos.getY(i) - stlCenterY) * scaleXY;
+				const lz = pos.getZ(i) * scaleZ;
+
+				// Rotate in the horizontal plane
+				const rx = lx * cos - ly * sin;
+				const ry = lx * sin + ly * cos;
+
+				// Map local XY to insole axes
+				// The STL X maps to the insole width axis, Y maps to the insole length axis
+				const c: Record<string, number> = { x: 0, y: 0, z: 0 };
+				c[widthAxis] = rx + (widthMin + centreV * widthSpan);
+				const rawUOffset = heelAtMin ? centreU : 1 - centreU;
+				c[lengthAxis] = ry + (lengthMin + rawUOffset * lengthSpan);
+				c[heightAxis] = surfaceH + lz + LIFT;
+
+				pos.setXYZ(i, c.x, c.y, c.z);
+			}
+
+			pos.needsUpdate = true;
+			geom.computeVertexNormals();
+			geom.computeBoundingBox();
+
+			result.push({
+				geometry: geom,
+				colorHex: ELEMENT_COLORS[item.color] ?? '#999',
+				elementId: el.id,
+			});
+			continue;
+		}
+
+		// ── Fallback: procedural polygon overlay ──
 		const outline = transformOutline(item.outline, el, ELEMENT_SIZE_U, ELEMENT_SIZE_V);
 		const n = outline.length;
 

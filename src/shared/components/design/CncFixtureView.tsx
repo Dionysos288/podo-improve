@@ -6,6 +6,8 @@ import { OrbitControls, Text } from '@react-three/drei';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 import { cn } from '@/src/shared/lib/cn';
+import { applyBaseInsoleTypeShape } from '@/src/features/design/utils/baseInsoleGeometry';
+import type { BaseInsoleType } from '@/src/features/design/types/types';
 import type { FixtureLayout, SlotAssignment } from '@/src/features/milling/types';
 import {
 	SLOT_COORDINATE_SYSTEMS,
@@ -93,6 +95,7 @@ interface CncFixtureViewProps {
 	className?: string;
 	leftStlUrl?: string;
 	rightStlUrl?: string;
+	baseInsoleType?: BaseInsoleType;
 }
 
 function getSlotParts(fixture: FixtureLayout, slotIndex: number): SlotAssignment[] {
@@ -108,17 +111,20 @@ function InsoleSTL({
 	blockW,
 	blockH,
 	horizontal,
+	baseInsoleType = 'man',
 }: {
 	url: string;
 	side: 'left' | 'right';
 	blockW: number;
 	blockH: number;
 	horizontal: boolean;
+	baseInsoleType?: BaseInsoleType;
 }) {
 	const rawGeometry = useLoader(STLLoader, url);
 
 	const geometry = useMemo(() => {
 		const g = rawGeometry.clone();
+		applyBaseInsoleTypeShape(g, baseInsoleType);
 		g.computeBoundingBox();
 		const bb = g.boundingBox;
 		const pos = g.getAttribute('position') as THREE.BufferAttribute | undefined;
@@ -199,7 +205,7 @@ function InsoleSTL({
 		newGeom.computeBoundingBox();
 
 		return newGeom;
-	}, [rawGeometry, blockW, blockH, horizontal]);
+	}, [rawGeometry, blockW, blockH, horizontal, baseInsoleType]);
 
 	// Position: shift to left or right half of the block
 	let xOff: number;
@@ -240,6 +246,7 @@ function EvaBlock({
 	parts,
 	leftStlUrl,
 	rightStlUrl,
+	baseInsoleType = 'man',
 }: {
 	position: [number, number, number];
 	slotIndex: number;
@@ -247,6 +254,7 @@ function EvaBlock({
 	parts: SlotAssignment[];
 	leftStlUrl?: string;
 	rightStlUrl?: string;
+	baseInsoleType?: BaseInsoleType;
 }) {
 	const { w, h, horizontal } = slotDesc;
 	const isEmpty = parts.length === 0;
@@ -428,12 +436,12 @@ function EvaBlock({
 			{/* STL Insoles */}
 			{hasLeft && leftStlUrl && (
 				<Suspense fallback={null}>
-					<InsoleSTL url={leftStlUrl} side="left" blockW={w} blockH={h} horizontal={horizontal} />
+					<InsoleSTL url={leftStlUrl} side="left" blockW={w} blockH={h} horizontal={horizontal} baseInsoleType={baseInsoleType} />
 				</Suspense>
 			)}
 			{hasRight && rightStlUrl && (
 				<Suspense fallback={null}>
-					<InsoleSTL url={rightStlUrl} side="right" blockW={w} blockH={h} horizontal={horizontal} />
+					<InsoleSTL url={rightStlUrl} side="right" blockW={w} blockH={h} horizontal={horizontal} baseInsoleType={baseInsoleType} />
 				</Suspense>
 			)}
 		</group>
@@ -472,6 +480,7 @@ export function CncFixtureView({
 	className,
 	leftStlUrl,
 	rightStlUrl,
+	baseInsoleType = 'man',
 }: CncFixtureViewProps) {
 	return (
 		<div className={cn('w-full h-full bg-gray-900', className)}>
@@ -514,6 +523,7 @@ export function CncFixtureView({
 								parts={parts}
 								leftStlUrl={leftStlUrl}
 								rightStlUrl={rightStlUrl}
+								baseInsoleType={baseInsoleType}
 							/>
 						);
 					})}

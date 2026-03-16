@@ -72,7 +72,7 @@ export interface OntwerpCorrections {
 	zoolbreedte: { left: number; right: number };
 }
 
-const DEFAULT_CORRECTIONS: OntwerpCorrections = {
+export const DEFAULT_ONTWERP_CORRECTIONS: OntwerpCorrections = {
 	kuipHoogte: { left: 0, right: 0 },
 	voorvoetUitvlakken: { enabled: false },
 	hielHeffing: {
@@ -107,6 +107,10 @@ const DEFAULT_CORRECTIONS: OntwerpCorrections = {
 	zoolbreedte: { left: 0, right: 0 },
 };
 
+export function createDefaultOntwerpCorrections(): OntwerpCorrections {
+	return structuredClone(DEFAULT_ONTWERP_CORRECTIONS);
+}
+
 interface OntwerpPanelProps {
 	corrections?: OntwerpCorrections;
 	onCorrectionsChange?: (corrections: OntwerpCorrections) => void;
@@ -124,7 +128,7 @@ export function OntwerpPanel({
 	onShowZonesChange,
 	activeCorrections,
 }: OntwerpPanelProps) {
-	const [internalCorrections, setInternalCorrections] = useState<OntwerpCorrections>(DEFAULT_CORRECTIONS);
+	const [internalCorrections, setInternalCorrections] = useState<OntwerpCorrections>(createDefaultOntwerpCorrections());
 	const corrections = externalCorrections ?? internalCorrections;
 	const isActive = useCallback(
 		(key: CorrectionKey) => {

@@ -1,3 +1,10 @@
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+	title: 'Bibliotheek',
+	description: 'Beheer uw materiaalbibliotheek en zolensjablonen.',
+};
+
 export default function SettingsLibraryPage() {
 	return (
 		<div className="rounded-2xl border border-ui-border bg-ui-panel p-6">

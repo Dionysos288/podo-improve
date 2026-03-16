@@ -314,6 +314,10 @@ export function useDesignAutosave(
 			if (Array.isArray(elements) && elements.length > 0) {
 				elementsStore.clearAll();
 				for (const el of elements) {
+					// Migrate old floorMode values ('sole'|'scan'|'free') → 'vloeien'
+					if (el.floorMode && el.floorMode !== 'vloeien' && el.floorMode !== 'niet-vloeien') {
+						el.floorMode = 'vloeien';
+					}
 					// Directly populate placedElements rather than going through addElement
 					// since addElement requires a libraryKey lookup
 					useElementsStore.setState((state) => ({

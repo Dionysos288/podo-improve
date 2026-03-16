@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Button } from '@/src/shared/components/ui/button';
 import { getProject } from '@/src/features/projects/server/actions';
@@ -5,9 +6,26 @@ import { ArrowLeft, Box } from 'lucide-react';
 import { ProjectActions } from '@/src/features/projects/hooks/ProjectActions';
 import { ProjectScansCard } from '@/src/features/projects/components/ProjectScansCard';
 import { notFound } from 'next/navigation';
+import { requireOrganization } from '@/src/shared/core/auth/get-session';
+import { recordUsageEvent } from '@/src/shared/core/platform/usage';
 
 interface ProjectDetailPageProps {
 	params: Promise<{ orgSlug: string; id: string }>;
+}
+
+export async function generateMetadata({
+	params,
+}: ProjectDetailPageProps): Promise<Metadata> {
+	const { id } = await params;
+	try {
+		const project = await getProject(id);
+		return {
+			title: project.name,
+			description: `Zolenproject "${project.name}" – ontwerp, scans en exportopties.`,
+		};
+	} catch {
+		return { title: 'Project' };
+	}
 }
 
 export default async function ProjectDetailPage({
@@ -25,6 +43,15 @@ export default async function ProjectDetailPage({
 	if (!project) {
 		notFound();
 	}
+
+	const { session, orgId } = await requireOrganization();
+	await recordUsageEvent({
+		orgId,
+		userId: session.user.id,
+		eventType: 'PROJECT_OPENED',
+		resourceId: id,
+		metadata: { projectName: project.name },
+	});
 
 	return (
 		<div className="min-h-screen bg-background p-8">

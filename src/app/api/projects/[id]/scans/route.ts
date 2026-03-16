@@ -7,6 +7,7 @@ import {
 import { uploadFile } from '@/src/shared/core/db/supabase';
 import { FootSide } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import { getCurrentStlUsage, recordUsageEvent } from '@/src/shared/core/platform/usage';
 
 /**
  * POST /api/projects/[id]/scans
@@ -58,6 +59,24 @@ export async function POST(
 			);
 		}
 
+		const organization = await (prisma as unknown as {
+			organization: {
+				findUnique: (args: Record<string, unknown>) => Promise<{ stlLimit: number } | null>;
+			};
+		}).organization.findUnique({
+			where: { id: orgId },
+			select: { stlLimit: true },
+		});
+		const currentStlUsage = await getCurrentStlUsage(orgId);
+		if (organization && currentStlUsage >= organization.stlLimit) {
+			return NextResponse.json(
+				{
+					error: `STL limiet bereikt (${organization.stlLimit}). Neem contact op voor een upgrade.`,
+				},
+				{ status: 403 }
+			);
+		}
+
 		// Convert File to buffer for upload
 		const buffer = Buffer.from(await file.arrayBuffer());
 		const timestamp = Date.now();
@@ -80,6 +99,19 @@ export async function POST(
 					fileSize: file.size,
 					uploadedAt: new Date().toISOString(),
 				},
+			},
+		});
+
+		await recordUsageEvent({
+			orgId,
+			userId: session.user.id,
+			eventType: 'STL_UPLOADED',
+			resourceId: scan.id,
+			metadata: {
+				projectId,
+				footSide,
+				pairId,
+				fileSize: file.size,
 			},
 		});
 

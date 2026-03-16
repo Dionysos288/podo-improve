@@ -72,6 +72,13 @@ model Organization {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
   settings  Json     @default("{}")
+  plan             CompanyPlan @default(STL200)
+  stlLimit         Int         @default(200) @map("stl_limit")
+  billingStatus    String?     @map("billing_status")
+  contractStartDate DateTime?  @map("contract_start_date")
+  isActive         Boolean     @default(true) @map("is_active")
+  closedAt         DateTime?   @map("closed_at")
+  closedReason     String?     @map("closed_reason") @db.Text
 
   users       User[]
   patients    Patient[]
@@ -79,8 +86,17 @@ model Organization {
   backups     Backup[]
   invitations Invitation[]
   slicingJobs SlicingJob[]
+  usageEvents UsageEvent[]
+  accessKeys  RegistrationAccessKey[]
 
   @@map("organizations")
+}
+
+enum CompanyPlan {
+  STL200
+  STL400
+  STL750
+  CUSTOM
 }
 
 // ============================================
@@ -108,8 +124,71 @@ model User {
   invitationsSent     Invitation[]  @relation("InvitedBy")
   invitationsAccepted Invitation[]  @relation("AcceptedBy")
   slicingJobs         SlicingJob[]
+  usageEvents         UsageEvent[]
+  accessKeysIssued    RegistrationAccessKey[] @relation("AccessKeyIssuedBy")
+  accessKeysRedeemed  RegistrationAccessKey[] @relation("AccessKeyRedeemedBy")
 
   @@map("users")
+}
+
+enum AccessKeyStatus {
+  ACTIVE
+  REDEEMED
+  DISABLED
+  EXPIRED
+}
+
+model RegistrationAccessKey {
+  id             String          @id @default(uuid())
+  code           String          @unique
+  label          String?
+  plan           CompanyPlan     @default(STL200)
+  stlLimit       Int             @default(200) @map("stl_limit")
+  status         AccessKeyStatus @default(ACTIVE)
+  createdForEmail String?        @map("created_for_email")
+  notes          String?         @db.Text
+  metadata       Json            @default("{}")
+  expiresAt      DateTime?       @map("expires_at")
+  redeemedAt     DateTime?       @map("redeemed_at")
+  issuedToOrgId  String?         @map("issued_to_org_id")
+  issuedById     String?         @map("issued_by_id")
+  redeemedById   String?         @map("redeemed_by_id")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+
+  organization Organization? @relation(fields: [issuedToOrgId], references: [id], onDelete: SetNull)
+  issuedBy     User?         @relation("AccessKeyIssuedBy", fields: [issuedById], references: [id], onDelete: SetNull)
+  redeemedBy   User?         @relation("AccessKeyRedeemedBy", fields: [redeemedById], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([issuedToOrgId])
+  @@map("registration_access_keys")
+}
+
+enum UsageEventType {
+  STL_UPLOADED
+  PRINT_STARTED
+  PROJECT_OPENED
+  DESIGN_OPENED
+  DESIGN_CREATED
+}
+
+model UsageEvent {
+  id         String         @id @default(uuid())
+  orgId      String         @map("org_id")
+  userId     String?        @map("user_id")
+  eventType  UsageEventType @map("event_type")
+  quantity   Int            @default(1)
+  resourceId String?        @map("resource_id")
+  metadata   Json           @default("{}")
+  createdAt  DateTime       @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, eventType, createdAt])
+  @@index([userId, eventType, createdAt])
+  @@map("usage_events")
 }
 
 enum UserRole {

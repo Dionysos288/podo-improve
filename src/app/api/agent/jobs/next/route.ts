@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/src/shared/core/db/prisma';
+import { assertOrganizationIsActive, OrganizationClosedError } from '@/src/shared/core/auth/organization-access';
 
 function getBearerToken(req: NextRequest) {
 	const auth = req.headers.get('authorization') ?? '';
@@ -13,30 +14,36 @@ function getBearerToken(req: NextRequest) {
  * Returns: { jobId, stlData (base64), printerSettings, ... } or null if no jobs
  */
 export async function GET(req: NextRequest) {
-	const token = getBearerToken(req);
-	if (!token) {
-		return NextResponse.json(
-			{ error: 'Missing bearer token' },
-			{ status: 401 }
-		);
-	}
+	try {
+		const token = getBearerToken(req);
+		if (!token) {
+			return NextResponse.json(
+				{ error: 'Missing bearer token' },
+				{ status: 401 }
+			);
+		}
 
 	// Find user by agentToken
-	const user = await prisma.user.findFirst({
-		where: {
-			settings: {
-				path: ['agentToken'],
-				equals: token,
+		const user = await prisma.user.findFirst({
+			where: {
+				settings: {
+					path: ['agentToken'],
+					equals: token,
+				},
 			},
-		},
-		select: { id: true, orgId: true },
-	});
+			select: { id: true, orgId: true },
+		});
 
-	if (!user) {
-		return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
-	}
+		if (!user) {
+			return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+		}
+		if (!user.orgId) {
+			return NextResponse.json({ error: 'User has no organization' }, { status: 403 });
+		}
 
-	const prismaAny = prisma as unknown as {
+		await assertOrganizationIsActive(user.orgId);
+
+		const prismaAny = prisma as unknown as {
 		slicingJob: {
 			updateMany: (args: {
 				where: Record<string, unknown>;
@@ -57,10 +64,10 @@ export async function GET(req: NextRequest) {
 				| null
 			>;
 		};
-	};
+		};
 
-	const staleBefore = new Date(Date.now() - 15 * 60 * 1000);
-	await prismaAny.slicingJob.updateMany({
+		const staleBefore = new Date(Date.now() - 15 * 60 * 1000);
+		await prismaAny.slicingJob.updateMany({
 		where: {
 			orgId: user.orgId,
 			status: 'RUNNING',
@@ -72,7 +79,7 @@ export async function GET(req: NextRequest) {
 		},
 	});
 
-	const candidate = await prismaAny.slicingJob.findFirst({
+		const candidate = await prismaAny.slicingJob.findFirst({
 		where: { orgId: user.orgId, status: 'PENDING' },
 		orderBy: { createdAt: 'asc' },
 		select: {
@@ -84,25 +91,31 @@ export async function GET(req: NextRequest) {
 		},
 	});
 
-	if (!candidate) {
-		return NextResponse.json({ job: null });
-	}
+		if (!candidate) {
+			return NextResponse.json({ job: null });
+		}
 
-	const lock = await prismaAny.slicingJob.updateMany({
+		const lock = await prismaAny.slicingJob.updateMany({
 		where: { id: candidate.id, status: 'PENDING' },
 		data: { status: 'RUNNING', errorMessage: null },
 	});
 
-	if (!lock.count) {
-		return NextResponse.json({ job: null });
-	}
+		if (!lock.count) {
+			return NextResponse.json({ job: null });
+		}
 
-	return NextResponse.json({
-		job: {
-			jobId: candidate.id,
-			stlData: candidate.stlBase64,
-			filename: candidate.stlFilename ?? 'insole.stl',
-			printerSettings: candidate.printerSettings ?? {},
-		},
-	});
+		return NextResponse.json({
+			job: {
+				jobId: candidate.id,
+				stlData: candidate.stlBase64,
+				filename: candidate.stlFilename ?? 'insole.stl',
+				printerSettings: candidate.printerSettings ?? {},
+			},
+		});
+	} catch (error) {
+		return NextResponse.json(
+			{ error: error instanceof Error ? error.message : 'Internal server error' },
+			{ status: error instanceof OrganizationClosedError ? 403 : 500 }
+		);
+	}
 }

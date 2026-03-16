@@ -1,6 +1,12 @@
+import type { Metadata } from 'next';
 import { getProjects } from '@/src/features/projects/server/actions';
 import { ProjectsClient } from '@/src/features/projects/components/ProjectsClient';
 import type { ProjectStatus } from '@prisma/client';
+
+export const metadata: Metadata = {
+	title: 'Projecten',
+	description: 'Beheer uw zolenprojecten. Bekijk de status, ontwerp en exporteer medische inlegzolen.',
+};
 
 interface ProjectsPageProps {
 	params: Promise<{ orgSlug: string }>;

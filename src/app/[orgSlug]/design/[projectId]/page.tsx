@@ -1,12 +1,32 @@
+import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { prisma } from '@/src/shared/core/db/prisma';
-import { requireSession } from '@/src/shared/core/auth/get-session';
+import { requireOrganization, requireSession } from '@/src/shared/core/auth/get-session';
 import { DesignPageClient, type ProjectDetail } from './DesignPageClient';
 import type { PrinterSettings as OrgPrinterSettings } from '@/src/features/printers/types/printers';
+import { recordUsageEvent } from '@/src/shared/core/platform/usage';
 
 interface DesignPageProps {
 	params: Promise<{ orgSlug: string; projectId: string }>;
 	searchParams: Promise<{ designId?: string }>;
+}
+
+export async function generateMetadata({
+	params,
+}: {
+	params: Promise<{ orgSlug: string; projectId: string }>;
+}): Promise<Metadata> {
+	const { projectId } = await params;
+	const project = await prisma.project.findUnique({
+		where: { id: projectId },
+		select: { name: true },
+	});
+	return {
+		title: project ? `Ontwerp – ${project.name}` : 'Ontwerp',
+		description: project
+			? `Ontwerp de medische inlegzool voor project "${project.name}" in de PodoImprove editor.`
+			: 'PodoImprove zolenontwerp editor.',
+	};
 }
 
 /**
@@ -45,6 +65,8 @@ export default async function DesignPage({ params, searchParams }: DesignPagePro
 	if (!project) {
 		notFound();
 	}
+
+	const { session, orgId } = await requireOrganization();
 
 	// Fetch organization printers for default settings
 	const org = await prisma.organization.findUnique({ where: { slug: orgSlug }, select: { id: true } });
@@ -112,6 +134,18 @@ export default async function DesignPage({ params, searchParams }: DesignPagePro
 				updatedAt: initialDesign.updatedAt.toISOString(),
 			}
 		: null;
+
+	await recordUsageEvent({
+		orgId,
+		userId: session.user.id,
+		eventType: 'DESIGN_OPENED',
+		resourceId: initialDesign?.id ?? projectId,
+		metadata: {
+			projectId,
+			designId: initialDesign?.id ?? null,
+			openedVersion: initialDesign?.version ?? null,
+		},
+	});
 
 	return (
 		<DesignPageClient

@@ -4,16 +4,16 @@ import { createOrganization } from '@/src/features/organizations/server/actions'
 export async function POST(request: NextRequest) {
 	try {
 		const body = await request.json();
-		const { name, slug } = body;
+		const { name, slug, accessKey } = body;
 
-		if (!name || !slug) {
+		if (!name || !slug || !accessKey) {
 			return NextResponse.json(
-				{ error: 'Naam en URL zijn verplicht' },
+				{ error: 'Naam, URL en toegangssleutel zijn verplicht' },
 				{ status: 400 }
 			);
 		}
 
-		const organization = await createOrganization({ name, slug });
+		const organization = await createOrganization({ name, slug, accessKey });
 
 		return NextResponse.json(organization, { status: 201 });
 	} catch (error) {

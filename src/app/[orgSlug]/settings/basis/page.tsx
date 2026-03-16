@@ -1,4 +1,10 @@
+import type { Metadata } from 'next';
 import { AgentSettingsCard } from '@/src/features/settings/components/AgentSettingsCard';
+
+export const metadata: Metadata = {
+	title: 'Basisinstellingen',
+	description: 'Configureer de basisinstellingen van uw organisatie, inclusief taal en agent-configuratie.',
+};
 
 export default function SettingsBasisPage() {
 	return (

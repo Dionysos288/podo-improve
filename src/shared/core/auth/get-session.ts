@@ -2,6 +2,7 @@ import { headers } from 'next/headers';
 import { cache } from 'react';
 import { auth } from './auth';
 import { prisma } from '@/src/shared/core/db/prisma';
+import { assertOrganizationIsActive } from './organization-access';
 
 /**
  * Get the current session on the server side
@@ -44,6 +45,8 @@ export const requireOrganization = cache(async () => {
 	if (!user || !user.orgId) {
 		throw new Error('No organization associated with user');
 	}
+
+	await assertOrganizationIsActive(user.orgId);
 
 	return { session, orgId: user.orgId };
 });

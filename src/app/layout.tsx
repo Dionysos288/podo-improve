@@ -14,8 +14,33 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-	title: 'Medical Insole CAD Application',
-	description: 'CAD software for designing and manufacturing medical insoles',
+	title: {
+		default: 'PodoImprove – CAD-software voor medische zolen',
+		template: '%s | PodoImprove',
+	},
+	description:
+		'PodoImprove is professionele CAD-software voor het ontwerpen en produceren van medische inlegzolen. Ontwerp, slijp en print orthopedische zolen vanuit één platform.',
+	keywords: [
+		'PodoImprove',
+		'medische zolen',
+		'CAD-software',
+		'orthopedische inlegzolen',
+		'podologie',
+		'3D-printen',
+		'zolenontwerp',
+	],
+	authors: [{ name: 'PodoImprove' }],
+	creator: 'PodoImprove',
+	publisher: 'PodoImprove',
+	robots: { index: true, follow: true },
+	openGraph: {
+		type: 'website',
+		locale: 'nl_BE',
+		siteName: 'PodoImprove',
+		title: 'PodoImprove – CAD-software voor medische zolen',
+		description:
+			'Professionele CAD-software voor het ontwerpen en produceren van medische inlegzolen.',
+	},
 };
 
 export default function RootLayout({
@@ -24,7 +49,7 @@ export default function RootLayout({
 	children: React.ReactNode;
 }>) {
 	return (
-		<html lang="en">
+		<html lang="nl">
 			<body
 				className={`${geistSans.variable} ${geistMono.variable} antialiased root`}
 			>

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/src/shared/core/db/prisma';
+import { assertOrganizationIsActive, OrganizationClosedError } from '@/src/shared/core/auth/organization-access';
 
 function getBearerToken(req: NextRequest) {
 	const auth = req.headers.get('authorization') ?? '';
@@ -8,52 +9,64 @@ function getBearerToken(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-	const token = getBearerToken(req);
-	if (!token) {
+	try {
+		const token = getBearerToken(req);
+		if (!token) {
+			return NextResponse.json(
+				{ error: 'Missing bearer token' },
+				{ status: 401 }
+			);
+		}
+
+		// Agent authenticates via a per-user token stored in User.settings.agentToken
+		// Use Prisma's JSON filtering (PostgreSQL supports this)
+		const user = await prisma.user.findFirst({
+			where: {
+				settings: {
+					path: ['agentToken'],
+					equals: token,
+				},
+			},
+			select: { id: true, orgId: true },
+		});
+
+		if (!user) {
+			return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+		}
+		if (!user.orgId) {
+			return NextResponse.json({ error: 'User has no organization' }, { status: 403 });
+		}
+
+		await assertOrganizationIsActive(user.orgId);
+
+		const now = new Date().toISOString();
+
+		// Merge write for settings
+		const existing = await prisma.user.findUnique({
+			where: { id: user.id },
+			select: { settings: true },
+		});
+		const merged = {
+			...(typeof existing?.settings === 'object' && existing?.settings
+				? (existing.settings as Record<string, unknown>)
+				: {}),
+			agentLastSeenAt: now,
+		};
+		await prisma.user.update({
+			where: { id: user.id },
+			data: { settings: merged },
+		});
+
+		return NextResponse.json({
+			ok: true,
+			userId: user.id,
+			orgId: user.orgId,
+			now,
+		});
+	} catch (error) {
 		return NextResponse.json(
-			{ error: 'Missing bearer token' },
-			{ status: 401 }
+			{ error: error instanceof Error ? error.message : 'Internal server error' },
+			{ status: error instanceof OrganizationClosedError ? 403 : 500 }
 		);
 	}
-
-	// Agent authenticates via a per-user token stored in User.settings.agentToken
-	// Use Prisma's JSON filtering (PostgreSQL supports this)
-	const user = await prisma.user.findFirst({
-		where: {
-			settings: {
-				path: ['agentToken'],
-				equals: token,
-			},
-		},
-		select: { id: true, orgId: true },
-	});
-
-	if (!user) {
-		return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
-	}
-
-	const now = new Date().toISOString();
-
-	// Merge write for settings
-	const existing = await prisma.user.findUnique({
-		where: { id: user.id },
-		select: { settings: true },
-	});
-	const merged = {
-		...(typeof existing?.settings === 'object' && existing?.settings
-			? (existing.settings as Record<string, unknown>)
-			: {}),
-		agentLastSeenAt: now,
-	};
-	await prisma.user.update({
-		where: { id: user.id },
-		data: { settings: merged },
-	});
-
-	return NextResponse.json({
-		ok: true,
-		userId: user.id,
-		orgId: user.orgId,
-		now,
-	});
 }

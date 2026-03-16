@@ -153,10 +153,18 @@ function extractContour(
 
 	const centerW = (bbox.min[widthAxis] + bbox.max[widthAxis]) * 0.5;
 	const centerL = (bbox.min[lengthAxis] + bbox.max[lengthAxis]) * 0.5;
-	const centerH = (bbox.min[heightAxis] + bbox.max[heightAxis]) * 0.5;
 
 	const ai = { x: 0, y: 1, z: 2 } as const;
 	const li = ai[lengthAxis], wi = ai[widthAxis], hi = ai[heightAxis];
+
+	// ── Height-based filtering ──
+	// On insoles with beveled rims the bottom surface can extend beyond
+	// the visible top edge.  We prefer upper-portion vertices so the
+	// contour matches what the user sees from the top-down view.
+	const minH = bbox.min[heightAxis];
+	const maxH = bbox.max[heightAxis];
+	const hRange = Math.max(1e-6, maxH - minH);
+	const hThreshold = minH + hRange * 0.35; // keep top ~65 %
 
 	// ── Polar sweep: find farthest vertex at each angle around centroid ──
 	// angle 0 = toe (+length), π/2 = right (+width), π = heel (-length), 3π/2 = left (-width)
@@ -167,6 +175,12 @@ function extractContour(
 	const sweepW = new Float32Array(SWEEP);
 	const sweepH = new Float32Array(SWEEP);
 	const sweepDist = new Float32Array(SWEEP); // 0 = no vertex found
+
+	// Secondary arrays for upper-portion vertices (preferred)
+	const topL = new Float32Array(SWEEP);
+	const topW = new Float32Array(SWEEP);
+	const topH = new Float32Array(SWEEP);
+	const topDist = new Float32Array(SWEEP);
 
 	for (let i = 0; i < pos.count; i++) {
 		const lv = pos.array[i * 3 + li];
@@ -180,11 +194,30 @@ function extractContour(
 		if (ang < 0) ang += 2 * Math.PI;
 		const bin = Math.round(ang / angStep) % SWEEP;
 
+		// Track overall farthest (fallback)
 		if (dist > sweepDist[bin]) {
 			sweepDist[bin] = dist;
 			sweepL[bin] = lv;
 			sweepW[bin] = wv;
 			sweepH[bin] = hv;
+		}
+
+		// Track farthest among upper-portion vertices (preferred)
+		if (hv >= hThreshold && dist > topDist[bin]) {
+			topDist[bin] = dist;
+			topL[bin] = lv;
+			topW[bin] = wv;
+			topH[bin] = hv;
+		}
+	}
+
+	// Use upper-vertex data where available; fall back to overall data
+	for (let i = 0; i < SWEEP; i++) {
+		if (topDist[i] > 0) {
+			sweepL[i] = topL[i];
+			sweepW[i] = topW[i];
+			sweepH[i] = topH[i];
+			sweepDist[i] = topDist[i];
 		}
 	}
 
@@ -439,7 +472,11 @@ export function InteractiveTrimline({
 	const offsetsRef = useRef<Float32Array>(new Float32Array(0));
 	const tValuesRef = useRef<Float32Array>(new Float32Array(0));
 
-	// Initialize offsets from adjustments when contour changes
+	// Serialize adjustments values so the effect only fires when actual
+	// numeric values change — not when the parent passes a new object ref.
+	const adjKey = `${adjustments.global},${adjustments.heel},${adjustments.midfoot},${adjustments.forefoot},${adjustments.toe}`;
+
+	// Initialize offsets from adjustments when contour or committed adjustments change
 	useEffect(() => {
 		if (!contour) return;
 		const n = contour.bins * 2;
@@ -463,7 +500,8 @@ export function InteractiveTrimline({
 		tValuesRef.current = tVals;
 		// Force initial instance update
 		needsInstanceUpdate.current = true;
-	}, [contour, adjustments]);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [contour, adjKey]);
 
 	// ── Selection / hover state ──
 	const [hoveredIdx, setHoveredIdx] = useState<number>(-1);

@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { getPatient } from '@/src/features/patients/server/actions';
 import { ArrowLeft, FolderOpen } from 'lucide-react';
@@ -6,6 +7,21 @@ import { notFound } from 'next/navigation';
 
 interface PatientDetailPageProps {
 	params: Promise<{ orgSlug: string; id: string }>;
+}
+
+export async function generateMetadata({
+	params,
+}: PatientDetailPageProps): Promise<Metadata> {
+	const { id } = await params;
+	try {
+		const patient = await getPatient(id);
+		return {
+			title: `${patient.firstName} ${patient.lastName}`,
+			description: `Patiëntdossier van ${patient.firstName} ${patient.lastName} – projecten en gegevens.`,
+		};
+	} catch {
+		return { title: 'Patiënt' };
+	}
 }
 
 export default async function PatientDetailPage({

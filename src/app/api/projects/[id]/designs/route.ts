@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/src/shared/core/db/prisma';
 import { requireOrganization } from '@/src/shared/core/auth/get-session';
+import { recordUsageEvent } from '@/src/shared/core/platform/usage';
 
 /**
  * POST /api/projects/[id]/designs
@@ -13,7 +14,7 @@ export async function POST(
 	{ params }: { params: Promise<{ id: string }> }
 ) {
 	try {
-		const { orgId } = await requireOrganization();
+		const { session, orgId } = await requireOrganization();
 		const { id: projectId } = await params;
 
 		const project = await prisma.project.findFirst({
@@ -47,6 +48,14 @@ export async function POST(
 				matchTransform: body.matchTransform ?? null,
 				clientSettings: body.clientSettings ?? {},
 			},
+		});
+
+		await recordUsageEvent({
+			orgId,
+			userId: session.user.id,
+			eventType: 'DESIGN_CREATED',
+			resourceId: design.id,
+			metadata: { projectId, version: design.version },
 		});
 
 		// Update project status to IN_PROGRESS when a design is started

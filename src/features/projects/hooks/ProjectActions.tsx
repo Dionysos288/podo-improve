@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import { Button } from '@/src/shared/components/ui/button';
 import { Input } from '@/src/shared/components/ui/input';
 import { Trash2, Pencil } from 'lucide-react';
@@ -33,6 +32,7 @@ export function ProjectActions({
 		currentDoctorId || ''
 	);
 	const [isUpdating, setIsUpdating] = useState(false);
+	const [isCreatingDesign, setIsCreatingDesign] = useState(false);
 
 	useEffect(() => {
 		if (currentDoctorId) {
@@ -75,6 +75,29 @@ export function ProjectActions({
 		}
 	};
 
+	const handleCreateDesign = async () => {
+		setIsCreatingDesign(true);
+		try {
+			const response = await fetch(`/api/projects/${projectId}/designs`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({}),
+			});
+
+			if (!response.ok) {
+				const data = await response.json().catch(() => ({}));
+				throw new Error(data.error || 'Nieuw ontwerp aanmaken mislukt');
+			}
+
+			const design = await response.json();
+			router.push(`/${orgSlug}/design/${projectId}?designId=${design.id}`);
+		} catch (error) {
+			console.error('Failed to create design:', error);
+		} finally {
+			setIsCreatingDesign(false);
+		}
+	};
+
 	return (
 		<>
 			<div className="flex items-center gap-3">
@@ -96,11 +119,13 @@ export function ProjectActions({
 					<option value="COMPLETED">Voltooid</option>
 					<option value="ARCHIVED">Gearchiveerd</option>
 				</select>
-				<Link href={`/${orgSlug}/design/${projectId}`}>
-					<Button className="flex items-center gap-2 rounded-xl bg-ui-accent px-5 py-2.5 font-medium text-slate-900 transition-colors">
-						Ontwerpen
-					</Button>
-				</Link>
+				<Button
+					onClick={handleCreateDesign}
+					disabled={isCreatingDesign}
+					className="flex items-center gap-2 rounded-xl bg-ui-accent px-5 py-2.5 font-medium text-slate-900 transition-colors disabled:opacity-50"
+				>
+					{isCreatingDesign ? 'Ontwerp maken...' : 'Ontwerpen'}
+				</Button>
 				<button
 					onClick={() => setShowEditModal(true)}
 					className="rounded-xl p-3 text-ui-muted transition-colors hover:bg-ui-card hover:text-foreground"

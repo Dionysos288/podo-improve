@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/src/shared/core/db/prisma';
 import { gunzipSync } from 'zlib';
+import { assertOrganizationIsActive, OrganizationClosedError } from '@/src/shared/core/auth/organization-access';
 
 function getBearerToken(req: NextRequest) {
 	const auth = req.headers.get('authorization') ?? '';
@@ -31,6 +32,11 @@ export async function POST(
 		if (!user) {
 			return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
 		}
+		if (!user.orgId) {
+			return NextResponse.json({ error: 'User has no organization' }, { status: 403 });
+		}
+
+		await assertOrganizationIsActive(user.orgId);
 
 		const { jobId } = await ctx.params;
 
@@ -109,7 +115,7 @@ export async function POST(
 		console.error('[agent/jobs/complete] Unhandled error:', err);
 		return NextResponse.json(
 			{ error: err instanceof Error ? err.message : 'Internal server error' },
-			{ status: 500 }
+			{ status: err instanceof OrganizationClosedError ? 403 : 500 }
 		);
 	}
 }

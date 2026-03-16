@@ -14,6 +14,8 @@
 
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { applyBaseInsoleTypeShape } from '@/src/features/design/utils/baseInsoleGeometry';
+import type { BaseInsoleType } from '@/src/features/design/types/types';
 import { BLOCK_W, BLOCK_H, BLOCK_DEPTH } from '../types';
 import type { HeightfieldData } from './generateNc';
 
@@ -35,6 +37,7 @@ export async function extractStlContour(
 	side: 'left' | 'right',
 	blockW = BLOCK_W,
 	blockH = BLOCK_H,
+	baseInsoleType: BaseInsoleType = 'man',
 ): Promise<StlExtractionResult> {
 	const empty: StlExtractionResult = {
 		contour: [],
@@ -50,6 +53,7 @@ export async function extractStlContour(
 	const buffer = await response.arrayBuffer();
 	const loader = new STLLoader();
 	const geometry = loader.parse(buffer);
+	applyBaseInsoleTypeShape(geometry, baseInsoleType);
 
 	geometry.computeBoundingBox();
 	const bb = geometry.boundingBox;

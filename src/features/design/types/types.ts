@@ -10,6 +10,13 @@ export type InsoleTemplate =
 	| 'woman'
 	| '3quarter';
 
+export type BaseInsoleType =
+	| 'man'
+	| 'driekwart'
+	| 'durea'
+	| 'fincomfort'
+	| 'vrouw';
+
 export type InsoleMaterial = 'eva-foam' | 'tpu-flex' | 'gel' | 'carbon-weave';
 
 export type InsoleParameters = {
@@ -38,6 +45,7 @@ export type DesignParameters = {
 	hardness?: number;
 	general?: {
 		sizeLabel: 'EU' | 'US' | 'UK';
+		baseInsoleType?: BaseInsoleType;
 		shoeSize: { left: number; right: number };
 		soleThicknessMm: { left: number; right: number };
 		maxInsoleHeightMm: { left: number; right: number };

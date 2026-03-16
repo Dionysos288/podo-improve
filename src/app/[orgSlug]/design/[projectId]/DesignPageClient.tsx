@@ -27,6 +27,7 @@ import {
 } from '@/src/shared/components/design/DirectProducePanel';
 import {
 	OntwerpPanel,
+	createDefaultOntwerpCorrections,
 	type OntwerpCorrections,
 } from '@/src/shared/components/design/OntwerpPanel';
 import { BaseModal } from '@/src/shared/components/ui/modal';
@@ -42,9 +43,20 @@ import {
 	completeLandmarksToLegacy,
 	type LandmarkPoints,
 } from '@/src/features/design/utils/landmarkFitting';
+import {
+	estimateEuShoeSizeFromFootLengthMm,
+} from '@/src/features/design/utils/shoeSizing';
+import {
+	BASE_INSOLE_SELECT_OPTIONS,
+	DEFAULT_BASE_INSOLE_TYPE,
+	getBaseInsoleAssetUrls,
+	getBaseInsoleWidthMmForEuSize,
+	isBaseInsoleType,
+} from '@/src/features/design/utils/baseInsole';
 import { extractPlantarSurface } from '@/src/features/design/utils/plantarExtraction';
 import { detectLandmarksClassical, validateDetectedLandmarks } from '@/src/features/design/utils/landmarkDetection';
 import type {
+	BaseInsoleType,
 	ThreePointLandmarks,
 	CompleteLandmarkSet,
 	AutoLandmarkResult,
@@ -178,10 +190,6 @@ export interface ProjectDetail {
 
 type WorkflowStep = 'base' | 'stl-select' | 'point-pick' | 'dynamic-edit';
 
-// Existing editable base insoles (used in Basis/Ontwerp workflow)
-const DEFAULT_BASE_LEFT_STL = '/base/(Amina) Ruymen - voor Dion_L.stl';
-const DEFAULT_BASE_RIGHT_STL = '/base/(Amina) Ruymen - voor Dion_R.stl';
-
 type PickPointId =
 	| 'heel'
 	| 'heelLateral'
@@ -217,11 +225,7 @@ const estimateEuShoeSizeFromGeometry = (
 	const dims = [size.x, size.y, size.z].sort((a, b) => a - b);
 	const lengthWorld = dims[2] ?? 0;
 	const footLengthMm = lengthWorld * worldToMm;
-	if (!Number.isFinite(footLengthMm) || footLengthMm < 160 || footLengthMm > 360) {
-		return 40;
-	}
-	const rawEu = ((footLengthMm + 15) * 1.5) / 10;
-	return roundStep(clamp(rawEu, 32, 52), 0.5);
+	return estimateEuShoeSizeFromFootLengthMm(footLengthMm) ?? 40;
 };
 
 const deriveSeedFromPickedPoints = (
@@ -282,9 +286,7 @@ const deriveSeedFromPickedPoints = (
 	const archMm = clamp((fallbackArchMm * 0.65) + (archByForefoot * 0.2) + (archByWidth * 0.15), 3, 18);
 	const cupMm = clamp(2 + ((lateralSpanMm - 24) * 0.1), 2, 12);
 	// EU size estimate from foot length + functional toe allowance (~15mm)
-	const rawShoeSizeEu = ((footLengthMm + 15) * 1.5) / 10;
-	const plausibleLength = footLengthMm >= 180 && footLengthMm <= 340;
-	const shoeSizeEu = plausibleLength ? clamp(rawShoeSizeEu, 32, 52) : 40;
+	const shoeSizeEu = estimateEuShoeSizeFromFootLengthMm(footLengthMm) ?? 40;
 
 	const pronationMm = deltaDeg > 0 ? clamp(deltaDeg * 0.25, 0, 6) : 0;
 	const supinationMm = deltaDeg < 0 ? clamp(Math.abs(deltaDeg) * 0.25, 0, 6) : 0;
@@ -305,7 +307,8 @@ const deriveSeedFromPickedPoints = (
  */
 const deriveSeedFromFootGeometry = (
 	fg: FootGeometry,
-	worldToMm: number
+	worldToMm: number,
+	baseInsoleType: BaseInsoleType
 ) => {
 	const forefootWidthMm = fg.forefootWidth * worldToMm;
 	const footLengthMm = fg.footLength * worldToMm;
@@ -332,22 +335,14 @@ const deriveSeedFromFootGeometry = (
 	const soleThicknessMm = footLengthMm > 270 ? 3 : 2.5;
 
 	// EU shoe size from foot length
-	const rawEu = ((footLengthMm + 15) * 1.5) / 10;
-	const plausible = footLengthMm >= 180 && footLengthMm <= 340;
-	const shoeSizeEu = plausible ? clamp(rawEu, 32, 52) : 40;
-
-	// Width-based sole broadening (if scan forefoot is wider than base insole)
-	// Typical base insole forefoot width for size 40 ≈ 85mm.
-	const expectedWidth = 75 + (shoeSizeEu - 36) * 1.5;
-	const widthExcess = Math.max(0, forefootWidthMm - expectedWidth);
-	const zoolbreedteMm = clamp(widthExcess * 0.5, 0, 8);
-	const hielbreedteMm = clamp(widthExcess * 0.28, 0, 4);
+	const shoeSizeEu = estimateEuShoeSizeFromFootLengthMm(footLengthMm) ?? 40;
+	const standardWidthMm = getBaseInsoleWidthMmForEuSize(shoeSizeEu, baseInsoleType);
 
 	console.log(
 		`[Seed] archHeight=${rawArchMm.toFixed(1)}mm → archSupport=${finalArch.toFixed(1)}mm, ` +
 		`cup=${cupMm.toFixed(1)}mm, rim=${rimHeightMm.toFixed(1)}mm, ` +
 		`shoeSize=${shoeSizeEu.toFixed(1)}, footLen=${footLengthMm.toFixed(0)}mm, ` +
-		`ffWidth=${forefootWidthMm.toFixed(0)}mm, zoolbreedte=${zoolbreedteMm.toFixed(1)}mm, hielbreedte=${hielbreedteMm.toFixed(1)}mm`
+		`scanWidth=${forefootWidthMm.toFixed(0)}mm, targetWidth=${standardWidthMm.toFixed(1)}mm`
 	);
 
 	return {
@@ -358,9 +353,9 @@ const deriveSeedFromFootGeometry = (
 		shoeSizeEu: roundStep(shoeSizeEu, 0.5),
 		pronationMm: 0,
 		supinationMm: 0,
-		forefootWidthMm,
-		hielbreedteMm: roundStep(hielbreedteMm, 0.5),
-		zoolbreedteMm: roundStep(zoolbreedteMm, 0.5),
+		forefootWidthMm: Number(standardWidthMm.toFixed(1)),
+		hielbreedteMm: 0,
+		zoolbreedteMm: 0,
 	};
 };
 
@@ -507,9 +502,10 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const defaultGeneral = useMemo(
 		() => ({
 			sizeLabel: 'EU' as const,
+			baseInsoleType: DEFAULT_BASE_INSOLE_TYPE,
 			shoeSize: { left: 40, right: 40 },
 			soleThicknessMm: { left: 2, right: 2 },
-			maxInsoleHeightMm: { left: 10, right: 10 },
+			maxInsoleHeightMm: { left: 0, right: 0 },
 		}),
 		[]
 	);
@@ -537,6 +533,9 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		};
 		return {
 			sizeLabel: general.sizeLabel,
+			baseInsoleType: isBaseInsoleType(general.baseInsoleType)
+				? general.baseInsoleType
+				: defaultGeneral.baseInsoleType,
 			shoeSize: normalizeLR(general.shoeSize, defaultGeneral.shoeSize),
 			soleThicknessMm: normalizeLR(
 				general.soleThicknessMm,
@@ -548,6 +547,33 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			),
 		};
 	}, [general, defaultGeneral]);
+
+	const selectedBaseInsoleAssets = useMemo(
+		() => getBaseInsoleAssetUrls(generalNormalized.baseInsoleType),
+		[generalNormalized.baseInsoleType]
+	);
+
+	const effectiveTargetForefootWidthMm = useMemo(
+		() => ({
+			left: Number(
+				getBaseInsoleWidthMmForEuSize(
+					generalNormalized.shoeSize.left,
+					generalNormalized.baseInsoleType
+				).toFixed(1)
+			),
+			right: Number(
+				getBaseInsoleWidthMmForEuSize(
+					generalNormalized.shoeSize.right,
+					generalNormalized.baseInsoleType
+				).toFixed(1)
+			),
+		}),
+		[
+			generalNormalized.baseInsoleType,
+			generalNormalized.shoeSize.left,
+			generalNormalized.shoeSize.right,
+		]
+	);
 
 	const updateGeneral = useCallback(
 		(updates: Partial<typeof generalNormalized>) => {
@@ -561,6 +587,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		},
 		[generalNormalized, parameters, setParameters]
 	);
+
 	// ── Derive initial printer settings from org printers ──
 	const orgDefaultPrinterSettings = useMemo<PrinterSettings>(() => {
 		const first = orgPrinters?.[0];
@@ -684,8 +711,20 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 
 		// Extract real contours + 3D heightfields from STL files
 		const [leftResult, rightResult] = await Promise.all([
-			extractStlContour(DEFAULT_BASE_LEFT_STL, 'left'),
-			extractStlContour(DEFAULT_BASE_RIGHT_STL, 'right'),
+			extractStlContour(
+				selectedBaseInsoleAssets.leftUrl,
+				'left',
+				undefined,
+				undefined,
+				generalNormalized.baseInsoleType
+			),
+			extractStlContour(
+				selectedBaseInsoleAssets.rightUrl,
+				'right',
+				undefined,
+				undefined,
+				generalNormalized.baseInsoleType
+			),
 		]);
 
 		const ncContent = generateNcFile({
@@ -706,10 +745,10 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		});
 		const filename = `${name}_${cncState.millingMode}_${new Date().getFullYear()}_top.nc`;
 		downloadNcFile(ncContent, filename);
-	}, [cncState, projectId, project?.patient]);
+	}, [cncState, generalNormalized.baseInsoleType, projectId, project?.patient, selectedBaseInsoleAssets.leftUrl, selectedBaseInsoleAssets.rightUrl]);
 
 	const [selectedBaseSTL, setSelectedBaseSTL] = useState<string | null>(null);
-	const [corrections, setCorrections] = useState<OntwerpCorrections | undefined>(undefined);
+	const [corrections, setCorrections] = useState<OntwerpCorrections>(createDefaultOntwerpCorrections);
 	const [showZones, setShowZones] = useState(false);
 	const [addCorrectionOpen, setAddCorrectionOpen] = useState(false);
 	const addCorrectionAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -866,12 +905,14 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			selectedPairId,
 			selectedLeftScanId,
 			selectedRightScanId,
+			selectedBaseSTL,
 			corrections,
 			activeCorrections,
 			savedBottomText,
 			step3Left,
 			step3Right,
 			printerSettings,
+			boxEnabled,
 			trimlineAdjustments,
 			activeDesignStep,
 			elementsModalSide,
@@ -893,12 +934,14 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				if (cs.selectedPairId !== undefined) setSelectedPairId(cs.selectedPairId as string | null);
 				if (cs.selectedLeftScanId !== undefined) setSelectedLeftScanId(cs.selectedLeftScanId as string | null);
 				if (cs.selectedRightScanId !== undefined) setSelectedRightScanId(cs.selectedRightScanId as string | null);
-				if (cs.corrections !== undefined) setCorrections(cs.corrections as typeof corrections);
+				if (cs.selectedBaseSTL !== undefined) setSelectedBaseSTL(cs.selectedBaseSTL as string | null);
+				if (cs.corrections !== undefined) setCorrections(cs.corrections as OntwerpCorrections);
 				if (cs.activeCorrections !== undefined) setActiveCorrections(cs.activeCorrections as CorrectionKey[]);
 				if (cs.savedBottomText !== undefined) setSavedBottomText(cs.savedBottomText as typeof savedBottomText);
 				if (cs.step3Left !== undefined) setStep3Left(cs.step3Left as typeof step3Left);
 				if (cs.step3Right !== undefined) setStep3Right(cs.step3Right as typeof step3Right);
 				if (cs.printerSettings !== undefined) setPrinterSettings(cs.printerSettings as PrinterSettings);
+				if (cs.boxEnabled !== undefined) setBoxEnabled(cs.boxEnabled as typeof boxEnabled);
 				if (cs.trimlineAdjustments !== undefined) setTrimlineAdjustments(cs.trimlineAdjustments as typeof trimlineAdjustments);
 				if (cs.activeDesignStep !== undefined) setActiveDesignStep(cs.activeDesignStep as number);
 				if (cs.elementsModalSide !== undefined) setElementsModalSide(cs.elementsModalSide as 'left' | 'right');
@@ -924,9 +967,9 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [
 		productionMethod, selectedPairId, selectedLeftScanId, selectedRightScanId,
-		corrections, activeCorrections, savedBottomText,
+		selectedBaseSTL, corrections, activeCorrections, savedBottomText,
 		step3Left, step3Right, printerSettings,
-		trimlineAdjustments, activeDesignStep, elementsModalSide,
+		boxEnabled, trimlineAdjustments, activeDesignStep, elementsModalSide,
 		workflowStep, scansActive, showOverlays, hardnessProfiles,
 	]);
 	
@@ -1102,14 +1145,22 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			const rightPlantar = extractPlantarSurface(rightGeom, rightFg, 1.0);
 			setPlantarData(rightPlantar);
 
-			const rightSeeds = deriveSeedFromFootGeometry(rightFg, 1);
+			const rightSeeds = deriveSeedFromFootGeometry(
+				rightFg,
+				1,
+				generalNormalized.baseInsoleType
+			);
 			const rightMeshShoeSize = estimateEuShoeSizeFromGeometry(rightGeom, 1);
 
 			// ── Left foot computation ──
 			const { footGeometry: leftFg } =
 				computeFootGeometryFrom3Points(leftResult.landmarks, leftGeom, leftUrl);
 
-			const leftSeeds = deriveSeedFromFootGeometry(leftFg, 1);
+			const leftSeeds = deriveSeedFromFootGeometry(
+				leftFg,
+				1,
+				generalNormalized.baseInsoleType
+			);
 			const leftMeshShoeSize = estimateEuShoeSizeFromGeometry(leftGeom, 1);
 
 			// ── Seed parameters from both feet ──
@@ -1121,10 +1172,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 						left: leftMeshShoeSize,
 						right: rightMeshShoeSize,
 					},
-					soleThicknessMm: {
-						left: leftSeeds.soleThicknessMm,
-						right: rightSeeds.soleThicknessMm,
-					},
 					maxInsoleHeightMm: {
 						left: leftSeeds.rimHeightMm,
 						right: rightSeeds.rimHeightMm,
@@ -1132,66 +1179,11 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				},
 			});
 
-			setCorrections((prev) => {
-				const next = prev ?? {
-					kuipHoogte: { left: 0, right: 0 },
-					voorvoetUitvlakken: { enabled: false },
-					hielHeffing: {
-						length: { left: 'lang', right: 'lang' },
-						value: { left: 0, right: 0 },
-					},
-					medialeBoogCorrectie: { left: 0, right: 0 },
-					gladstrijken: 0,
-					pronatie: {
-						regio: { left: 'hiel', right: 'hiel' },
-						correctie: { left: 0, right: 0 },
-					},
-					supinatie: {
-						regio: { left: 'hiel', right: 'hiel' },
-						correctie: { left: 0, right: 0 },
-					},
-					mediaalVlak: {
-						hoogte: { left: 'midden', right: 'midden' },
-						waarde: { left: 0, right: 0 },
-					},
-					lateraalVlak: {
-						hoogte: { left: 'midden', right: 'midden' },
-						waarde: { left: 0, right: 0 },
-					},
-					apexMiddenvoet: { left: 0, right: 0 },
-					apexHiel: { left: 0, right: 0 },
-					hielbeenCorrectie: {
-						zijde: { left: 'mediaal', right: 'mediaal' },
-						waarde: { left: 0, right: 0 },
-					},
-					hielbreedteCorrectie: { left: 0, right: 0 },
-					zoolbreedte: { left: 0, right: 0 },
-				};
-				return {
-					...next,
-					kuipHoogte: {
-						left: leftSeeds.cupMm,
-						right: rightSeeds.cupMm,
-					},
-					medialeBoogCorrectie: {
-						left: leftSeeds.archMm,
-						right: rightSeeds.archMm,
-					},
-					gladstrijken: 3,
-					hielbreedteCorrectie: {
-						left: leftSeeds.hielbreedteMm,
-						right: rightSeeds.hielbreedteMm,
-					},
-					zoolbreedte: {
-						left: leftSeeds.zoolbreedteMm,
-						right: rightSeeds.zoolbreedteMm,
-					},
-				};
-			});
+			setCorrections(createDefaultOntwerpCorrections());
 
 			setTargetForefootWidthMm({
-				left: leftSeeds.forefootWidthMm,
-				right: rightSeeds.forefootWidthMm,
+				left: Number(leftSeeds.forefootWidthMm.toFixed(1)),
+				right: Number(rightSeeds.forefootWidthMm.toFixed(1)),
 			});
 
 			// ── Transition to design step ──
@@ -1338,7 +1330,12 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 							shoeSize: meshShoeSizeEu,
 							pronation: roundStep(clamp(seeds.pronationMm, 0, 6), 0.5),
 							supination: roundStep(clamp(seeds.supinationMm, 0, 6), 0.5),
-							forefootWidthMm: fg.forefootWidth * worldToMm,
+							forefootWidthMm: Number(
+								getBaseInsoleWidthMmForEuSize(
+									meshShoeSizeEu,
+									generalNormalized.baseInsoleType
+								).toFixed(1)
+							),
 						};
 					} catch (err) {
 						console.error('Right foot fitting failed:', err);
@@ -1358,7 +1355,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				let leftShoeSize = generalNormalized.shoeSize.left;
 				let leftPronation = 0;
 				let leftSupination = 0;
-				let leftForefootWidthMm = targetForefootWidthMm.left ?? null;
+				let leftForefootWidthMm = effectiveTargetForefootWidthMm.left;
 
 				const leftGeom = viewerRef.current?.getRightGeometry?.();
 				const leftMmToWorld = viewerRef.current?.getRightMmToWorld?.() ?? 1;
@@ -1389,7 +1386,12 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 						leftShoeSize = meshShoeSizeEu;
 						leftPronation = roundStep(clamp(seeds.pronationMm, 0, 6), 0.5);
 						leftSupination = roundStep(clamp(seeds.supinationMm, 0, 6), 0.5);
-						leftForefootWidthMm = fg.forefootWidth * leftWorldToMm;
+						leftForefootWidthMm = Number(
+							getBaseInsoleWidthMmForEuSize(
+								meshShoeSizeEu,
+								generalNormalized.baseInsoleType
+							).toFixed(1)
+						);
 					} catch (err) {
 						console.error('Left foot fitting failed:', err);
 					}
@@ -1402,21 +1404,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				const rightShoeSize = rightFitting?.shoeSize ?? generalNormalized.shoeSize.right;
 				const rightPronation = rightFitting?.pronation ?? 0;
 				const rightSupination = rightFitting?.supination ?? 0;
-				const rightForefootWidthMm = rightFitting?.forefootWidthMm ?? targetForefootWidthMm.right;
-
-				const estimateWidthCorrections = (forefootMm: number | null, shoeSizeEu: number) => {
-					if (!Number.isFinite(forefootMm as number)) {
-						return { zoolbreedte: 0, hielbreedte: 0 };
-					}
-					const expectedWidth = 75 + (shoeSizeEu - 36) * 1.5;
-					const widthExcess = Math.max(0, (forefootMm as number) - expectedWidth);
-					return {
-						zoolbreedte: roundStep(clamp(widthExcess * 0.5, 0, 8), 0.5),
-						hielbreedte: roundStep(clamp(widthExcess * 0.28, 0, 4), 0.5),
-					};
-				};
-				const leftWidthSeeds = estimateWidthCorrections(leftForefootWidthMm, leftShoeSize);
-				const rightWidthSeeds = estimateWidthCorrections(rightForefootWidthMm, rightShoeSize);
+				const rightForefootWidthMm =
+					rightFitting?.forefootWidthMm ?? effectiveTargetForefootWidthMm.right;
 
 				// Seed parameters from both feet
 				setParameters({
@@ -1427,10 +1416,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 							left: leftShoeSize,
 							right: rightShoeSize,
 						},
-						soleThicknessMm: {
-							left: 2.5,
-							right: 2.5,
-						},
 						maxInsoleHeightMm: {
 							left: clamp(leftCupMm + 4, 6, 18),
 							right: clamp(rightCupMm + 4, 6, 18),
@@ -1438,88 +1423,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 					},
 				});
 
-				setCorrections((prev) => {
-					const next = prev ?? {
-						kuipHoogte: { left: 0, right: 0 },
-						voorvoetUitvlakken: { enabled: false },
-						hielHeffing: {
-							length: { left: 'lang', right: 'lang' },
-							value: { left: 0, right: 0 },
-						},
-						medialeBoogCorrectie: { left: 0, right: 0 },
-						gladstrijken: 0,
-						pronatie: {
-							regio: { left: 'hiel', right: 'hiel' },
-							correctie: { left: 0, right: 0 },
-						},
-						supinatie: {
-							regio: { left: 'hiel', right: 'hiel' },
-							correctie: { left: 0, right: 0 },
-						},
-						mediaalVlak: {
-							hoogte: { left: 'midden', right: 'midden' },
-							waarde: { left: 0, right: 0 },
-						},
-						lateraalVlak: {
-							hoogte: { left: 'midden', right: 'midden' },
-							waarde: { left: 0, right: 0 },
-						},
-						apexMiddenvoet: { left: 0, right: 0 },
-						apexHiel: { left: 0, right: 0 },
-						hielbeenCorrectie: {
-							zijde: { left: 'mediaal', right: 'mediaal' },
-							waarde: { left: 0, right: 0 },
-						},
-						hielbreedteCorrectie: { left: 0, right: 0 },
-						zoolbreedte: { left: 0, right: 0 },
-					};
-					return {
-						...next,
-						kuipHoogte: {
-							left: leftCupMm,
-							right: rightCupMm,
-						},
-						medialeBoogCorrectie: {
-							left: leftArchMm,
-							right: rightArchMm,
-						},
-						pronatie: {
-							...next.pronatie,
-							regio: {
-								...next.pronatie.regio,
-								left: 'hiel',
-								right: 'hiel',
-							},
-							correctie: {
-								...next.pronatie.correctie,
-								left: leftPronation,
-								right: rightPronation,
-							},
-						},
-						supinatie: {
-							...next.supinatie,
-							regio: {
-								...next.supinatie.regio,
-								left: 'hiel',
-								right: 'hiel',
-							},
-							correctie: {
-								...next.supinatie.correctie,
-								left: leftSupination,
-								right: rightSupination,
-							},
-						},
-						gladstrijken: 3,
-						hielbreedteCorrectie: {
-							left: leftWidthSeeds.hielbreedte,
-							right: rightWidthSeeds.hielbreedte,
-						},
-						zoolbreedte: {
-							left: leftWidthSeeds.zoolbreedte,
-							right: rightWidthSeeds.zoolbreedte,
-						},
-					};
-				});
+				setCorrections(createDefaultOntwerpCorrections());
 
 				setTargetForefootWidthMm({
 					left: leftForefootWidthMm,
@@ -1538,7 +1442,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				setPointStepIndex((prev) => prev + 1);
 			}
 		},
-		[workflowStep, pointStepIndex, pointPickFoot, rightPointSelections, leftPointSelections, setThreePointLandmarks, setFootGeometry, setDerivedLandmarks, setCompleteLandmarks, setPlantarData, setIsGeneratingInsole, setParameters, parameters, generalNormalized, targetForefootWidthMm]
+		[workflowStep, pointStepIndex, pointPickFoot, rightPointSelections, leftPointSelections, setThreePointLandmarks, setFootGeometry, setDerivedLandmarks, setCompleteLandmarks, setPlantarData, setIsGeneratingInsole, setParameters, parameters, generalNormalized, effectiveTargetForefootWidthMm]
 	);
 
 	const patientName = project?.patient
@@ -1741,15 +1645,29 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				return (
 					<Card>
 						<CardContent>
-							<Select
-								label="Productiemethode"
-								value={productionMethod}
-								onChange={(val) => setProductionMethod(val)}
-								options={[
-									{ value: 'Printer: Solid', label: 'Printer: Solid' },
-									{ value: 'Frezen: EVA', label: 'Frezen: EVA' },
-								]}
-							/>
+							{scansActive && (
+								<>
+									<Select
+										label="Type basiszool"
+										value={generalNormalized.baseInsoleType}
+										onChange={(val) => {
+											if (!isBaseInsoleType(val)) return;
+											updateGeneral({ baseInsoleType: val });
+										}}
+										options={BASE_INSOLE_SELECT_OPTIONS}
+									/>
+
+									<Select
+										label="Productiemethode"
+										value={productionMethod}
+										onChange={(val) => setProductionMethod(val)}
+										options={[
+											{ value: 'Printer: Solid', label: 'Printer: Solid' },
+											{ value: 'Frezen: EVA', label: 'Frezen: EVA' },
+										]}
+									/>
+								</>
+							)}
 
 							<div className="space-y-2">
 								<p className="text-xs uppercase tracking-wide text-ui-text/70">
@@ -1779,12 +1697,18 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										Herpick punten
 									</button>
 								)}
+								{!scansActive && (
+									<p className="text-xs text-ui-muted">
+										Importeer scans om het volledige ontwerp te starten.
+									</p>
+								)}
 							</div>
 
-							<div className="space-y-2">
-								<p className="text-xs uppercase tracking-wide text-ui-text/70">
-									Elementen
-								</p>
+							{scansActive && (
+								<div className="space-y-2">
+									<p className="text-xs uppercase tracking-wide text-ui-text/70">
+										Elementen
+									</p>
 								{/* Side toggle for elements */}
 								<div className="flex items-center gap-1 rounded-lg bg-[rgba(255,255,255,0.03)] p-1">
 									{(['left', 'right'] as const).map((s) => (
@@ -1817,6 +1741,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									+ Element toevoegen
 								</Button>
 							</div>
+							)}
 						</CardContent>
 					</Card>
 				);
@@ -2746,18 +2671,20 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								<CncFixtureView
 									fixture={cncState.fixture}
 									className="h-full w-full"
-									leftStlUrl={DEFAULT_BASE_LEFT_STL}
-									rightStlUrl={DEFAULT_BASE_RIGHT_STL}
+									leftStlUrl={selectedBaseInsoleAssets.leftUrl}
+									rightStlUrl={selectedBaseInsoleAssets.rightUrl}
+									baseInsoleType={generalNormalized.baseInsoleType}
 								/>
 							) : (
 							<>
 							<EnhancedSTLViewer
 								ref={viewerRef}
-								leftUrl={DEFAULT_BASE_LEFT_STL}
-								rightUrl={DEFAULT_BASE_RIGHT_STL}
+								leftUrl={selectedBaseInsoleAssets.leftUrl}
+								rightUrl={selectedBaseInsoleAssets.rightUrl}
 								leftOverlayUrl={showOverlays ? leftStlUrl : undefined}
 								rightOverlayUrl={showOverlays ? rightStlUrl : undefined}
-								targetForefootWidthMm={targetForefootWidthMm}
+								baseInsoleType={generalNormalized.baseInsoleType}
+								targetForefootWidthMm={effectiveTargetForefootWidthMm}
 								showGrid={true}
 								showBasePreview={false}
 								lockTopView={false}
@@ -2978,6 +2905,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									<StepRail
 										activeStep={activeDesignStep}
 										onStepChange={(step) => {
+											if (!scansActive && step !== 1) return;
 											setActiveDesignStep(step);
 										}}
 										stepLabels={
@@ -2985,6 +2913,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 												? { 3: 'EVA' }
 												: undefined
 										}
+										visibleSteps={scansActive ? undefined : [1]}
 									/>
 
 									<div className="flex-1 overflow-y-auto px-4 pb-4 pr-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-[rgba(255,255,255,0.18)]">
@@ -3014,13 +2943,15 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 												</>
 											)}
 										</div>
-										<Button
-											onClick={() => setActiveDesignStep(2)}
-											size="sm"
-											className="bg-ui-accent text-slate-900"
-										>
-											Volgende
-										</Button>
+										{scansActive && (
+											<Button
+												onClick={() => setActiveDesignStep(2)}
+												size="sm"
+												className="bg-ui-accent text-slate-900"
+											>
+												Volgende
+											</Button>
+										)}
 									</div>
 								</div>
 							)}

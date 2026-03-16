@@ -1,15 +1,24 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import type { Metadata } from 'next';
 import { getServerSession } from '@/src/shared/core/auth/get-session';
 import { prisma } from '@/src/shared/core/db/prisma';
+import { isPlatformAdminEmail } from '@/src/shared/core/auth/admin';
+
+export const metadata: Metadata = {
+	title: 'Instellingen',
+	description:
+		'Beheer de instellingen van uw organisatie: gebruikers, plan, 3D-printer, bibliotheek en meer.',
+};
 
 interface SettingsLayoutProps {
 	children: React.ReactNode;
 	params: Promise<{ orgSlug: string }>;
 }
 
-const tabs = [
+const baseTabs = [
 	{ label: 'Basis', href: '/settings/basis' },
+	{ label: 'Gebruik', href: '/settings/gebruik' },
 	{ label: 'MDR', href: '/settings/mdr' },
 	{ label: 'Gebruikers', href: '/settings/gebruikers' },
 	{ label: 'Backup & Migratie', href: '/settings/backup' },
@@ -30,6 +39,10 @@ export default async function SettingsLayout({
 
 	const org = await prisma.organization.findUnique({ where: { slug: orgSlug } });
 	if (!org) redirect('/');
+
+	const tabs = isPlatformAdminEmail(session.user.email)
+		? [{ label: 'Admin', href: '/settings/admin' }, ...baseTabs]
+		: baseTabs;
 
 	return (
 		<div className="min-h-screen bg-background p-8">
