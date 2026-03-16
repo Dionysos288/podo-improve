@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import {
 	Suspense,
@@ -3125,6 +3125,10 @@ interface EnhancedSTLViewerProps {
 	/** Callback when user drags a trimline handle (pending only — not yet committed) */
 	onPendingTrimlineChange?: (side: 'left' | 'right', adj: TrimlineAdjustments) => void;
 	onPendingTrimlineProfileChange?: (side: 'left' | 'right', profile: TrimlineHandleProfile) => void;
+	/** Called once when both insole meshes have loaded their geometry */
+	onReady?: () => void;
+	/** When true, pointer events on insole meshes are disabled (no click/select) */
+	disableInteraction?: boolean;
 }
 
 function BaseInsolePreview({
@@ -3233,6 +3237,8 @@ export const EnhancedSTLViewer = forwardRef<
 			trimlineEditSide = null,
 			onPendingTrimlineChange,
 			onPendingTrimlineProfileChange,
+			onReady,
+			disableInteraction = false,
 		},
 		ref
 	) => {
@@ -3246,6 +3252,19 @@ export const EnhancedSTLViewer = forwardRef<
 			useState<THREE.BufferGeometry | null>(null);
 		const [leftMmToWorld, setLeftMmToWorld] = useState<number>(1);
 		const [rightMmToWorld, setRightMmToWorld] = useState<number>(1);
+
+		// Fire onReady once when at least one geometry has loaded
+		const onReadyFiredRef = useRef(false);
+		useEffect(() => {
+			if (onReadyFiredRef.current) return;
+			const hasLeft = !leftUrl || leftGeometry !== null;
+			const hasRight = !rightUrl || rightGeometry !== null;
+			if (hasLeft && hasRight) {
+				onReadyFiredRef.current = true;
+				onReady?.();
+			}
+		}, [leftGeometry, rightGeometry, leftUrl, rightUrl, onReady]);
+
 		const [localLandmarks, setLocalLandmarks] = useState<LandmarkPoints | null>(
 			null
 		);
@@ -3998,6 +4017,7 @@ export const EnhancedSTLViewer = forwardRef<
 									trimlineHandleProfile={trimlineHandleProfiles?.left ?? null}
 									color={leftOverlayUrl || rightOverlayUrl ? '#cfe9ff' : '#d7dadd'}
 									position={[-30, 0, 0]}
+									interactive={!disableInteraction}
 									onGeometryReady={(geom, meta) => {
 										setLeftGeometry(geom);
 										setLeftMmToWorld(meta?.mmToWorld || 1);
@@ -4019,9 +4039,9 @@ export const EnhancedSTLViewer = forwardRef<
 										setProbeState(next);
 										onProbe?.(next);
 									}}
-									selected={selectedSide === 'left'}
-									onSelect={onSelectSide}
-									onZoneClick={onZoneClick}
+									selected={disableInteraction ? false : selectedSide === 'left'}
+									onSelect={disableInteraction ? undefined : onSelectSide}
+									onZoneClick={disableInteraction ? undefined : onZoneClick}
 									showBoxGrid={showGrid && boxEnabled.left}
 									gridEditMode={gridEditMode}
 									corrections={corrections}
@@ -4048,6 +4068,7 @@ export const EnhancedSTLViewer = forwardRef<
 									trimlineHandleProfile={trimlineHandleProfiles?.right ?? null}
 									color={leftOverlayUrl || rightOverlayUrl ? '#cfe9ff' : '#d7dadd'}
 									position={[30, 0, 0]}
+									interactive={!disableInteraction}
 									onGeometryReady={(geom, meta) => {
 										setRightGeometry(geom);
 										setRightMmToWorld(meta?.mmToWorld || 1);
@@ -4078,9 +4099,9 @@ export const EnhancedSTLViewer = forwardRef<
 										setProbeState(next);
 										onProbe?.(next);
 									}}
-									selected={selectedSide === 'right'}
-									onSelect={onSelectSide}
-									onZoneClick={onZoneClick}
+									selected={disableInteraction ? false : selectedSide === 'right'}
+									onSelect={disableInteraction ? undefined : onSelectSide}
+									onZoneClick={disableInteraction ? undefined : onZoneClick}
 									showBoxGrid={showGrid && boxEnabled.right}
 									gridEditMode={gridEditMode}
 									corrections={corrections}

@@ -395,6 +395,88 @@ export interface OrgPrinter {
 	settings: OrgPrinterSettings;
 }
 
+/* ── Export progress tracking ── */
+interface ExportPhase {
+	label: string;
+	status: 'pending' | 'active' | 'done' | 'error';
+}
+interface ExportProgress {
+	title: string;
+	phases: ExportPhase[];
+	error?: string | null;
+	done?: boolean;
+}
+
+function ExportProgressOverlay({ progress, onDismiss }: { progress: ExportProgress; onDismiss: () => void }) {
+	const activePhase = progress.phases.find((p) => p.status === 'active');
+	const displayText = progress.error
+		? progress.error
+		: progress.done
+			? progress.title
+			: activePhase?.label ?? progress.title;
+
+	return (
+		<div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-900/60 backdrop-blur-[2px]">
+			<div className="animate-fade-in-up flex flex-col items-center gap-4 rounded-2xl border border-ui-border bg-ui-panel/95 px-8 py-6 shadow-xl min-w-[280px] max-w-[360px]">
+				{/* Spinner / success / error icon */}
+				{progress.done ? (
+					<div className="flex h-10 w-10 items-center justify-center rounded-full bg-green-500/20">
+						<Check size={22} className="text-green-400" />
+					</div>
+				) : progress.error ? (
+					<div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500/20">
+						<AlertCircle size={22} className="text-red-400" />
+					</div>
+				) : (
+					<div className="relative h-10 w-10">
+						<div className="absolute inset-0 rounded-full border-2 border-ui-border" />
+						<div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ui-accent" />
+					</div>
+				)}
+
+				{/* Main status text */}
+				<p className="text-center text-sm font-semibold text-ui-text">{displayText}</p>
+
+				{/* Step indicators */}
+				{!progress.done && !progress.error && (
+					<div className="flex items-center gap-1.5">
+						{progress.phases.map((phase, i) => (
+							<div
+								key={i}
+								className={[
+									'h-1.5 rounded-full transition-all duration-300',
+									phase.status === 'done' ? 'w-6 bg-ui-accent' :
+									phase.status === 'active' ? 'w-6 bg-ui-accent/50 animate-pulse' :
+									'w-3 bg-ui-border/40',
+								].join(' ')}
+							/>
+						))}
+					</div>
+				)}
+
+				{/* Indeterminate progress bar (while processing) */}
+				{!progress.done && !progress.error && (
+					<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
+						<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
+					</div>
+				)}
+
+				{/* Dismiss button when done or error */}
+				{(progress.done || progress.error) && (
+					<Button
+						variant="outline"
+						size="sm"
+						className="mt-1"
+						onClick={onDismiss}
+					>
+						{progress.done ? 'Sluiten' : 'Terug'}
+					</Button>
+				)}
+			</div>
+		</div>
+	);
+}
+
 interface DesignPageClientProps {
 	project: ProjectDetail;
 	orgSlug: string;
@@ -466,6 +548,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		forefootWidthMm: number;
 	} | null>(null);
 	const [isFitting, setIsFitting] = useState(false);
+	const [isViewerReady, setIsViewerReady] = useState(false);
 	const [autoDetectStatus, setAutoDetectStatus] = useState<
 		'idle' | 'detecting' | 'success' | 'failed'
 	>('idle');
@@ -658,7 +741,13 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	}, [orgPrinters]);
 	const [hardnessProfiles, setHardnessProfiles] = useState<Record<HardnessKey, { infillPercent: number }> | null>(orgHardnessProfiles);
 	const activeProfiles = hardnessProfiles ?? DEFAULT_HARDNESS_PROFILES;
-
+	const HARDNESS_OPTIONS: { key: HardnessKey; label: string; color: string }[] = useMemo(() => ([
+		{ key: 'extraSoft', label: 'Extra zacht', color: '#6DD5FA' },
+		{ key: 'soft', label: 'Zacht', color: '#4FC3F7' },
+		{ key: 'normal', label: 'Normaal', color: '#29B6F6' },
+		{ key: 'hard', label: 'Hard', color: '#0288D1' },
+		{ key: 'extraHard', label: 'Extra hard', color: '#01579B' },
+	]), []);
 	const step3Current = step3Side === 'left' ? step3Left : step3Right;
 	const setStep3Current = step3Side === 'left' ? setStep3Left : setStep3Right;
 
@@ -689,6 +778,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		'export'
 	);
 	const [gcodeBusy, setGcodeBusy] = useState(false);
+	const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
 	const [productionMethod, setProductionMethod] = useState('Printer: Solid');
 
 	/* ── CNC / Frezen EVA state ── */
@@ -1474,69 +1564,156 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		[]
 	);
 
-	const handleExportSTLLeft = useCallback(() => {
+	const handleExportSTLLeft = useCallback(async () => {
+		const steps = [
+			'Geometrie ophalen',
+			'STL bestand genereren',
+			'Bestand downloaden',
+		];
+		const mkPhases = (activeIdx: number): ExportPhase[] =>
+			steps.map((label, i) => ({ label, status: i < activeIdx ? 'done' : i === activeIdx ? 'active' : 'pending' }));
+
+		setExportProgress({ title: 'Exporteer STL (links)', phases: mkPhases(0) });
+		await new Promise((r) => setTimeout(r, 150));
+
 		const geometry = viewerRef.current?.getExportInsoleGeometryMm('left');
 		const dims = viewerRef.current?.getInsoleDimensionsMm('left') ?? null;
 		const check = validateExportDimensions('left', dims);
 		if (!geometry || !check.ok) {
-			alert(check.ok ? 'Geen linker steunzool beschikbaar om te exporteren.' : check.reason);
+			setExportProgress({ title: 'Exporteer STL (links)', phases: mkPhases(0).map((p, i) => i === 0 ? { ...p, status: 'error' } : p), error: check.ok ? 'Geen linker steunzool beschikbaar om te exporteren.' : check.reason });
 			return;
 		}
+
+		setExportProgress({ title: 'Exporteer STL (links)', phases: mkPhases(1) });
+		await new Promise((r) => setTimeout(r, 150));
+
 		exportGeometryToSTLBinary(geometry, `${patientName}_left_${projectId}.stl`);
 		geometry.dispose();
+
+		setExportProgress({ title: 'Exporteer STL (links)', phases: mkPhases(2) });
+		await new Promise((r) => setTimeout(r, 200));
+
+		setExportProgress({ title: 'STL (links) gedownload', phases: steps.map((label) => ({ label, status: 'done' })), done: true });
 	}, [patientName, projectId, validateExportDimensions]);
 
-	const handleExportSTLRight = useCallback(() => {
+	const handleExportSTLRight = useCallback(async () => {
+		const steps = [
+			'Geometrie ophalen',
+			'STL bestand genereren',
+			'Bestand downloaden',
+		];
+		const mkPhases = (activeIdx: number): ExportPhase[] =>
+			steps.map((label, i) => ({ label, status: i < activeIdx ? 'done' : i === activeIdx ? 'active' : 'pending' }));
+
+		setExportProgress({ title: 'Exporteer STL (rechts)', phases: mkPhases(0) });
+		await new Promise((r) => setTimeout(r, 150));
+
 		const geometry = viewerRef.current?.getExportInsoleGeometryMm('right');
 		const dims = viewerRef.current?.getInsoleDimensionsMm('right') ?? null;
 		const check = validateExportDimensions('right', dims);
 		if (!geometry || !check.ok) {
-			alert(check.ok ? 'Geen rechter steunzool beschikbaar om te exporteren.' : check.reason);
+			setExportProgress({ title: 'Exporteer STL (rechts)', phases: mkPhases(0).map((p, i) => i === 0 ? { ...p, status: 'error' } : p), error: check.ok ? 'Geen rechter steunzool beschikbaar om te exporteren.' : check.reason });
 			return;
 		}
+
+		setExportProgress({ title: 'Exporteer STL (rechts)', phases: mkPhases(1) });
+		await new Promise((r) => setTimeout(r, 150));
+
 		exportGeometryToSTLBinary(geometry, `${patientName}_right_${projectId}.stl`);
 		geometry.dispose();
+
+		setExportProgress({ title: 'Exporteer STL (rechts)', phases: mkPhases(2) });
+		await new Promise((r) => setTimeout(r, 200));
+
+		setExportProgress({ title: 'STL (rechts) gedownload', phases: steps.map((label) => ({ label, status: 'done' })), done: true });
 	}, [patientName, projectId, validateExportDimensions]);
 
-	const handleExportSTL = useCallback(() => {
+	const handleExportSTL = useCallback(async () => {
+		const steps = [
+			'Afmetingen controleren',
+			'Paar geometrie ophalen',
+			'STL bestand genereren',
+			'Bestand downloaden',
+		];
+		const mkPhases = (activeIdx: number): ExportPhase[] =>
+			steps.map((label, i) => ({ label, status: i < activeIdx ? 'done' : i === activeIdx ? 'active' : 'pending' }));
+
+		setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(0) });
+		await new Promise((r) => setTimeout(r, 150));
+
 		const leftDims = viewerRef.current?.getInsoleDimensionsMm('left') ?? null;
 		const rightDims = viewerRef.current?.getInsoleDimensionsMm('right') ?? null;
 		const leftCheck = validateExportDimensions('left', leftDims);
 		const rightCheck = validateExportDimensions('right', rightDims);
 		if (!leftCheck.ok || !rightCheck.ok) {
-			alert(!leftCheck.ok ? leftCheck.reason : rightCheck.reason);
+			setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(0).map((p, i) => i === 0 ? { ...p, status: 'error' } : p), error: !leftCheck.ok ? leftCheck.reason : rightCheck.reason });
 			return;
 		}
+
+		setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(1) });
+		await new Promise((r) => setTimeout(r, 150));
 
 		const geometry = viewerRef.current?.getExportPairGeometryMm(15);
 		if (!geometry) {
-			alert('Geen steunzoolpaar beschikbaar om te exporteren.');
+			setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(1).map((p, i) => i === 1 ? { ...p, status: 'error' } : p), error: 'Geen steunzoolpaar beschikbaar om te exporteren.' });
 			return;
 		}
 
+		setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(2) });
+		await new Promise((r) => setTimeout(r, 200));
+
 		exportGeometryToSTLBinary(geometry, `${patientName}_pair_${projectId}.stl`);
 		geometry.dispose();
+
+		setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(3) });
+		await new Promise((r) => setTimeout(r, 200));
+
+		setExportProgress({ title: 'STL (paar) gedownload', phases: steps.map((label) => ({ label, status: 'done' })), done: true });
 	}, [patientName, projectId, validateExportDimensions]);
 
 	const handleExportGcode = useCallback(async () => {
+		const steps = [
+			'Afmetingen controleren',
+			'STL voorbereiden',
+			'Slicing job aanmaken',
+			'G-code genereren (Print Agent)',
+			'G-code downloaden',
+		];
+		const mkPhases = (activeIdx: number): ExportPhase[] =>
+			steps.map((label, i) => ({ label, status: i < activeIdx ? 'done' : i === activeIdx ? 'active' : 'pending' }));
+		const fail = (stepIdx: number, message: string) => {
+			setExportProgress({
+				title: 'G-code export',
+				phases: mkPhases(stepIdx).map((p, i) => i === stepIdx ? { ...p, status: 'error' } : p),
+				error: message,
+			});
+		};
+
+		setExportProgress({ title: 'G-code export', phases: mkPhases(0) });
+
 		const leftDims = viewerRef.current?.getInsoleDimensionsMm('left') ?? null;
 		const rightDims = viewerRef.current?.getInsoleDimensionsMm('right') ?? null;
 		const leftCheck = validateExportDimensions('left', leftDims);
 		const rightCheck = validateExportDimensions('right', rightDims);
 		if (!leftCheck.ok || !rightCheck.ok) {
-			alert(!leftCheck.ok ? leftCheck.reason : rightCheck.reason);
+			fail(0, (!leftCheck.ok ? leftCheck.reason : rightCheck.reason) ?? 'Ongeldige afmetingen.');
 			return;
 		}
 
+		setExportProgress({ title: 'G-code export', phases: mkPhases(1) });
+
 		const pairGeometry = viewerRef.current?.getExportPairGeometryMm(15);
 		if (!pairGeometry) {
-			alert('Geen steunzoolpaar beschikbaar voor G-code generatie.');
+			fail(1, 'Geen steunzoolpaar beschikbaar voor G-code generatie.');
 			return;
 		}
 
 		setGcodeBusy(true);
 		try {
 			const stlArrayBuffer = geometryToBinarySTLArrayBuffer(pairGeometry);
+
+			setExportProgress({ title: 'G-code export', phases: mkPhases(2) });
+
 			const createRes = await fetch('/api/slicing/jobs/create', {
 				method: 'POST',
 				headers: {
@@ -1570,6 +1747,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				throw new Error('Geen jobId ontvangen van de server.');
 			}
 
+			setExportProgress({ title: 'G-code export', phases: mkPhases(3) });
+
 			const startedAt = Date.now();
 			const timeoutMs = 8 * 60 * 1000;
 			while (Date.now() - startedAt < timeoutMs) {
@@ -1583,10 +1762,16 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 					errorMessage?: string | null;
 				};
 
+				if (status.status === 'RUNNING') {
+					setExportProgress((prev) => prev && !prev.done ? { ...prev, phases: mkPhases(3).map((p, i) => i === 3 ? { ...p, label: 'G-code genereren (Print Agent bezig...)' } : p) } : prev);
+				}
+
 				if (status.status === 'FAILED') {
 					throw new Error(status.errorMessage || 'Slicer job is mislukt.');
 				}
 				if (status.status === 'DONE') {
+					setExportProgress({ title: 'G-code export', phases: mkPhases(4) });
+
 					if (!status.gcodeBase64) {
 						throw new Error('G-code ontbreekt in afgeronde job.');
 					}
@@ -1603,14 +1788,24 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 					a.click();
 					document.body.removeChild(a);
 					setTimeout(() => URL.revokeObjectURL(url), 100);
-					alert('G-code gereed en gedownload.');
+
+					setExportProgress({ title: 'G-code gereed en gedownload!', phases: steps.map((label) => ({ label, status: 'done' })), done: true });
 					return;
 				}
 			}
 
 			throw new Error('Timeout: slicing duurde te lang. Controleer de Print Agent.');
 		} catch (error) {
-			alert(error instanceof Error ? error.message : 'G-code export mislukt.');
+			const msg = error instanceof Error ? error.message : 'G-code export mislukt.';
+			setExportProgress((prev) => {
+				if (!prev || prev.done) return prev;
+				const activeIdx = prev.phases.findIndex((p) => p.status === 'active');
+				return {
+					...prev,
+					phases: prev.phases.map((p, i) => i === activeIdx ? { ...p, status: 'error' } : p),
+					error: msg,
+				};
+			});
 		} finally {
 			pairGeometry.dispose();
 			setGcodeBusy(false);
@@ -2053,14 +2248,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				}
 
 				/* ── Print panel (existing behaviour) ── */
-				const HARDNESS_OPTIONS: { key: HardnessKey; label: string; color: string }[] = [
-					{ key: 'extraSoft', label: 'Extra zacht', color: '#6DD5FA' },
-					{ key: 'soft', label: 'Zacht', color: '#4FC3F7' },
-					{ key: 'normal', label: 'Normaal', color: '#29B6F6' },
-					{ key: 'hard', label: 'Hard', color: '#0288D1' },
-					{ key: 'extraHard', label: 'Extra hard', color: '#01579B' },
-				];
-
 				const s = step3Current;
 
 				const getZoneHardness = (zone: 'front' | 'middle' | 'back') => {
@@ -2742,21 +2929,83 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										[side]: profile,
 									}))
 								}
+								onReady={() => setIsViewerReady(true)}
+								disableInteraction={!scansActive}
 							/>
+							{/* ── Viewer loading overlay ── */}
+							{!isViewerReady && (
+								<div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-gray-900/80 backdrop-blur-sm">
+									{/* Animated insole silhouette */}
+									<div className="relative mb-6">
+										<svg width="80" height="160" viewBox="0 0 80 160" className="animate-insole-shimmer drop-shadow-[0_0_24px_rgba(99,247,214,0.25)]">
+											<path
+												d="M40 8 C22 8 14 28 12 48 C10 68 12 88 16 108 C20 128 28 148 40 152 C52 148 60 128 64 108 C68 88 70 68 68 48 C66 28 58 8 40 8Z"
+												fill="none"
+												stroke="var(--ui-accent)"
+												strokeWidth="1.5"
+												opacity="0.6"
+											/>
+											<path
+												d="M40 16 C26 16 20 32 18 48 C16 64 18 84 22 104 C26 124 32 140 40 144 C48 140 54 124 58 104 C62 84 64 64 62 48 C60 32 54 16 40 16Z"
+												fill="var(--ui-accent)"
+												opacity="0.08"
+											/>
+										</svg>
+										{/* Orbiting dot */}
+										<div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+											<div className="animate-orbit-dot">
+												<div className="h-2 w-2 rounded-full bg-ui-accent shadow-[0_0_8px_rgba(99,247,214,0.6)]" />
+											</div>
+										</div>
+									</div>
+									<p className="animate-fade-in-up text-sm font-medium text-ui-muted">
+										3D model laden…
+									</p>
+									{/* Progress bar */}
+									<div className="mt-3 h-0.5 w-32 overflow-hidden rounded-full bg-ui-border/40">
+										<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
+									</div>
+								</div>
+							)}
+							{/* ── Fitting / processing overlay ── */}
 							{isFitting && (
-								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel px-4 py-2 text-xs font-semibold text-ui-text shadow-lg">
-									Berekenen… steunzool wordt aangepast
+								<div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-900/50 backdrop-blur-[2px]">
+									<div className="animate-fade-in-up flex flex-col items-center gap-3 rounded-2xl border border-ui-border bg-ui-panel/95 px-6 py-5 shadow-xl">
+										<div className="relative h-8 w-8">
+											<div className="absolute inset-0 rounded-full border-2 border-ui-border" />
+											<div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ui-accent" />
+										</div>
+										<p className="text-xs font-semibold text-ui-text">Berekenen… steunzool wordt aangepast</p>
+										<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
+											<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
+										</div>
+									</div>
 								</div>
 							)}
 							{autoDetectStatus === 'detecting' && !isFitting && (
-								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel px-4 py-2 text-xs font-semibold text-ui-text shadow-lg animate-pulse">
-									{autoDetectMessage || 'Landmarks automatisch detecteren...'}
+								<div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-900/40 backdrop-blur-[1px]">
+									<div className="animate-fade-in-up flex flex-col items-center gap-3 rounded-2xl border border-ui-border bg-ui-panel/95 px-6 py-5 shadow-xl">
+										<div className="relative h-8 w-8">
+											<div className="absolute inset-0 rounded-full border-2 border-ui-border" />
+											<div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ui-accent" />
+										</div>
+										<p className="text-xs font-semibold text-ui-text">
+											{autoDetectMessage || 'Landmarks automatisch detecteren...'}
+										</p>
+										<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
+											<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
+										</div>
+									</div>
 								</div>
 							)}
 							{autoDetectStatus === 'success' && !isFitting && (
 								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-emerald-500/30 bg-emerald-950/80 px-4 py-2 text-xs font-semibold text-emerald-300 shadow-lg">
 									✓ {autoDetectMessage}
 								</div>
+							)}
+							{/* ── Export progress overlay ── */}
+							{exportProgress && (
+								<ExportProgressOverlay progress={exportProgress} onDismiss={() => setExportProgress(null)} />
 							)}
 							{autoDetectStatus === 'failed' && !isFitting && (
 								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-950/80 px-4 py-2 text-xs font-semibold text-amber-300 shadow-lg">

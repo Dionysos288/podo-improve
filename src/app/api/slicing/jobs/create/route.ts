@@ -94,6 +94,9 @@ export async function POST(req: NextRequest) {
 			},
 		});
 
+		const printerLabel = typeof printerSettings.printer === 'string' ? printerSettings.printer : null;
+		const materialLabel = typeof printerSettings.material === 'string' ? printerSettings.material : null;
+
 		await recordUsageEvent({
 			orgId,
 			userId: session.user.id,
@@ -101,8 +104,8 @@ export async function POST(req: NextRequest) {
 			resourceId: job.id,
 			metadata: {
 				filename,
-				printer: printerSettings.printer,
-				material: printerSettings.material,
+				...(printerLabel ? { printer: printerLabel } : {}),
+				...(materialLabel ? { material: materialLabel } : {}),
 			},
 		});
 

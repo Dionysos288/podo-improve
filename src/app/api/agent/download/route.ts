@@ -59,6 +59,16 @@ REM Get the directory where this script is located
 set SCRIPT_DIR=%~dp0
 set STARTUP_DIR=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup
 set AGENT_FILE=%SCRIPT_DIR%agent.mjs
+set HIDDEN_VBS=%SCRIPT_DIR%start-agent-hidden.vbs
+
+REM Check if Node.js is installed
+where node >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+	echo ERROR: Node.js is not installed or not in PATH.
+	echo Please install Node.js from https://nodejs.org/
+	pause
+	exit /b 1
+)
 
 REM Always refresh agent.mjs so latest slicer logic is used
 echo Updating agent file from server...
@@ -79,20 +89,25 @@ echo.
 echo Creating startup shortcut...
 echo.
 
-REM Create shortcut using PowerShell (runs the launcher script, which will download agent.mjs if needed)
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$WshShell = New-Object -ComObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%STARTUP_DIR%\\Podo Improve Agent.lnk'); $Shortcut.TargetPath = 'cmd.exe'; $Shortcut.Arguments = '/c \"cd /d \"%SCRIPT_DIR%\" && if not exist agent.mjs (powershell -NoProfile -ExecutionPolicy Bypass -Command \"Invoke-WebRequest -Uri \\\"${webAppUrl}/api/agent/files/agent.mjs\\\" -OutFile agent.mjs\") && start /min node agent.mjs --url ${webAppUrl} --token ${agentToken}\"'; $Shortcut.WorkingDirectory = '%SCRIPT_DIR%'; $Shortcut.WindowStyle = 7; $Shortcut.IconLocation = 'shell32.dll,137'; $Shortcut.Save(); Write-Host 'Shortcut created successfully!'"
+REM Create hidden launcher script
+> "%HIDDEN_VBS%" echo Set shell = CreateObject("WScript.Shell")
+>> "%HIDDEN_VBS%" echo shell.CurrentDirectory = "%SCRIPT_DIR%"
+>> "%HIDDEN_VBS%" echo shell.Run "node ""%AGENT_FILE%"" --url ${webAppUrl} --token ${agentToken}", 0, False
+
+REM Create startup shortcut pointing to the hidden launcher
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$WshShell = New-Object -ComObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%STARTUP_DIR%\\Podo Improve Agent.lnk'); $Shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\\wscript.exe'; $Shortcut.Arguments = '""%HIDDEN_VBS%""'; $Shortcut.WorkingDirectory = '%SCRIPT_DIR%'; $Shortcut.IconLocation = Join-Path $env:SystemRoot 'System32\\shell32.dll,137'; $Shortcut.Save(); Write-Host 'Shortcut created successfully!'"
 
 if %ERRORLEVEL% EQU 0 (
     echo.
     echo ✓ Success! The agent will now start automatically when you log in.
     echo.
-    echo The agent will run minimized in the background.
+	echo The agent will run hidden in the background.
     echo.
     echo To remove auto-start: Delete "Podo Improve Agent" from:
     echo %STARTUP_DIR%
     echo.
     echo Starting agent now...
-    start /min node "%AGENT_FILE%" --url ${webAppUrl} --token ${agentToken}
+	wscript.exe "%HIDDEN_VBS%"
 ) else (
     echo.
     echo ✗ Failed to create startup shortcut.

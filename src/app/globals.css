@@ -64,3 +64,41 @@ body {
 .root {
   isolation: isolate;
 }
+
+/* ── 3D Viewer loading animations ── */
+@keyframes insole-shimmer {
+  0% { opacity: 0.15; transform: scale(0.97); }
+  50% { opacity: 0.35; transform: scale(1.02); }
+  100% { opacity: 0.15; transform: scale(0.97); }
+}
+
+@keyframes orbit-dot {
+  0% { transform: rotate(0deg) translateX(28px) rotate(0deg); }
+  100% { transform: rotate(360deg) translateX(28px) rotate(-360deg); }
+}
+
+@keyframes fade-in-up {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes progress-indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+.animate-insole-shimmer {
+  animation: insole-shimmer 2.4s ease-in-out infinite;
+}
+
+.animate-orbit-dot {
+  animation: orbit-dot 1.8s linear infinite;
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.4s ease-out both;
+}
+
+.animate-progress-indeterminate {
+  animation: progress-indeterminate 1.5s ease-in-out infinite;
+}
