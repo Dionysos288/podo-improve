@@ -15,6 +15,7 @@ import { GeneratedInsoleOverlay } from '@/src/shared/components/design/Generated
 import {
 	DEFAULT_TRIMLINE_ADJUSTMENTS,
 	type TrimlineAdjustments,
+	type TrimlineHandleProfile,
 } from '@/src/shared/components/design/TrimlineEditOverlay';
 import {
 	BoxEditToolsOverlay,
@@ -803,6 +804,14 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		left: { ...DEFAULT_TRIMLINE_ADJUSTMENTS },
 		right: { ...DEFAULT_TRIMLINE_ADJUSTMENTS },
 	});
+	const [trimlineHandleProfiles, setTrimlineHandleProfiles] = useState<{
+		left: TrimlineHandleProfile | null;
+		right: TrimlineHandleProfile | null;
+	}>({ left: null, right: null });
+	const [pendingTrimlineHandleProfiles, setPendingTrimlineHandleProfiles] = useState<{
+		left: TrimlineHandleProfile | null;
+		right: TrimlineHandleProfile | null;
+	}>({ left: null, right: null });
 	const toggleCorrection = useCallback((key: CorrectionKey) => {
 		setActiveCorrections((prev) => {
 			const has = prev.includes(key);
@@ -914,6 +923,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			printerSettings,
 			boxEnabled,
 			trimlineAdjustments,
+			trimlineHandleProfiles,
 			activeDesignStep,
 			elementsModalSide,
 			workflowStep,
@@ -943,6 +953,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				if (cs.printerSettings !== undefined) setPrinterSettings(cs.printerSettings as PrinterSettings);
 				if (cs.boxEnabled !== undefined) setBoxEnabled(cs.boxEnabled as typeof boxEnabled);
 				if (cs.trimlineAdjustments !== undefined) setTrimlineAdjustments(cs.trimlineAdjustments as typeof trimlineAdjustments);
+				if (cs.trimlineHandleProfiles !== undefined) setTrimlineHandleProfiles(cs.trimlineHandleProfiles as typeof trimlineHandleProfiles);
 				if (cs.activeDesignStep !== undefined) setActiveDesignStep(cs.activeDesignStep as number);
 				if (cs.elementsModalSide !== undefined) setElementsModalSide(cs.elementsModalSide as 'left' | 'right');
 				if (cs.workflowStep !== undefined) setWorkflowStep(cs.workflowStep as WorkflowStep);
@@ -969,7 +980,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		productionMethod, selectedPairId, selectedLeftScanId, selectedRightScanId,
 		selectedBaseSTL, corrections, activeCorrections, savedBottomText,
 		step3Left, step3Right, printerSettings,
-		boxEnabled, trimlineAdjustments, activeDesignStep, elementsModalSide,
+		boxEnabled, trimlineAdjustments, trimlineHandleProfiles, activeDesignStep, elementsModalSide,
 		workflowStep, scansActive, showOverlays, hardnessProfiles,
 	]);
 	
@@ -2717,11 +2728,18 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								rightPlacedElements={rightPlacedElements}
 								evaBlockMode={isEvaMethod}
 								trimlineAdjustments={trimlineAdjustments}
+								trimlineHandleProfiles={trimlineHandleProfiles}
 								trimlineEditSide={trimlineEditSide}
 								onPendingTrimlineChange={(side: 'left' | 'right', adj: TrimlineAdjustments) =>
 									setPendingTrimlineAdj((prev) => ({
 										...prev,
 										[side]: adj,
+									}))
+								}
+								onPendingTrimlineProfileChange={(side, profile) =>
+									setPendingTrimlineHandleProfiles((prev) => ({
+										...prev,
+										[side]: profile,
 									}))
 								}
 							/>
@@ -2787,6 +2805,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									onTrimlineEdit={(side) => {
 										setTrimlineEditSide(side);
 										setPendingTrimlineAdj({ ...trimlineAdjustments });
+										setPendingTrimlineHandleProfiles({ ...trimlineHandleProfiles });
 										setViewerViewPreset('top');
 									}}
 									className="absolute left-6 bottom-6 z-20"
@@ -2806,7 +2825,17 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										</div>
 										<button
 											type="button"
-											onClick={() => setTrimlineEditSide(null)}
+											onClick={() => {
+												setPendingTrimlineAdj((prev) => ({
+													...prev,
+													[trimlineEditSide]: { ...trimlineAdjustments[trimlineEditSide] },
+												}));
+												setPendingTrimlineHandleProfiles((prev) => ({
+													...prev,
+													[trimlineEditSide]: trimlineHandleProfiles[trimlineEditSide],
+												}));
+												setTrimlineEditSide(null);
+											}}
 											className="rounded-lg border border-(--ui-border) px-2.5 py-1 text-xs text-(--ui-muted) transition hover:bg-[rgba(255,255,255,0.08)] hover:text-(--ui-text)"
 										>
 											Sluiten
@@ -2840,10 +2869,13 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 											type="button"
 											onClick={() => {
 												setTrimlineAdjustments({ ...pendingTrimlineAdj });
+												setTrimlineHandleProfiles({ ...pendingTrimlineHandleProfiles });
 											}}
 											disabled={
 												JSON.stringify(pendingTrimlineAdj[trimlineEditSide]) ===
-												JSON.stringify(trimlineAdjustments[trimlineEditSide])
+												JSON.stringify(trimlineAdjustments[trimlineEditSide]) &&
+												JSON.stringify(pendingTrimlineHandleProfiles[trimlineEditSide]) ===
+												JSON.stringify(trimlineHandleProfiles[trimlineEditSide])
 											}
 											className="flex-1 rounded-lg bg-[#56f2d6] px-3 py-2 text-xs font-semibold text-gray-900 transition hover:bg-[#3ddbb8] disabled:opacity-30 disabled:cursor-not-allowed"
 										>
@@ -2856,6 +2888,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 													const reset = { global: 0, heel: 0, midfoot: 0, forefoot: 0, toe: 0 };
 													setTrimlineAdjustments((prev) => ({ ...prev, [trimlineEditSide!]: reset }));
 													setPendingTrimlineAdj((prev) => ({ ...prev, [trimlineEditSide!]: reset }));
+													setTrimlineHandleProfiles((prev) => ({ ...prev, [trimlineEditSide!]: null }));
+													setPendingTrimlineHandleProfiles((prev) => ({ ...prev, [trimlineEditSide!]: null }));
 												}}
 												className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.04)] px-3 py-2 text-xs text-(--ui-muted) transition hover:bg-[rgba(255,255,255,0.08)] hover:text-(--ui-text)"
 											>

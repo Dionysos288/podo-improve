@@ -28,7 +28,10 @@ import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpP
 import type { CorrectionKey } from '@/src/shared/components/design/correctionsCatalog';
 import type { PlacedElement } from '@/src/features/design/elements/types';
 import { applyElements, applyElementColors, buildElementOverlayGeometries, getElementByKey, type ElementOverlayData } from '@/src/features/design/elements';
-import type { TrimlineAdjustments } from '@/src/shared/components/design/TrimlineEditOverlay';
+import type {
+	TrimlineAdjustments,
+	TrimlineHandleProfile,
+} from '@/src/shared/components/design/TrimlineEditOverlay';
 import { InteractiveTrimline } from './InteractiveTrimline';
 import { InteractiveBoxGrid, applyBoxGridDeformation, type BoxGridPoint } from './InteractiveBoxGrid';
 
@@ -42,6 +45,7 @@ interface STLMeshProps {
 	targetTrimlineProfile?: TrimlineProfile | null;
 	trimlineOffsetMm?: number;
 	trimlineAdjustments?: TrimlineAdjustments;
+	trimlineHandleProfile?: TrimlineHandleProfile | null;
 	interactive?: boolean;
 	rotationOffset?: [number, number, number];
 	opacity?: number;
@@ -1450,6 +1454,7 @@ function STLMesh({
 	targetTrimlineProfile = null,
 	trimlineOffsetMm = 3,
 	trimlineAdjustments,
+	trimlineHandleProfile,
 	interactive = true,
 	rotationOffset = [0, 0, 0],
 	opacity,
@@ -1759,7 +1764,7 @@ function STLMesh({
 					return widthValue + symmetricToeShift + halluxShift + medialHeelShift;
 				};
 
-				const sampleTrimHalfWidth = (t: number) => {
+				const sampleBaseTrimHalfWidth = (t: number) => {
 					const arr = targetTrimlineProfile.halfWidthsWorld;
 					const tt = Math.max(0, Math.min(1, t));
 					const x = tt * (arr.length - 1);
@@ -1767,9 +1772,39 @@ function STLMesh({
 					const i1 = Math.min(arr.length - 1, i0 + 1);
 					const a = arr[i0];
 					const b = arr[i1];
-					const baseHalf = a + (b - a) * (x - i0) + trimOffsetWorld;
+					return a + (b - a) * (x - i0) + trimOffsetWorld;
+				};
+
+				const hasTrimlineHandleProfile =
+					!!trimlineHandleProfile &&
+					trimlineHandleProfile.bins > 1 &&
+					trimlineHandleProfile.rightOffsetsMm.length > 1 &&
+					trimlineHandleProfile.leftOffsetsMm.length > 1;
+				const sampleHandleOffsetWorld = (t: number, widthSign: number) => {
+					if (!hasTrimlineHandleProfile) return 0;
+					const source = widthSign >= 0
+						? trimlineHandleProfile.rightOffsetsMm
+						: trimlineHandleProfile.leftOffsetsMm;
+					const tt = Math.max(0, Math.min(1, t));
+					const x = tt * (source.length - 1);
+					const i0 = Math.floor(x);
+					const i1 = Math.min(source.length - 1, i0 + 1);
+					const mm = source[i0] + (source[i1] - source[i0]) * (x - i0);
+					return mm * nextMmToWorld;
+				};
+				const sampleCenterlineTrimDeltaWorld = (t: number) => {
+					if (hasTrimlineHandleProfile) {
+						return (sampleHandleOffsetWorld(t, 1) + sampleHandleOffsetWorld(t, -1)) * 0.5;
+					}
+					return sampleTrimHalfWidth(t) - sampleBaseTrimHalfWidth(t);
+				};
+
+				const sampleTrimHalfWidth = (t: number) => {
+					const tt = Math.max(0, Math.min(1, t));
+					const baseHalf = sampleBaseTrimHalfWidth(t);
 
 					// Apply per-region trimline adjustments with smooth blending
+					if (hasTrimlineHandleProfile) return baseHalf;
 					if (!trimlineAdjustments) return baseHalf;
 					const { heel, midfoot, forefoot, toe } = trimlineAdjustments;
 					// Region boundaries: heel [0, 0.25], midfoot [0.25, 0.55], forefoot [0.55, 0.82], toe [0.82, 1]
@@ -1962,6 +1997,81 @@ function STLMesh({
 					else if (widthAxis === 'y') posAttr.setY(i, wNext);
 					else posAttr.setZ(i, wNext);
 				}
+
+				const hasTrimlineDelta = !!trimlineAdjustments && (
+					Math.abs(trimlineAdjustments.global ?? 0) > 1e-6 ||
+					Math.abs(trimlineAdjustments.heel ?? 0) > 1e-6 ||
+					Math.abs(trimlineAdjustments.midfoot ?? 0) > 1e-6 ||
+					Math.abs(trimlineAdjustments.forefoot ?? 0) > 1e-6 ||
+					Math.abs(trimlineAdjustments.toe ?? 0) > 1e-6
+				);
+				if (hasTrimlineHandleProfile) {
+					for (let i = 0; i < posAttr.count; i++) {
+						const x = posAttr.getX(i);
+						const y = posAttr.getY(i);
+						const z = posAttr.getZ(i);
+						const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
+						const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
+						const tLen = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
+						const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
+						const dist = wVal - centerW;
+						const absDist = Math.abs(dist);
+						if (absDist < 1e-6) continue;
+						const sourceHalf = Math.max(1e-6, sampleCurrentHalfWidth(tLen));
+						const edgeBlend = smoothstep(0.18, 0.98, Math.min(1, absDist / sourceHalf));
+						const nextAbs = Math.max(0, absDist + sampleHandleOffsetWorld(tLen, dist >= 0 ? 1 : -1) * edgeBlend);
+						const wNext = centerW + (dist >= 0 ? 1 : -1) * nextAbs;
+						if (widthAxis === 'x') posAttr.setX(i, wNext);
+						else if (widthAxis === 'y') posAttr.setY(i, wNext);
+						else posAttr.setZ(i, wNext);
+					}
+				} else if (hasTrimlineDelta) {
+					for (let i = 0; i < posAttr.count; i++) {
+						const x = posAttr.getX(i);
+						const y = posAttr.getY(i);
+						const z = posAttr.getZ(i);
+						const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
+						const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
+						const tLen = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
+						const trimDeltaHalf = sampleTrimHalfWidth(tLen) - sampleBaseTrimHalfWidth(tLen);
+						if (Math.abs(trimDeltaHalf) < 1e-6) continue;
+						const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
+						const dist = wVal - centerW;
+						const absDist = Math.abs(dist);
+						if (absDist < 1e-6) continue;
+						const sourceHalf = Math.max(1e-6, sampleCurrentHalfWidth(tLen));
+						const edgeBlend = smoothstep(0.18, 0.98, Math.min(1, absDist / sourceHalf));
+						const nextAbs = Math.max(0, absDist + trimDeltaHalf * edgeBlend);
+						const wNext = centerW + (dist >= 0 ? 1 : -1) * nextAbs;
+						if (widthAxis === 'x') posAttr.setX(i, wNext);
+						else if (widthAxis === 'y') posAttr.setY(i, wNext);
+						else posAttr.setZ(i, wNext);
+					}
+				}
+
+				for (let i = 0; i < posAttr.count; i++) {
+					const x = posAttr.getX(i);
+					const y = posAttr.getY(i);
+					const z = posAttr.getZ(i);
+					const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
+					const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
+					const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
+					const tLen = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
+					const sourceHalf = Math.max(1e-6, sampleCurrentHalfWidth(tLen));
+					const centerBlend = 1 - smoothstep(0.08, 0.42, Math.min(1, Math.abs(wVal - centerW) / sourceHalf));
+					if (centerBlend <= 1e-6) continue;
+					const heelWeight = (1 - smoothstep(0.02, 0.16, tLen)) * centerBlend;
+					const toeWeight = smoothstep(0.84, 0.995, tLen) * centerBlend;
+					if (heelWeight <= 1e-6 && toeWeight <= 1e-6) continue;
+					const tipDelta = sampleCenterlineTrimDeltaWorld(tLen);
+					if (Math.abs(tipDelta) < 1e-6) continue;
+					const heelDir = heelAtMin ? -1 : 1;
+					const toeDir = heelAtMin ? 1 : -1;
+					const nextLen = lenVal + tipDelta * heelWeight * heelDir + tipDelta * toeWeight * toeDir;
+					if (lengthAxis === 'x') posAttr.setX(i, nextLen);
+					else if (lengthAxis === 'y') posAttr.setY(i, nextLen);
+					else posAttr.setZ(i, nextLen);
+				}
 				posAttr.needsUpdate = true;
 			} else if (
 				typeof targetForefootWidthMm === 'number' &&
@@ -2082,6 +2192,162 @@ function STLMesh({
 				}
 			}
 
+			const hasTrimlineHandleProfile =
+				!!trimlineHandleProfile &&
+				trimlineHandleProfile.bins > 1 &&
+				trimlineHandleProfile.rightOffsetsMm.length > 1 &&
+				trimlineHandleProfile.leftOffsetsMm.length > 1;
+			const hasTrimlineRegionAdjustments =
+				!!trimlineAdjustments && (
+					Math.abs(trimlineAdjustments.global ?? 0) > 1e-6 ||
+					Math.abs(trimlineAdjustments.heel ?? 0) > 1e-6 ||
+					Math.abs(trimlineAdjustments.midfoot ?? 0) > 1e-6 ||
+					Math.abs(trimlineAdjustments.forefoot ?? 0) > 1e-6 ||
+					Math.abs(trimlineAdjustments.toe ?? 0) > 1e-6
+				);
+
+			if (
+				(hasTrimlineHandleProfile || hasTrimlineRegionAdjustments) &&
+				(!targetTrimlineProfile || targetTrimlineProfile.halfWidthsWorld.length <= 1)
+			) {
+				const centerW =
+					widthAxis === 'x'
+						? (bbox.min.x + bbox.max.x) * 0.5
+						: widthAxis === 'y'
+							? (bbox.min.y + bbox.max.y) * 0.5
+							: (bbox.min.z + bbox.max.z) * 0.5;
+				const bins = 96;
+				const currentHalfW = new Float32Array(bins).fill(0);
+				const binHits = new Uint16Array(bins);
+
+				for (let i = 0; i < posAttr.count; i++) {
+					const x = posAttr.getX(i);
+					const y = posAttr.getY(i);
+					const z = posAttr.getZ(i);
+					const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
+					const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
+					const t = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
+					const idx = Math.min(bins - 1, Math.max(0, Math.round(t * (bins - 1))));
+					const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
+					const halfW = Math.abs(wVal - centerW);
+					if (halfW > currentHalfW[idx]) currentHalfW[idx] = halfW;
+					binHits[idx]++;
+				}
+
+				for (let i = 0; i < bins; i++) {
+					if (binHits[i] > 0) continue;
+					let l = i - 1;
+					while (l >= 0 && binHits[l] === 0) l--;
+					let r = i + 1;
+					while (r < bins && binHits[r] === 0) r++;
+					if (l >= 0 && r < bins) currentHalfW[i] = (currentHalfW[l] + currentHalfW[r]) * 0.5;
+					else if (l >= 0) currentHalfW[i] = currentHalfW[l];
+					else if (r < bins) currentHalfW[i] = currentHalfW[r];
+				}
+
+				const smoothedCurrent = new Float32Array(bins);
+				for (let i = 0; i < bins; i++) {
+					const a = currentHalfW[Math.max(0, i - 2)];
+					const b = currentHalfW[Math.max(0, i - 1)];
+					const c = currentHalfW[i];
+					const d = currentHalfW[Math.min(bins - 1, i + 1)];
+					const e = currentHalfW[Math.min(bins - 1, i + 2)];
+					smoothedCurrent[i] = a * 0.1 + b * 0.2 + c * 0.4 + d * 0.2 + e * 0.1;
+				}
+
+				const sampleCurrentHalfWidth = (t: number) => {
+					const tt = Math.max(0, Math.min(1, t));
+					const x = tt * (bins - 1);
+					const i0 = Math.floor(x);
+					const i1 = Math.min(bins - 1, i0 + 1);
+					return smoothedCurrent[i0] + (smoothedCurrent[i1] - smoothedCurrent[i0]) * (x - i0);
+				};
+
+				const sampleRegionOffsetWorld = (t: number) => {
+					const tt = Math.max(0, Math.min(1, t));
+					const ss = (e0: number, e1: number, v: number) => {
+						const c = Math.max(0, Math.min(1, (v - e0) / Math.max(1e-6, e1 - e0)));
+						return c * c * (3 - 2 * c);
+					};
+					const heelW = 1 - ss(0.22, 0.28, tt);
+					const midW = ss(0.22, 0.28, tt) * (1 - ss(0.52, 0.58, tt));
+					const foreW = ss(0.52, 0.58, tt) * (1 - ss(0.79, 0.85, tt));
+					const toeW = ss(0.79, 0.85, tt);
+					const regionMm =
+						(trimlineAdjustments?.global ?? 0) +
+						(trimlineAdjustments?.heel ?? 0) * heelW +
+						(trimlineAdjustments?.midfoot ?? 0) * midW +
+						(trimlineAdjustments?.forefoot ?? 0) * foreW +
+						(trimlineAdjustments?.toe ?? 0) * toeW;
+					return regionMm * nextMmToWorld;
+				};
+				const sampleHandleOffsetWorld = (t: number, widthSign: number) => {
+					if (!hasTrimlineHandleProfile) return 0;
+					const source = widthSign >= 0
+						? trimlineHandleProfile.rightOffsetsMm
+						: trimlineHandleProfile.leftOffsetsMm;
+					const tt = Math.max(0, Math.min(1, t));
+					const x = tt * (source.length - 1);
+					const i0 = Math.floor(x);
+					const i1 = Math.min(source.length - 1, i0 + 1);
+					const mm = source[i0] + (source[i1] - source[i0]) * (x - i0);
+					return mm * nextMmToWorld;
+				};
+				const sampleCenterlineTrimDeltaWorld = (t: number) => {
+					if (hasTrimlineHandleProfile) {
+						return (sampleHandleOffsetWorld(t, 1) + sampleHandleOffsetWorld(t, -1)) * 0.5;
+					}
+					return sampleRegionOffsetWorld(t);
+				};
+
+				for (let i = 0; i < posAttr.count; i++) {
+					const x = posAttr.getX(i);
+					const y = posAttr.getY(i);
+					const z = posAttr.getZ(i);
+					const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
+					const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
+					const tLen = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
+					const baseHalfW = Math.max(1e-6, sampleCurrentHalfWidth(tLen));
+					const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
+					const dist = wVal - centerW;
+					if (Math.abs(dist) < 1e-6) continue;
+					const sign = dist > 0 ? 1 : -1;
+					const targetHalfW = hasTrimlineHandleProfile
+						? Math.max(0.5 * nextMmToWorld, baseHalfW + sampleHandleOffsetWorld(tLen, sign))
+						: Math.max(0.5 * nextMmToWorld, baseHalfW + sampleRegionOffsetWorld(tLen));
+					const scaledAbs = Math.abs(dist) * (targetHalfW / baseHalfW);
+					const wNext = centerW + sign * scaledAbs;
+					if (widthAxis === 'x') posAttr.setX(i, wNext);
+					else if (widthAxis === 'y') posAttr.setY(i, wNext);
+					else posAttr.setZ(i, wNext);
+				}
+
+				for (let i = 0; i < posAttr.count; i++) {
+					const x = posAttr.getX(i);
+					const y = posAttr.getY(i);
+					const z = posAttr.getZ(i);
+					const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
+					const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
+					const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
+					const tLen = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
+					const sourceHalf = Math.max(1e-6, sampleCurrentHalfWidth(tLen));
+					const centerBlend = 1 - smoothstep(0.08, 0.42, Math.min(1, Math.abs(wVal - centerW) / sourceHalf));
+					if (centerBlend <= 1e-6) continue;
+					const heelWeight = (1 - smoothstep(0.02, 0.16, tLen)) * centerBlend;
+					const toeWeight = smoothstep(0.84, 0.995, tLen) * centerBlend;
+					if (heelWeight <= 1e-6 && toeWeight <= 1e-6) continue;
+					const tipDelta = sampleCenterlineTrimDeltaWorld(tLen);
+					if (Math.abs(tipDelta) < 1e-6) continue;
+					const heelDir = heelAtMin ? -1 : 1;
+					const toeDir = heelAtMin ? 1 : -1;
+					const nextLen = lenVal + tipDelta * heelWeight * heelDir + tipDelta * toeWeight * toeDir;
+					if (lengthAxis === 'x') posAttr.setX(i, nextLen);
+					else if (lengthAxis === 'y') posAttr.setY(i, nextLen);
+					else posAttr.setZ(i, nextLen);
+				}
+				posAttr.needsUpdate = true;
+			}
+
 			// Sole thickness + rim height are applied later as a fast post-step so slider edits blend smoothly.
 		}
 
@@ -2107,6 +2373,7 @@ function STLMesh({
 		targetTrimlineProfile,
 		trimlineOffsetMm,
 		trimlineAdjustments,
+		trimlineHandleProfile,
 	]);
 
 	// Create a working geometry that includes corrections
@@ -2801,6 +3068,7 @@ interface EnhancedSTLViewerProps {
 	targetForefootWidthMm?: { left: number | null; right: number | null };
 	trimlineOffsetMm?: number;
 	trimlineAdjustments?: { left: TrimlineAdjustments; right: TrimlineAdjustments };
+	trimlineHandleProfiles?: { left: TrimlineHandleProfile | null; right: TrimlineHandleProfile | null };
 	showGrid?: boolean;
 	showBasePreview?: boolean;
 	lockTopView?: boolean;
@@ -2856,6 +3124,7 @@ interface EnhancedSTLViewerProps {
 	trimlineEditSide?: 'left' | 'right' | null;
 	/** Callback when user drags a trimline handle (pending only — not yet committed) */
 	onPendingTrimlineChange?: (side: 'left' | 'right', adj: TrimlineAdjustments) => void;
+	onPendingTrimlineProfileChange?: (side: 'left' | 'right', profile: TrimlineHandleProfile) => void;
 }
 
 function BaseInsolePreview({
@@ -2960,8 +3229,10 @@ export const EnhancedSTLViewer = forwardRef<
 			rightPlacedElements,
 			evaBlockMode = false,
 			trimlineAdjustments,
+			trimlineHandleProfiles,
 			trimlineEditSide = null,
 			onPendingTrimlineChange,
+			onPendingTrimlineProfileChange,
 		},
 		ref
 	) => {
@@ -3724,6 +3995,7 @@ export const EnhancedSTLViewer = forwardRef<
 									targetTrimlineProfile={!pointPickMode ? leftTrimlineProfile : null}
 									trimlineOffsetMm={trimlineOffsetMm}
 									trimlineAdjustments={trimlineAdjustments?.left}
+									trimlineHandleProfile={trimlineHandleProfiles?.left ?? null}
 									color={leftOverlayUrl || rightOverlayUrl ? '#cfe9ff' : '#d7dadd'}
 									position={[-30, 0, 0]}
 									onGeometryReady={(geom, meta) => {
@@ -3773,6 +4045,7 @@ export const EnhancedSTLViewer = forwardRef<
 									targetTrimlineProfile={!pointPickMode ? rightTrimlineProfile : null}
 									trimlineOffsetMm={trimlineOffsetMm}
 									trimlineAdjustments={trimlineAdjustments?.right}
+									trimlineHandleProfile={trimlineHandleProfiles?.right ?? null}
 									color={leftOverlayUrl || rightOverlayUrl ? '#cfe9ff' : '#d7dadd'}
 									position={[30, 0, 0]}
 									onGeometryReady={(geom, meta) => {
@@ -3895,6 +4168,8 @@ export const EnhancedSTLViewer = forwardRef<
 									insoleGeometry={leftGeometry}
 									adjustments={trimlineAdjustments?.left ?? { global: 0, heel: 0, midfoot: 0, forefoot: 0, toe: 0 }}
 									onPendingChange={(adj: TrimlineAdjustments) => onPendingTrimlineChange?.('left', adj)}
+									onPendingProfileChange={(profile) => onPendingTrimlineProfileChange?.('left', profile)}
+									profile={trimlineHandleProfiles?.left ?? null}
 									side="left"
 									mmToWorld={leftMmToWorld || MM_TO_WORLD}
 									active={true}
@@ -3908,6 +4183,8 @@ export const EnhancedSTLViewer = forwardRef<
 									insoleGeometry={rightGeometry}
 									adjustments={trimlineAdjustments?.right ?? { global: 0, heel: 0, midfoot: 0, forefoot: 0, toe: 0 }}
 									onPendingChange={(adj: TrimlineAdjustments) => onPendingTrimlineChange?.('right', adj)}
+									onPendingProfileChange={(profile) => onPendingTrimlineProfileChange?.('right', profile)}
+									profile={trimlineHandleProfiles?.right ?? null}
 									side="right"
 									mmToWorld={rightMmToWorld || MM_TO_WORLD}
 									active={true}

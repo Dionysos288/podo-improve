@@ -3,7 +3,10 @@
 import { useRef, useMemo, useState, useCallback, useEffect } from 'react';
 import { useThree, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import type { TrimlineAdjustments } from '@/src/shared/components/design/TrimlineEditOverlay';
+import type {
+	TrimlineAdjustments,
+	TrimlineHandleProfile,
+} from '@/src/shared/components/design/TrimlineEditOverlay';
 
 // ── Types ──────────────────────────────────────────────────────────────
 type RegionKey = 'heel' | 'midfoot' | 'forefoot' | 'toe';
@@ -68,6 +71,19 @@ function handleOffsetsToAdjustments(
 		midfoot: snap(regionWeight.midfoot > 0.01 ? regionSum.midfoot / regionWeight.midfoot : base.midfoot),
 		forefoot: snap(regionWeight.forefoot > 0.01 ? regionSum.forefoot / regionWeight.forefoot : base.forefoot),
 		toe: snap(regionWeight.toe > 0.01 ? regionSum.toe / regionWeight.toe : base.toe),
+	};
+}
+
+function buildHandleProfile(
+	offsets: Float32Array,
+	tValues: Float32Array,
+	bins: number,
+): TrimlineHandleProfile {
+	return {
+		bins,
+		tValues: Array.from(tValues.slice(0, bins)),
+		rightOffsetsMm: Array.from(offsets.slice(0, bins)),
+		leftOffsetsMm: Array.from(offsets.slice(bins, bins * 2)),
 	};
 }
 
@@ -436,6 +452,8 @@ interface InteractiveTrimlineProps {
 	insoleGeometry: THREE.BufferGeometry | null;
 	adjustments: TrimlineAdjustments;
 	onPendingChange: (adj: TrimlineAdjustments) => void;
+	onPendingProfileChange?: (profile: TrimlineHandleProfile) => void;
+	profile?: TrimlineHandleProfile | null;
 	side: 'left' | 'right';
 	mmToWorld: number;
 	active: boolean;
@@ -444,6 +462,20 @@ interface InteractiveTrimlineProps {
 const HANDLE_RADIUS = 0.45;
 const HANDLE_RADIUS_HOVER = 0.65;
 
+function getEndpointPair(idx: number, bins: number): number[] {
+	if (idx === 0 || idx === bins) return [0, bins];
+	if (idx === bins - 1 || idx === bins * 2 - 1) return [bins - 1, bins * 2 - 1];
+	return [idx];
+}
+
+function expandEndpointSelection(indices: number[], bins: number): number[] {
+	const expanded = new Set<number>();
+	for (const idx of indices) {
+		for (const paired of getEndpointPair(idx, bins)) expanded.add(paired);
+	}
+	return Array.from(expanded);
+}
+
 /** Shared geometry for all handles — created once */
 const _sphereGeo = new THREE.SphereGeometry(1, 8, 6);
 
@@ -451,6 +483,8 @@ export function InteractiveTrimline({
 	insoleGeometry,
 	adjustments,
 	onPendingChange,
+	onPendingProfileChange,
+	profile,
 	mmToWorld,
 	active,
 }: InteractiveTrimlineProps) {
@@ -475,6 +509,9 @@ export function InteractiveTrimline({
 	// Serialize adjustments values so the effect only fires when actual
 	// numeric values change — not when the parent passes a new object ref.
 	const adjKey = `${adjustments.global},${adjustments.heel},${adjustments.midfoot},${adjustments.forefoot},${adjustments.toe}`;
+	const profileKey = profile
+		? `${profile.bins}|${profile.rightOffsetsMm.join(',')}|${profile.leftOffsetsMm.join(',')}`
+		: '';
 
 	// Initialize offsets from adjustments when contour or committed adjustments change
 	useEffect(() => {
@@ -482,9 +519,21 @@ export function InteractiveTrimline({
 		const n = contour.bins * 2;
 		const offsets = new Float32Array(n);
 		const tVals = new Float32Array(n);
+		const canUseProfile =
+			!!profile &&
+			profile.bins === contour.bins &&
+			profile.rightOffsetsMm.length === contour.bins &&
+			profile.leftOffsetsMm.length === contour.bins;
 
 		for (let i = 0; i < contour.bins; i++) {
 			const t = contour.tValues[i];
+			tVals[i] = t;
+			tVals[i + contour.bins] = t;
+			if (canUseProfile) {
+				offsets[i] = profile.rightOffsetsMm[i] ?? 0;
+				offsets[i + contour.bins] = profile.leftOffsetsMm[i] ?? 0;
+				continue;
+			}
 			const w = regionWeights(t);
 			const adj =
 				adjustments.heel * w.heel +
@@ -493,15 +542,13 @@ export function InteractiveTrimline({
 				adjustments.toe * w.toe;
 			offsets[i] = adj; // right side
 			offsets[i + contour.bins] = adj; // left side
-			tVals[i] = t;
-			tVals[i + contour.bins] = t;
 		}
 		offsetsRef.current = offsets;
 		tValuesRef.current = tVals;
 		// Force initial instance update
 		needsInstanceUpdate.current = true;
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [contour, adjKey]);
+	}, [contour, adjKey, profileKey]);
 
 	// ── Selection / hover state ──
 	const [hoveredIdx, setHoveredIdx] = useState<number>(-1);
@@ -525,6 +572,36 @@ export function InteractiveTrimline({
 
 	const needsInstanceUpdate = useRef(true);
 
+	const hiddenHandleSet = useMemo(() => {
+		if (!contour) return new Set<number>();
+		return new Set<number>([contour.bins, contour.bins * 2 - 1]);
+	}, [contour]);
+
+	const getSharedEndpointPosition = useCallback((endpoint: 0 | 1) => {
+		if (!contour) return null;
+		const { bins, rightPos, leftPos, rightNormals, leftNormals } = contour;
+		const pointIdx = endpoint === 0 ? 0 : bins - 1;
+		const ri = pointIdx * 3;
+		const leftIdx = pointIdx + bins;
+		const offsets = offsetsRef.current;
+		const rightOff = offsets.length > pointIdx ? offsets[pointIdx] * mmToWorld : 0;
+		const leftOff = offsets.length > leftIdx ? offsets[leftIdx] * mmToWorld : 0;
+		return new THREE.Vector3(
+			(
+				rightPos[ri + 0] + rightOff * rightNormals[ri + 0] +
+				leftPos[ri + 0] + leftOff * leftNormals[ri + 0]
+			) * 0.5,
+			(
+				rightPos[ri + 1] + rightOff * rightNormals[ri + 1] +
+				leftPos[ri + 1] + leftOff * leftNormals[ri + 1]
+			) * 0.5,
+			(
+				rightPos[ri + 2] + rightOff * rightNormals[ri + 2] +
+				leftPos[ri + 2] + leftOff * leftNormals[ri + 2]
+			) * 0.5,
+		);
+	}, [contour, mmToWorld]);
+
 	// ── Build outline geometry ──
 	const outlineGeo = useMemo(() => {
 		if (!contour) return null;
@@ -533,8 +610,11 @@ export function InteractiveTrimline({
 		const mm = mmToWorld;
 
 		const pts: THREE.Vector3[] = [];
-		// Right side: heel→toe
-		for (let i = 0; i < bins; i++) {
+		const heelShared = getSharedEndpointPosition(0);
+		const toeShared = getSharedEndpointPosition(1);
+		if (heelShared) pts.push(heelShared);
+		// Right side: heel→toe, skipping shared endpoints
+		for (let i = 1; i < bins - 1; i++) {
 			const ri = i * 3;
 			const off = offsets.length > i ? offsets[i] * mm : 0;
 			pts.push(new THREE.Vector3(
@@ -543,8 +623,9 @@ export function InteractiveTrimline({
 				rightPos[ri + 2] + off * rightNormals[ri + 2],
 			));
 		}
-		// Left side: toe→heel
-		for (let i = bins - 1; i >= 0; i--) {
+		if (toeShared) pts.push(toeShared);
+		// Left side: toe→heel, skipping shared endpoints
+		for (let i = bins - 2; i >= 1; i--) {
 			const ri = i * 3;
 			const off = offsets.length > i + bins ? offsets[i + bins] * mm : 0;
 			pts.push(new THREE.Vector3(
@@ -557,7 +638,7 @@ export function InteractiveTrimline({
 		return new THREE.BufferGeometry().setFromPoints(pts);
 		// We deliberately only include selectedVersion so outline re-renders after drag
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [contour, mmToWorld, selectedVersion, isDragging]);
+	}, [contour, mmToWorld, selectedVersion, isDragging, getSharedEndpointPosition]);
 
 	// ── Update instanced mesh transforms + colors every frame ──
 	const _mat4 = useMemo(() => new THREE.Matrix4(), []);
@@ -578,10 +659,20 @@ export function InteractiveTrimline({
 
 			// Right side handle (index i)
 			{
-				const off = offsets.length > i ? offsets[i] * mm : 0;
-				const px = rightPos[ri + 0] + off * rightNormals[ri + 0];
-				const py = rightPos[ri + 1] + off * rightNormals[ri + 1];
-				const pz = rightPos[ri + 2] + off * rightNormals[ri + 2];
+				let px: number;
+				let py: number;
+				let pz: number;
+				if (i === 0 || i === bins - 1) {
+					const shared = getSharedEndpointPosition(i === 0 ? 0 : 1);
+					px = shared?.x ?? rightPos[ri + 0];
+					py = shared?.y ?? rightPos[ri + 1];
+					pz = shared?.z ?? rightPos[ri + 2];
+				} else {
+					const off = offsets.length > i ? offsets[i] * mm : 0;
+					px = rightPos[ri + 0] + off * rightNormals[ri + 0];
+					py = rightPos[ri + 1] + off * rightNormals[ri + 1];
+					pz = rightPos[ri + 2] + off * rightNormals[ri + 2];
+				}
 				const r = (hoveredIdx === i) ? HANDLE_RADIUS_HOVER : HANDLE_RADIUS;
 				_mat4.makeScale(r, r, r).setPosition(px, py, pz);
 				inst.setMatrixAt(i, _mat4);
@@ -599,6 +690,13 @@ export function InteractiveTrimline({
 			// Left side handle (index i + bins)
 			{
 				const li = i + bins;
+				if (hiddenHandleSet.has(li)) {
+					_mat4.makeScale(0.0001, 0.0001, 0.0001).setPosition(99999, 99999, 99999);
+					inst.setMatrixAt(li, _mat4);
+					_color.setRGB(0, 0, 0);
+					inst.setColorAt(li, _color);
+					continue;
+				}
 				const off = offsets.length > li ? offsets[li] * mm : 0;
 				const px = leftPos[ri + 0] + off * leftNormals[ri + 0];
 				const py = leftPos[ri + 1] + off * leftNormals[ri + 1];
@@ -620,7 +718,7 @@ export function InteractiveTrimline({
 
 		inst.instanceMatrix.needsUpdate = true;
 		if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
-	}, [contour, mmToWorld, hoveredIdx, _mat4, _color]);
+	}, [contour, mmToWorld, hoveredIdx, hiddenHandleSet, getSharedEndpointPosition, _mat4, _color]);
 
 	// Update every frame only when needed
 	useFrame(() => {
@@ -642,6 +740,8 @@ export function InteractiveTrimline({
 	mmRef.current = mmToWorld;
 	const onPendingRef = useRef(onPendingChange);
 	onPendingRef.current = onPendingChange;
+	const onPendingProfileRef = useRef(onPendingProfileChange);
+	onPendingProfileRef.current = onPendingProfileChange;
 	const contourRef = useRef(contour);
 	contourRef.current = contour;
 
@@ -652,6 +752,11 @@ export function InteractiveTrimline({
 			adjustments,
 		);
 		onPendingRef.current(adj);
+		if (contourRef.current && onPendingProfileRef.current) {
+			onPendingProfileRef.current(
+				buildHandleProfile(offsetsRef.current, tValuesRef.current, contourRef.current.bins)
+			);
+		}
 	}, [adjustments]);
 
 	// ── Pointer move (handle dragging OR box selection) ──
@@ -726,6 +831,7 @@ export function InteractiveTrimline({
 				// Only select if box is large enough (avoid accidental clicks)
 				if (Math.abs(x2 - x1) > 0.01 || Math.abs(y2 - y1) > 0.01) {
 					for (let i = 0; i < bins * 2; i++) {
+						if (hiddenHandleSet.has(i)) continue;
 						const m4 = new THREE.Matrix4();
 						instanceRef.current.getMatrixAt(i, m4);
 						_v.setFromMatrixPosition(m4);
@@ -750,7 +856,7 @@ export function InteractiveTrimline({
 			// Re-render outline with final positions
 			setSelectedVersion((v) => v + 1);
 		}
-	}, [gl]);
+	}, [gl, hiddenHandleSet]);
 
 	// ── Attach / detach native listeners ──
 	useEffect(() => {
@@ -802,10 +908,11 @@ export function InteractiveTrimline({
 			// ArrowRight = outward (+), ArrowLeft = inward (−)
 			const step = e.key === 'ArrowRight' ? 0.5 : -0.5;
 			const bins = contourRef.current?.bins ?? 0;
+			const indices = expandEndpointSelection(Array.from(sel), bins).filter((idx) => !hiddenHandleSet.has(idx));
 
 			const snapshot = offsetsRef.current.slice();
 			applyDeltaWithSmoothing(
-				offsetsRef.current, snapshot, Array.from(sel), step, bins, SMOOTH_RADIUS,
+				offsetsRef.current, snapshot, indices, step, bins, SMOOTH_RADIUS,
 			);
 
 			emitPending();
@@ -815,20 +922,23 @@ export function InteractiveTrimline({
 
 		window.addEventListener('keydown', onKeyDown);
 		return () => window.removeEventListener('keydown', onKeyDown);
-	}, [active, emitPending]);
+	}, [active, emitPending, hiddenHandleSet]);
 
 	// ── Nothing to render ──
 	if (!active || !contour || handleCount === 0) return null;
 
 	const startDrag = (handleIdx: number, screenX: number, screenY: number) => {
+		if (hiddenHandleSet.has(handleIdx)) return;
 		const sel = selectedSet.current;
 		const indices = sel.has(handleIdx) && sel.size > 1
 			? Array.from(sel)
 			: [handleIdx];
+		const visibleIndices = expandEndpointSelection(indices, contour?.bins ?? 0).filter((idx) => !hiddenHandleSet.has(idx));
+		if (visibleIndices.length === 0) return;
 
 		dragging.current = true;
 		setIsDragging(true);
-		dragHandleIndices.current = indices;
+		dragHandleIndices.current = visibleIndices;
 		dragStartOffsets.current = offsetsRef.current.slice();
 
 		// Record start NDC
@@ -888,6 +998,7 @@ export function InteractiveTrimline({
 					e.stopPropagation();
 					const idx = e.instanceId;
 					if (idx == null) return;
+					if (hiddenHandleSet.has(idx)) return;
 
 					// If holding shift, toggle selection
 					if (e.nativeEvent.shiftKey) {
@@ -909,7 +1020,7 @@ export function InteractiveTrimline({
 				onPointerMove={(e) => {
 					if (dragging.current) return;
 					const idx = e.instanceId;
-					if (idx != null && idx !== hoveredIdx) {
+					if (idx != null && !hiddenHandleSet.has(idx) && idx !== hoveredIdx) {
 						setHoveredIdx(idx);
 						gl.domElement.style.cursor = 'grab';
 					}

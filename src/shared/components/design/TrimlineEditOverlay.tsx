@@ -17,6 +17,13 @@ export interface TrimlineAdjustments {
 	toe: number;
 }
 
+export interface TrimlineHandleProfile {
+	bins: number;
+	tValues: number[];
+	rightOffsetsMm: number[];
+	leftOffsetsMm: number[];
+}
+
 export const DEFAULT_TRIMLINE_ADJUSTMENTS: TrimlineAdjustments = {
 	global: 0,
 	heel: 0,
