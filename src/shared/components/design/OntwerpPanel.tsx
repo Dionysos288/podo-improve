@@ -118,6 +118,9 @@ interface OntwerpPanelProps {
 	showZones?: boolean;
 	onShowZonesChange?: (show: boolean) => void;
 	activeCorrections?: CorrectionKey[];
+	soleWidthValueMm?: { left: number; right: number };
+	currentInsoleWidthMm?: { left: number | null; right: number | null };
+	onSoleWidthChange?: (side: 'left' | 'right', value: number) => void;
 }
 
 export function OntwerpPanel({
@@ -127,6 +130,9 @@ export function OntwerpPanel({
 	showZones = false,
 	onShowZonesChange,
 	activeCorrections,
+	soleWidthValueMm,
+	currentInsoleWidthMm,
+	onSoleWidthChange,
 }: OntwerpPanelProps) {
 	const [internalCorrections, setInternalCorrections] = useState<OntwerpCorrections>(createDefaultOntwerpCorrections());
 	const corrections = externalCorrections ?? internalCorrections;
@@ -662,25 +668,58 @@ export function OntwerpPanel({
 			{/* Zoolbreedte - Dual number input */}
 			{isActive('zoolbreedte') && (
 				<CollapsibleSection title="Zoolbreedte" defaultOpen={false}>
-				<DualNumberInput
-					label="Verbreding"
-					leftValue={corrections.zoolbreedte.left}
-					rightValue={corrections.zoolbreedte.right}
-					onLeftChange={(val) =>
-						updateCorrections({
-							zoolbreedte: { ...corrections.zoolbreedte, left: val },
-						})
-					}
-					onRightChange={(val) =>
-						updateCorrections({
-							zoolbreedte: { ...corrections.zoolbreedte, right: val },
-						})
-					}
-					min={0}
-					max={10}
-					step={0.5}
-					unit="mm"
-				/>
+				<div className="space-y-2">
+					<span className="text-sm text-ui-muted">Totale breedte</span>
+					<div className="flex items-center gap-4">
+						<div className="flex-1">
+							<span className="mb-1 block text-xs text-ui-muted">Links</span>
+							<StyledNumberField
+								value={soleWidthValueMm?.left ?? currentInsoleWidthMm?.left ?? 0}
+								onChange={(val) => {
+									if (onSoleWidthChange) {
+										onSoleWidthChange('left', val);
+										return;
+									}
+									updateCorrections({
+										zoolbreedte: { ...corrections.zoolbreedte, left: val },
+									});
+								}}
+								min={40}
+								max={160}
+								step={0.5}
+								unit="mm"
+							/>
+							<div className="mt-1 text-[11px] text-ui-muted">
+								Huidig: {(currentInsoleWidthMm?.left ?? soleWidthValueMm?.left ?? 0).toFixed(1)} mm
+							</div>
+						</div>
+						<div className="flex-1">
+							<span className="mb-1 block text-xs text-ui-muted">Rechts</span>
+							<StyledNumberField
+								value={soleWidthValueMm?.right ?? currentInsoleWidthMm?.right ?? 0}
+								onChange={(val) => {
+									if (onSoleWidthChange) {
+										onSoleWidthChange('right', val);
+										return;
+									}
+									updateCorrections({
+										zoolbreedte: { ...corrections.zoolbreedte, right: val },
+									});
+								}}
+								min={40}
+								max={160}
+								step={0.5}
+								unit="mm"
+							/>
+							<div className="mt-1 text-[11px] text-ui-muted">
+								Huidig: {(currentInsoleWidthMm?.right ?? soleWidthValueMm?.right ?? 0).toFixed(1)} mm
+							</div>
+						</div>
+					</div>
+					<p className="text-xs text-ui-muted">
+						Past de totale zoolbreedte dynamisch aan op basis van de actuele steunzoolbreedte.
+					</p>
+				</div>
 				</CollapsibleSection>
 			)}
 		</div>

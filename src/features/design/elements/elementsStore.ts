@@ -43,10 +43,15 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 		const item = getElementByKey(libraryKey);
 		if (!item) throw new Error(`Unknown element key: ${libraryKey}`);
 
-		const anchor = ANCHOR_POSITIONS[item.anchor] ?? { u: 0.5, v: 0.5 };
+		const anchor = item.defaultPosition ?? ANCHOR_POSITIONS[item.anchor] ?? { u: 0.5, v: 0.5 };
 
-		// Mirror V position for left foot (medial/lateral swap)
-		const v = side === 'left' ? anchor.v : 1 - anchor.v;
+		// Mirror V position for the left foot so right-side defaults can be authored once.
+		const v = side === 'right' ? anchor.v : 1 - anchor.v;
+		const rotationRad = item.defaultRotationRad
+			? side === 'left'
+				? item.defaultRotationRad
+				: -item.defaultRotationRad
+			: 0;
 
 		const newElement: PlacedElement = {
 			id: genId(),
@@ -60,7 +65,7 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 			split: false,
 			positionU: anchor.u,
 			positionV: v,
-			rotationRad: 0,
+			rotationRad,
 			scaleU: item.defaultScale?.[0] ?? 1,
 			scaleV: item.defaultScale?.[1] ?? 1,
 		};

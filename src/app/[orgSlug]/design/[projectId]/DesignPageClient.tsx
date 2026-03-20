@@ -18,11 +18,6 @@ import {
 	type TrimlineHandleProfile,
 } from '@/src/shared/components/design/TrimlineEditOverlay';
 import {
-	BoxEditToolsOverlay,
-	type BoxEditTool,
-} from '@/src/shared/components/design/BoxEditToolsOverlay';
-import { BoxEditConfirmOverlay } from '@/src/shared/components/design/BoxEditConfirmOverlay';
-import {
 	DirectProducePanel,
 	type PrinterSettings,
 } from '@/src/shared/components/design/DirectProducePanel';
@@ -73,6 +68,7 @@ import type {
 	EnhancedSTLViewerRef,
 	BottomTextOverlay,
 } from '@/src/features/design/components/EnhancedSTLViewer';
+import type { BoxGridSavedOffsets } from '@/src/features/design/components/InteractiveBoxGrid';
 import type { HardnessKey, PrinterSettings as OrgPrinterSettings } from '@/src/features/printers/types/printers';
 import {
 	useElementsStore,
@@ -538,6 +534,10 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		left: number | null;
 		right: number | null;
 	}>({ left: null, right: null });
+	const [currentInsoleWidthMm, setCurrentInsoleWidthMm] = useState<{
+		left: number | null;
+		right: number | null;
+	}>({ left: null, right: null });
 	const [planWorldToMm, setPlanWorldToMm] = useState(1);
 	const rightFittingRef = useRef<{
 		archHeight: number;
@@ -657,6 +657,51 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			generalNormalized.shoeSize.left,
 			generalNormalized.shoeSize.right,
 		]
+	);
+
+	const resolvedTargetForefootWidthMm = useMemo(
+		() => ({
+			left: targetForefootWidthMm.left ?? effectiveTargetForefootWidthMm.left,
+			right: targetForefootWidthMm.right ?? effectiveTargetForefootWidthMm.right,
+		}),
+		[
+			targetForefootWidthMm.left,
+			targetForefootWidthMm.right,
+			effectiveTargetForefootWidthMm.left,
+			effectiveTargetForefootWidthMm.right,
+		]
+	);
+
+	useEffect(() => {
+		setTargetForefootWidthMm({
+			left: effectiveTargetForefootWidthMm.left,
+			right: effectiveTargetForefootWidthMm.right,
+		});
+	}, [
+		effectiveTargetForefootWidthMm.left,
+		effectiveTargetForefootWidthMm.right,
+		generalNormalized.baseInsoleType,
+		generalNormalized.shoeSize.left,
+		generalNormalized.shoeSize.right,
+	]);
+
+	const handleSoleWidthChange = useCallback(
+		(side: 'left' | 'right', nextWidthMm: number) => {
+			const normalized = Number.isFinite(nextWidthMm)
+				? Number(Math.max(40, Math.min(160, nextWidthMm)).toFixed(1))
+				: side === 'left'
+					? resolvedTargetForefootWidthMm.left
+					: resolvedTargetForefootWidthMm.right;
+			setCorrections((prev) => ({
+				...prev,
+				zoolbreedte: { left: 0, right: 0 },
+			}));
+			setTargetForefootWidthMm((prev) => ({
+				...prev,
+				[side]: normalized,
+			}));
+		},
+		[resolvedTargetForefootWidthMm.left, resolvedTargetForefootWidthMm.right]
 	);
 
 	const updateGeneral = useCallback(
@@ -861,6 +906,41 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const [activeCorrections, setActiveCorrections] = useState<CorrectionKey[]>(
 		DEFAULT_ACTIVE_CORRECTIONS
 	);
+
+	useEffect(() => {
+		if (workflowStep !== 'base' || !isViewerReady) return;
+		let frame1 = 0;
+		let frame2 = 0;
+		const measure = () => {
+			const leftDims = viewerRef.current?.getInsoleDimensionsMm('left') ?? null;
+			const rightDims = viewerRef.current?.getInsoleDimensionsMm('right') ?? null;
+			setCurrentInsoleWidthMm({
+				left: leftDims?.widthMm != null ? Number(leftDims.widthMm.toFixed(1)) : null,
+				right: rightDims?.widthMm != null ? Number(rightDims.widthMm.toFixed(1)) : null,
+			});
+		};
+		frame1 = requestAnimationFrame(() => {
+			frame2 = requestAnimationFrame(measure);
+		});
+		return () => {
+			cancelAnimationFrame(frame1);
+			cancelAnimationFrame(frame2);
+		};
+	}, [
+		workflowStep,
+		isViewerReady,
+		corrections,
+		activeCorrections,
+		resolvedTargetForefootWidthMm.left,
+		resolvedTargetForefootWidthMm.right,
+		generalNormalized.baseInsoleType,
+		generalNormalized.shoeSize.left,
+		generalNormalized.shoeSize.right,
+		generalNormalized.soleThicknessMm.left,
+		generalNormalized.soleThicknessMm.right,
+		generalNormalized.maxInsoleHeightMm.left,
+		generalNormalized.maxInsoleHeightMm.right,
+	]);
 	const [textEditorOpen, setTextEditorOpen] = useState(false);
 	const [savedBottomText, setSavedBottomText] = useState<
 		{ text: string; sizeMm: number } | null
@@ -874,10 +954,15 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		left: false,
 		right: false,
 	});
+	const [boxGridPoints, setBoxGridPoints] = useState<{
+		left: BoxGridSavedOffsets | null;
+		right: BoxGridSavedOffsets | null;
+	}>({ left: null, right: null });
+	// Snapshot of boxGridPoints at the moment grid edit starts (for cancel/revert)
+	const boxGridSnapshotRef = useRef<BoxGridSavedOffsets | null>(null);
 	const isSelectedGridModeOn = selectedInsoleSide
 		? boxEnabled[selectedInsoleSide]
 		: false;
-	const [boxEditTool, setBoxEditTool] = useState<BoxEditTool>('rotate');
 	const [trimlineEditSide, setTrimlineEditSide] = useState<'left' | 'right' | null>(null);
 	const [trimlineAdjustments, setTrimlineAdjustments] = useState<{
 		left: TrimlineAdjustments;
@@ -997,6 +1082,43 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		setBoxEnabled((prev) => ({ ...prev, [selectedInsoleSide]: false }));
 	}, [selectedInsoleSide]);
 
+	/** "Opslaan" — keep the current boxGridPoints (already auto-saved by onBoxGridSave) and exit */
+	const handleBoxGridSaveAndExit = useCallback(() => {
+		exitGridMode();
+	}, [exitGridMode]);
+
+	/** "Annuleren" — revert boxGridPoints to the snapshot taken when grid edit started, then exit */
+	const handleBoxGridCancelAndExit = useCallback(() => {
+		if (selectedInsoleSide) {
+			setBoxGridPoints((prev) => ({
+				...prev,
+				[selectedInsoleSide]: boxGridSnapshotRef.current,
+			}));
+		}
+		exitGridMode();
+	}, [selectedInsoleSide, exitGridMode]);
+
+	/** Called by InteractiveBoxGrid on every deformation — keeps boxGridPoints up to date */
+	const handleBoxGridSave = useCallback((side: 'left' | 'right', offsets: BoxGridSavedOffsets) => {
+		setBoxGridPoints((prev) => ({ ...prev, [side]: offsets }));
+	}, []);
+
+	const handleToggleBoxMode = useCallback((side: 'left' | 'right') => {
+		setSelectedInsoleSide(side);
+		// Snapshot current offsets so "Annuleren" can revert
+		setBoxGridPoints((prev) => {
+			boxGridSnapshotRef.current = prev[side];
+			return prev;
+		});
+		setBoxEnabled((prev) => {
+			const nextActive = !prev[side];
+			return {
+				left: side === 'left' ? nextActive : false,
+				right: side === 'right' ? nextActive : false,
+			};
+		});
+	}, []);
+
 	// ── Client settings getter — supplies all local useState values to autosave ──
 	useEffect(() => {
 		clientSettingsGetterRef.current = () => ({
@@ -1012,6 +1134,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			step3Right,
 			printerSettings,
 			boxEnabled,
+			boxGridPoints,
 			trimlineAdjustments,
 			trimlineHandleProfiles,
 			activeDesignStep,
@@ -1042,6 +1165,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				if (cs.step3Right !== undefined) setStep3Right(cs.step3Right as typeof step3Right);
 				if (cs.printerSettings !== undefined) setPrinterSettings(cs.printerSettings as PrinterSettings);
 				if (cs.boxEnabled !== undefined) setBoxEnabled(cs.boxEnabled as typeof boxEnabled);
+				if (cs.boxGridPoints !== undefined) setBoxGridPoints(cs.boxGridPoints as typeof boxGridPoints);
 				if (cs.trimlineAdjustments !== undefined) setTrimlineAdjustments(cs.trimlineAdjustments as typeof trimlineAdjustments);
 				if (cs.trimlineHandleProfiles !== undefined) setTrimlineHandleProfiles(cs.trimlineHandleProfiles as typeof trimlineHandleProfiles);
 				if (cs.activeDesignStep !== undefined) setActiveDesignStep(cs.activeDesignStep as number);
@@ -1070,7 +1194,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		productionMethod, selectedPairId, selectedLeftScanId, selectedRightScanId,
 		selectedBaseSTL, corrections, activeCorrections, savedBottomText,
 		step3Left, step3Right, printerSettings,
-		boxEnabled, trimlineAdjustments, trimlineHandleProfiles, activeDesignStep, elementsModalSide,
+		boxEnabled, boxGridPoints, trimlineAdjustments, trimlineHandleProfiles, activeDesignStep, elementsModalSide,
 		workflowStep, scansActive, showOverlays, hardnessProfiles,
 	]);
 	
@@ -2222,6 +2346,9 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										activeCorrections={activeCorrections}
 										showZones={showZones}
 										onShowZonesChange={setShowZones}
+										soleWidthValueMm={resolvedTargetForefootWidthMm}
+										currentInsoleWidthMm={currentInsoleWidthMm}
+										onSoleWidthChange={handleSoleWidthChange}
 									/>
 
 								</>
@@ -2882,7 +3009,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								leftOverlayUrl={showOverlays ? leftStlUrl : undefined}
 								rightOverlayUrl={showOverlays ? rightStlUrl : undefined}
 								baseInsoleType={generalNormalized.baseInsoleType}
-								targetForefootWidthMm={effectiveTargetForefootWidthMm}
+								targetForefootWidthMm={resolvedTargetForefootWidthMm}
 								showGrid={true}
 								showBasePreview={false}
 								lockTopView={false}
@@ -2911,6 +3038,12 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								onZoneClick={activeDesignStep === 3 && step3Current.elementsSplit ? (zone, side) => { setSelectedZone(zone); setStep3Side(side); } : undefined}
 								boxEnabled={boxEnabled}
 								gridEditMode={isSelectedGridModeOn}
+								heelEdgeThicknessMm={{
+									left: step3Left.heelEdgeThicknessMm,
+									right: step3Right.heelEdgeThicknessMm,
+								}}
+								savedBoxGridOffsets={boxGridPoints}
+								onBoxGridSave={handleBoxGridSave}
 								leftPlacedElements={leftPlacedElements}
 								rightPlacedElements={rightPlacedElements}
 								evaBlockMode={isEvaMethod}
@@ -3046,10 +3179,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								<GeneratedInsoleOverlay
 									selectedSide={selectedInsoleSide}
 									boxEnabled={boxEnabled}
-									onToggleBox={(side) => {
-										setBoxEnabled((prev) => ({ ...prev, [side]: !prev[side] }));
-										setBoxEditTool('rotate');
-									}}
+									onToggleBox={handleToggleBoxMode}
 									onMirrorToOther={mirrorCorrectionsToOtherSide}
 									onTrimlineEdit={(side) => {
 										setTrimlineEditSide(side);
@@ -3150,19 +3280,29 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 							)}
 
 							{selectedInsoleSide && isSelectedGridModeOn && (
-								<>
-									<BoxEditToolsOverlay
-										selectedSide={selectedInsoleSide}
-										activeTool={boxEditTool}
-										onToolChange={setBoxEditTool}
-										className="absolute left-6 bottom-6 z-20"
-									/>
-									<BoxEditConfirmOverlay
-										onCancel={exitGridMode}
-										onConfirm={exitGridMode}
-										className="absolute right-6 top-6 z-20"
-									/>
-								</>
+								<div className="absolute bottom-6 left-6 z-20 w-[min(92vw,360px)] rounded-2xl border border-ui-border bg-ui-panel/92 px-4 py-3 text-ui-text shadow-xl backdrop-blur">
+									<div className="flex flex-col gap-3">
+										<div className="min-w-0">
+											<div className="flex items-center gap-2">
+												<span className="text-[11px] font-semibold uppercase tracking-wide text-ui-muted">Box bewerken</span>
+												<span className="rounded-full bg-ui-accent/15 px-2 py-0.5 text-[11px] font-semibold text-ui-accent">
+													{selectedInsoleSide === 'left' ? 'Links' : 'Rechts'}
+												</span>
+											</div>
+											<p className="mt-1 text-xs leading-relaxed text-ui-muted">
+												Sleep de punten direct op de zool om lokaal volume aan te passen. Alleen punten op de zool zijn zichtbaar.
+											</p>
+										</div>
+										<div className="flex items-center justify-end gap-2">
+											<Button variant="outline" size="sm" onClick={handleBoxGridCancelAndExit}>
+												Annuleren
+											</Button>
+											<Button size="sm" className="bg-ui-accent text-slate-900 hover:opacity-90" onClick={handleBoxGridSaveAndExit}>
+												Opslaan
+											</Button>
+										</div>
+									</div>
+								</div>
 							)}
 							{designPlan.plan && (
 								<div className="absolute left-1/2 top-4 z-20 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel/90 px-4 py-2 text-xs text-ui-text">

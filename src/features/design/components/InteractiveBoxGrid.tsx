@@ -20,17 +20,17 @@ export interface BoxGridPoint {
 }
 
 // ── Constants ──────────────────────────────────────────────────────────
-const HANDLE_RADIUS = 0.5;
-const HANDLE_RADIUS_HOVER = 0.7;
-const HANDLE_RADIUS_SELECTED = 0.65;
+const HANDLE_RADIUS = 0.36;
+const HANDLE_RADIUS_HOVER = 0.48;
+const HANDLE_RADIUS_SELECTED = 0.58;
 const SMOOTH_RADIUS = 3;
 
-const COLOR_DEFAULT = new THREE.Color('#00d9ff');
-const COLOR_SELECTED = new THREE.Color('#a78bfa');
-const COLOR_HOVER = new THREE.Color('#56f2d6');
+const COLOR_DEFAULT = new THREE.Color('#ff62c7');
+const COLOR_SELECTED = new THREE.Color('#ffd84d');
+const COLOR_HOVER = new THREE.Color('#ffffff');
 
-const MAX_GRID_POINTS = 300;
-const _sphereGeo = new THREE.SphereGeometry(1, 8, 6);
+const MAX_GRID_POINTS = 220;
+const _sphereGeo = new THREE.SphereGeometry(1, 6, 4);
 const _zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
 
 function estimateAveragePointSpacing(points: BoxGridPoint[]): number {
@@ -92,13 +92,13 @@ function applyDeltaWithSmoothing(
 
 	for (let i = 0; i < points.length; i++) {
 		if (effects[i] !== 0) {
-			points[i].offsetZ = Math.max(-8, Math.min(8, startOffsets[i] + effects[i]));
+				points[i].offsetZ = Math.max(-20, Math.min(20, startOffsets[i] + effects[i]));
 		}
 	}
 }
 
 // ── Build grid points inside the insole silhouette ─────────────────────
-function buildSilhouetteGrid(
+export function buildSilhouetteGrid(
 	geometry: THREE.BufferGeometry,
 	gridCols: number,
 	gridRows: number,
@@ -123,14 +123,61 @@ function buildSilhouetteGrid(
 
 	const pIdx = (a: 'x' | 'y' | 'z') => ({ x: 0, y: 1, z: 2 }[a]);
 	const p0 = pIdx(planeAxes[0]), p1 = pIdx(planeAxes[1]), hIdx = pIdx(heightAxis);
+	const sampleStride = positions.count > 240000 ? 12 : positions.count > 120000 ? 8 : positions.count > 60000 ? 4 : 2;
 
 	const pMin0 = bbox.min[planeAxes[0]], pMax0 = bbox.max[planeAxes[0]];
 	const pMin1 = bbox.min[planeAxes[1]], pMax1 = bbox.max[planeAxes[1]];
 	const pSpan0 = pMax0 - pMin0, pSpan1 = pMax1 - pMin1;
+	const lengthAxisIndex = pSpan0 >= pSpan1 ? p0 : p1;
+	const widthAxisIndex = lengthAxisIndex === p0 ? p1 : p0;
+	const lengthMin = lengthAxisIndex === p0 ? pMin0 : pMin1;
+	const lengthMax = lengthAxisIndex === p0 ? pMax0 : pMax1;
+	const lengthSpan = Math.max(1e-6, lengthMax - lengthMin);
+	const widthSpan = Math.max(1e-6, widthAxisIndex === p0 ? pSpan0 : pSpan1);
+	const profileBins = Math.max(48, gridRows * 3);
+	const profileMin = new Float32Array(profileBins).fill(Number.POSITIVE_INFINITY);
+	const profileMax = new Float32Array(profileBins).fill(Number.NEGATIVE_INFINITY);
+	const profileHits = new Uint16Array(profileBins);
+	for (let i = 0; i < positions.count; i += sampleStride) {
+		const lenVal = positions.array[i * 3 + lengthAxisIndex];
+		const widVal = positions.array[i * 3 + widthAxisIndex];
+		const t = Math.max(0, Math.min(1, (lenVal - lengthMin) / lengthSpan));
+		const bin = Math.min(profileBins - 1, Math.max(0, Math.round(t * (profileBins - 1))));
+		if (widVal < profileMin[bin]) profileMin[bin] = widVal;
+		if (widVal > profileMax[bin]) profileMax[bin] = widVal;
+		profileHits[bin]++;
+	}
+	for (let i = 0; i < profileBins; i++) {
+		if (profileHits[i] > 0) continue;
+		let left = i - 1;
+		while (left >= 0 && profileHits[left] === 0) left--;
+		let right = i + 1;
+		while (right < profileBins && profileHits[right] === 0) right++;
+		if (left >= 0 && right < profileBins) {
+			profileMin[i] = (profileMin[left] + profileMin[right]) * 0.5;
+			profileMax[i] = (profileMax[left] + profileMax[right]) * 0.5;
+		} else if (left >= 0) {
+			profileMin[i] = profileMin[left];
+			profileMax[i] = profileMax[left];
+		} else if (right < profileBins) {
+			profileMin[i] = profileMin[right];
+			profileMax[i] = profileMax[right];
+		}
+	}
+	const sampleProfile = (t: number) => {
+		const x = Math.max(0, Math.min(1, t)) * (profileBins - 1);
+		const i0 = Math.floor(x);
+		const i1 = Math.min(profileBins - 1, i0 + 1);
+		const blend = x - i0;
+		return {
+			min: profileMin[i0] + (profileMin[i1] - profileMin[i0]) * blend,
+			max: profileMax[i0] + (profileMax[i1] - profileMax[i0]) * blend,
+		};
+	};
 
 	const CELL = Math.max(pSpan0, pSpan1) / 40;
 	const spatialHash = new Map<string, number[]>();
-	for (let i = 0; i < positions.count; i++) {
+	for (let i = 0; i < positions.count; i += sampleStride) {
 		const v0 = positions.array[i * 3 + p0];
 		const v1 = positions.array[i * 3 + p1];
 		const cx = Math.floor((v0 - pMin0) / CELL);
@@ -141,7 +188,7 @@ function buildSilhouetteGrid(
 		else spatialHash.set(key, [i]);
 	}
 
-	const margin = 1.5 * mmToWorld;
+	const margin = 2.6 * mmToWorld;
 	const gridMin0 = pMin0 + margin;
 	const gridMax0 = pMax0 - margin;
 	const gridMin1 = pMin1 + margin;
@@ -149,7 +196,7 @@ function buildSilhouetteGrid(
 	const gridSpan0 = gridMax0 - gridMin0;
 	const gridSpan1 = gridMax1 - gridMin1;
 
-	const maxSearchDist = Math.max(pSpan0 / gridCols, pSpan1 / gridRows) * 0.9;
+	const maxSearchDist = Math.max(pSpan0 / Math.max(1, gridCols), pSpan1 / Math.max(1, gridRows)) * 0.92;
 
 	const result: BoxGridPoint[] = [];
 	let index = 0;
@@ -160,6 +207,12 @@ function buildSilhouetteGrid(
 			const t1 = gridRows === 1 ? 0.5 : row / (gridRows - 1);
 			const v0 = gridMin0 + t0 * gridSpan0;
 			const v1 = gridMin1 + t1 * gridSpan1;
+			const candidateLength = lengthAxisIndex === p0 ? v0 : v1;
+			const candidateWidth = widthAxisIndex === p0 ? v0 : v1;
+			const profile = sampleProfile((candidateLength - lengthMin) / lengthSpan);
+			const edgeInset = Math.min(Math.max(maxSearchDist * 0.55, 1.6 * mmToWorld), widthSpan * 0.08);
+			if (!Number.isFinite(profile.min) || !Number.isFinite(profile.max)) continue;
+			if (candidateWidth <= profile.min + edgeInset || candidateWidth >= profile.max - edgeInset) continue;
 
 			const cx = Math.floor((v0 - pMin0) / CELL);
 			const cy = Math.floor((v1 - pMin1) / CELL);
@@ -185,6 +238,8 @@ function buildSilhouetteGrid(
 			}
 
 			if (bestDist2 < maxSearchDist * maxSearchDist) {
+				const bestDist = Math.sqrt(bestDist2);
+				if (bestDist > maxSearchDist * 0.72) continue;
 				const pos = [0, 0, 0];
 				pos[p0] = v0;
 				pos[p1] = v1;
@@ -211,6 +266,7 @@ export function applyBoxGridDeformation(
 	geometry: THREE.BufferGeometry,
 	points: BoxGridPoint[],
 	influenceRadius: number,
+	mmToWorld: number,
 ): void {
 	const positions = geometry.attributes.position as THREE.BufferAttribute;
 	if (!positions) return;
@@ -230,34 +286,38 @@ export function applyBoxGridDeformation(
 	const pIdx = (a: 'x' | 'y' | 'z') => ({ x: 0, y: 1, z: 2 }[a]);
 	const p0 = pIdx(planeAxes[0]), p1 = pIdx(planeAxes[1]), hIdx = pIdx(heightAxis);
 
-	const smoothstep = (t: number) => {
-		t = Math.max(0, Math.min(1, t));
-		return t * t * (3 - 2 * t);
-	};
+	// Gaussian sigma  →  smooth bell-curve, extends well past nearest neighbours
+	// sigma IS the shape control; cutoff is just for performance (at 4σ the weight is ~0.03%)
+	const sigma = influenceRadius * 0.45;
+	const sigSq2 = 2 * sigma * sigma;
+	const cutoff = 4.0 * sigma;            // fade to near-zero before we clip
+	const cutoffSq = cutoff * cutoff;
+	const mw = Math.max(1e-6, mmToWorld);
+
+	const arr = positions.array as Float32Array;
 
 	for (let i = 0; i < positions.count; i++) {
-		const vp0 = positions.array[i * 3 + p0];
-		const vp1 = positions.array[i * 3 + p1];
-		let totalWeight = 0;
-		let totalDisp = 0;
+		const vp0 = arr[i * 3 + p0];
+		const vp1 = arr[i * 3 + p1];
+		let disp = 0;
 
+		// Additive blending: each moved point contributes its own Gaussian bump.
+		// Nearby points naturally merge into one smooth hill.
 		for (const mp of movedPoints) {
 			const mpPos = [mp.baseX, mp.baseY, mp.baseZ];
 			const dp0 = vp0 - mpPos[p0];
 			const dp1 = vp1 - mpPos[p1];
-			const dist = Math.sqrt(dp0 * dp0 + dp1 * dp1);
-			if (dist < influenceRadius) {
-				const norm = dist / influenceRadius;
-				const w = smoothstep(smoothstep(1 - norm));
-				totalWeight += w;
-				totalDisp += w * mp.offsetZ;
-			}
+			const distSq = dp0 * dp0 + dp1 * dp1;
+			if (distSq > cutoffSq) continue;
+			const w = Math.exp(-distSq / sigSq2);
+			disp += w * mp.offsetZ * mw;
 		}
 
-		if (totalWeight > 0) {
-			const finalDisp = totalDisp / totalWeight;
-			const arr = positions.array as Float32Array;
-			arr[i * 3 + hIdx] += finalDisp;
+		if (disp !== 0) {
+			// Soft-clamp to avoid extreme spikes
+			const maxDisp = 10 * mw;
+			disp = Math.max(-maxDisp, Math.min(maxDisp, disp));
+			arr[i * 3 + hIdx] += disp;
 		}
 	}
 
@@ -265,20 +325,55 @@ export function applyBoxGridDeformation(
 	geometry.computeVertexNormals();
 }
 
+/** Reconstruct BoxGridPoint[] from saved offsets + insole geometry (for non-interactive replay). */
+export function reconstructGridPointsFromSaved(
+	geometry: THREE.BufferGeometry,
+	saved: BoxGridSavedOffsets,
+	mmToWorld: number,
+): BoxGridPoint[] {
+	const pts = buildSilhouetteGrid(geometry, saved.cols, saved.rows, mmToWorld);
+	for (const p of pts) {
+		const key = p.gridRow * saved.cols + p.gridCol;
+		if (key >= 0 && key < saved.offsets.length) {
+			p.offsetZ = saved.offsets[key];
+		}
+	}
+	return pts;
+}
+
+/** Default grid dimensions used by InteractiveBoxGrid */
+export const BOX_GRID_COLS = 9;
+export const BOX_GRID_ROWS = 13;
+
 // ── Main component ─────────────────────────────────────────────────────
+/** Serialisable offset data for persistence */
+export interface BoxGridSavedOffsets {
+	/** Grid dimensions used when these offsets were created */
+	cols: number;
+	rows: number;
+	/** offsetZ values indexed by `row * cols + col` */
+	offsets: number[];
+}
+
 interface InteractiveBoxGridProps {
 	insoleGeometry: THREE.BufferGeometry | null;
 	mmToWorld: number;
 	active: boolean;
+	/** Previously saved offsets – will be restored when the grid is built */
+	savedOffsets?: BoxGridSavedOffsets | null;
 	onGridPointsChange?: (points: BoxGridPoint[]) => void;
 	onDeformationChange?: (points: BoxGridPoint[]) => void;
+	/** Called when the user explicitly saves (Opslaan) */
+	onSave?: (offsets: BoxGridSavedOffsets) => void;
 }
 
 export function InteractiveBoxGrid({
 	insoleGeometry,
 	mmToWorld,
 	active,
+	savedOffsets,
 	onDeformationChange,
+	onSave,
 }: InteractiveBoxGridProps) {
 	const { camera, gl, raycaster } = useThree();
 	const groupRef = useRef<THREE.Group>(null);
@@ -290,6 +385,41 @@ export function InteractiveBoxGrid({
 	const pointsRef = useRef<BoxGridPoint[]>([]);
 	const avgPointSpacingRef = useRef(1);
 
+	/** Expose a snapshot so the parent can call getSaveData() at any time */
+	const getSaveData = useCallback((): BoxGridSavedOffsets => {
+		const pts = pointsRef.current;
+		const COLS = 9, ROWS = 13;
+		const offsets = new Array<number>(ROWS * COLS).fill(0);
+		for (const p of pts) {
+			const key = p.gridRow * COLS + p.gridCol;
+			if (key >= 0 && key < offsets.length) offsets[key] = p.offsetZ;
+		}
+		return { cols: COLS, rows: ROWS, offsets };
+	}, []);
+
+	// Store the latest getSaveData ref so onSave always gets current data
+	const getSaveDataRef = useRef(getSaveData);
+	getSaveDataRef.current = getSaveData;
+	const onSaveRef = useRef(onSave);
+	onSaveRef.current = onSave;
+
+	/** Trigger save from parent via imperative handle — but we expose via callback */
+	const triggerSave = useCallback(() => {
+		onSaveRef.current?.(getSaveDataRef.current());
+	}, []);
+
+	// Attach triggerSave to the group so the parent can call it
+	const triggerSaveRef = useRef(triggerSave);
+	triggerSaveRef.current = triggerSave;
+
+	// ── Stable refs (must be before any useEffect that references them) ──
+	const cameraRef = useRef(camera);
+	cameraRef.current = camera;
+	const onDeformRef = useRef(onDeformationChange);
+	onDeformRef.current = onDeformationChange;
+	const mmToWorldRef = useRef(mmToWorld);
+	mmToWorldRef.current = mmToWorld;
+
 	useEffect(() => {
 		if (!insoleGeometry) {
 			initialGeoRef.current = null;
@@ -300,11 +430,28 @@ export function InteractiveBoxGrid({
 		}
 		if (initialGeoRef.current) return;
 		initialGeoRef.current = insoleGeometry;
-		const pts = buildSilhouetteGrid(insoleGeometry, 14, 20, mmToWorld);
+		const COLS = 9, ROWS = 13;
+		const pts = buildSilhouetteGrid(insoleGeometry, COLS, ROWS, mmToWorld);
+		// Restore saved offsets if available
+		if (savedOffsets && savedOffsets.cols === COLS && savedOffsets.rows === ROWS) {
+			for (const p of pts) {
+				const key = p.gridRow * COLS + p.gridCol;
+				if (key >= 0 && key < savedOffsets.offsets.length) {
+					p.offsetZ = savedOffsets.offsets[key];
+				}
+			}
+		}
 		pointsRef.current = pts.map(p => ({ ...p }));
 		avgPointSpacingRef.current = estimateAveragePointSpacing(pointsRef.current);
 		needsInstanceUpdate.current = true;
-	}, [insoleGeometry, mmToWorld]);
+		// If there are saved offsets with non-zero values, emit the deformation immediately
+		if (savedOffsets && savedOffsets.offsets.some(v => Math.abs(v) > 0.001)) {
+			// Defer to next tick so the parent geometry ref is ready
+			setTimeout(() => {
+				onDeformRef.current?.(pointsRef.current.map(p => ({ ...p })));
+			}, 0);
+		}
+	}, [insoleGeometry, mmToWorld, savedOffsets]);
 
 	// ── Selection / hover (refs only) ──
 	const hoveredIdxRef = useRef(-1);
@@ -325,14 +472,7 @@ export function InteractiveBoxGrid({
 
 	// ── Debounce timer for geometry deformation ──
 	const deformTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-	// ── Stable refs ──
-	const cameraRef = useRef(camera);
-	cameraRef.current = camera;
-	const onDeformRef = useRef(onDeformationChange);
-	onDeformRef.current = onDeformationChange;
-	const mmToWorldRef = useRef(mmToWorld);
-	mmToWorldRef.current = mmToWorld;
+	const previewRafRef = useRef<number | null>(null);
 
 	// ── Emit changes (debounced — avoids re-render storms) ──
 	const emitChange = useCallback(() => {
@@ -341,7 +481,17 @@ export function InteractiveBoxGrid({
 			deformTimerRef.current = null;
 			// Snapshot a copy so the parent gets an immutable array
 			onDeformRef.current?.(pointsRef.current.map(p => ({ ...p })));
+			// Auto-persist grid offsets to parent so "Opslaan" always has latest data
+			onSaveRef.current?.(getSaveDataRef.current());
 		}, 120);
+	}, []);
+
+	const emitPreview = useCallback(() => {
+		if (previewRafRef.current != null) return;
+		previewRafRef.current = requestAnimationFrame(() => {
+			previewRafRef.current = null;
+			onDeformRef.current?.(pointsRef.current.map(p => ({ ...p })));
+		});
 	}, []);
 
 	// ── InstancedMesh visual update (runs in requestAnimationFrame) ──
@@ -456,17 +606,28 @@ export function InteractiveBoxGrid({
 	useEffect(() => {
 		if (!active) return;
 		const el = gl.domElement;
+		const stopCanvasInteraction = (e: PointerEvent) => {
+			e.preventDefault();
+			e.stopPropagation();
+			if (typeof e.stopImmediatePropagation === 'function') {
+				e.stopImmediatePropagation();
+			}
+		};
 
 		const onPointerDown = (e: PointerEvent) => {
 			if (e.button !== 0) return; // left-click only
+
+			// Ensure canvas can receive keyboard events
+			if (el.tabIndex < 0) el.tabIndex = 0;
+			el.focus({ preventScroll: true });
 
 			const hitIdx = hitTestHandle(e.clientX, e.clientY);
 
 			if (hitIdx != null) {
 				// Hit a handle sphere → select / start drag
-				e.stopPropagation();
+				stopCanvasInteraction(e);
 
-				if (e.shiftKey) {
+				if (e.ctrlKey) {
 					const sel = selectedSet.current;
 					if (sel.has(hitIdx)) sel.delete(hitIdx);
 					else sel.add(hitIdx);
@@ -483,7 +644,16 @@ export function InteractiveBoxGrid({
 				return;
 			}
 
-			// No handle hit → start box selection
+			if (!e.ctrlKey) {
+				if (selectedSet.current.size > 0) {
+					selectedSet.current = new Set();
+					needsInstanceUpdate.current = true;
+				}
+				return;
+			}
+
+			// Ctrl + empty click → start box selection
+			stopCanvasInteraction(e);
 			boxSelecting.current = true;
 			boxStartScreen.current = { x: e.clientX, y: e.clientY };
 			selectedSet.current = new Set();
@@ -535,6 +705,7 @@ export function InteractiveBoxGrid({
 					avgPointSpacingRef.current,
 				);
 				needsInstanceUpdate.current = true;
+				emitPreview();
 				return;
 			}
 
@@ -549,7 +720,7 @@ export function InteractiveBoxGrid({
 
 			// Hover detection (only when idle — very cheap manual raycast)
 			const now = performance.now();
-			if (now - lastHoverRaycastAtRef.current < 32) return;
+			if (now - lastHoverRaycastAtRef.current < 72) return;
 			lastHoverRaycastAtRef.current = now;
 			const hitIdx = hitTestHandle(e.clientX, e.clientY);
 			if (hitIdx != null) {
@@ -629,7 +800,7 @@ export function InteractiveBoxGrid({
 			el.removeEventListener('pointermove', onPointerMove);
 			el.removeEventListener('pointerup', onPointerUp);
 		};
-	}, [active, gl, hitTestHandle, startDrag, emitChange]);
+	}, [active, gl, hitTestHandle, startDrag, emitChange, emitPreview]);
 
 	// ── Box selection overlay DOM element ──
 	useEffect(() => {
@@ -658,38 +829,58 @@ export function InteractiveBoxGrid({
 	// ── Keyboard arrow nudge ──
 	useEffect(() => {
 		if (!active) return;
+		const el = gl.domElement;
+
+		// Ensure canvas can receive keyboard events
+		if (el.tabIndex < 0) el.tabIndex = 0;
+
+		const STEP_MM = 0.35; // mm per keypress / repeat
+
 		const onKeyDown = (e: KeyboardEvent) => {
 			if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
 			const sel = selectedSet.current;
 			if (sel.size === 0) return;
 
 			e.preventDefault();
-			const step = e.key === 'ArrowUp' ? 0.5 : -0.5;
+			e.stopPropagation();
 
-			const snapshot = new Float32Array(pointsRef.current.length);
-			for (let i = 0; i < pointsRef.current.length; i++) {
-				snapshot[i] = pointsRef.current[i].offsetZ;
-			}
+			const dir: number = e.key === 'ArrowUp' ? 1 : -1;
+			const deltaMm = dir * STEP_MM;
+
+			// Snapshot current offsets, apply incremental delta
+			const pts = pointsRef.current;
+			const snapshot = new Float32Array(pts.length);
+			for (let i = 0; i < pts.length; i++) snapshot[i] = pts[i].offsetZ;
+
 			applyDeltaWithSmoothing(
-				pointsRef.current,
+				pts,
 				snapshot,
 				Array.from(sel),
-				step,
+				deltaMm,
 				SMOOTH_RADIUS,
 				avgPointSpacingRef.current,
 			);
 
+			// Update handle visuals immediately
 			needsInstanceUpdate.current = true;
-			emitChange();
+
+			// Send deformation to parent directly (synchronous, no rAF delay)
+			onDeformRef.current?.(pts.map(p => ({ ...p })));
+			// Persist offsets to parent state for autosave
+			onSaveRef.current?.(getSaveDataRef.current());
 		};
-		window.addEventListener('keydown', onKeyDown);
-		return () => window.removeEventListener('keydown', onKeyDown);
-	}, [active, emitChange]);
+
+		document.addEventListener('keydown', onKeyDown, true);
+		return () => {
+			document.removeEventListener('keydown', onKeyDown, true);
+		};
+	}, [active, gl]);
 
 	// ── Clean up debounce timer ──
 	useEffect(() => {
 		return () => {
 			if (deformTimerRef.current) clearTimeout(deformTimerRef.current);
+			if (previewRafRef.current != null) cancelAnimationFrame(previewRafRef.current);
 		};
 	}, []);
 
@@ -703,7 +894,7 @@ export function InteractiveBoxGrid({
 				renderOrder={11}
 				frustumCulled={false}
 			>
-				<meshBasicMaterial transparent opacity={0.85} depthTest={false} />
+				<meshBasicMaterial transparent opacity={0.98} depthTest={false} />
 			</instancedMesh>
 		</group>
 	);

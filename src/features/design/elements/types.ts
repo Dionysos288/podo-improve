@@ -44,7 +44,9 @@ export type ElementColorGroup =
 	| 'green'
 	| 'orange'
 	| 'pink'
-	| 'teal';
+	| 'teal'
+	| 'skin'
+	| 'magenta';
 
 /** A single item in the element library */
 export interface ElementLibraryItem {
@@ -74,10 +76,16 @@ export interface ElementLibraryItem {
 	outline: [number, number][];
 	/** Optional: default scale factors */
 	defaultScale?: [number, number];
+	/** Optional: preferred default placement in normalized insole UV space */
+	defaultPosition?: { u: number; v: number };
+	/** Optional: default rotation in radians for the left foot; mirrored for right */
+	defaultRotationRad?: number;
 	/** Optional: URL to a pre-built STL mesh for this element (relative to public/) */
 	stlUrl?: string;
 	/** Intrinsic size of the STL in mm [width, depth] for correct scaling */
 	stlSizeMm?: [number, number];
+	/** If true, the STL has Y↔Z axes swapped and they will be corrected on load */
+	stlSwapYZ?: boolean;
 }
 
 /** How the element sits relative to the insole surface */

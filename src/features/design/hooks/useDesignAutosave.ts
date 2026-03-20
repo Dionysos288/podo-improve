@@ -17,6 +17,63 @@ interface DesignSnapshot {
 
 const AUTOSAVE_DEBOUNCE_MS = 2000;
 
+function migrateLoadedElement(raw: Record<string, unknown>) {
+	if (raw.libraryKey !== 'sd-2-5') return raw;
+	if (raw.side !== 'left' && raw.side !== 'right') return raw;
+
+	const approx = (value: unknown, expected: number, epsilon = 0.03) =>
+		typeof value === 'number' && Math.abs(value - expected) <= epsilon;
+
+	const side = raw.side;
+
+	// V1 legacy defaults (first iteration)
+	const looksLikeV1 =
+		approx(raw.positionU, 0.73) &&
+		(approx(raw.positionV, 0.38) || approx(raw.positionV, 0.62)) &&
+		(approx(raw.rotationRad, -0.42, 0.06) || approx(raw.rotationRad, 0.42, 0.06));
+
+	if (looksLikeV1) {
+		return {
+			...raw,
+			positionU: 0.82,
+			positionV: side === 'right' ? 0.34 : 0.66,
+			rotationRad: side === 'right' ? -0.2 : 0.2,
+			scaleU: 1.0,
+			scaleV: 1.0,
+			heightMm: 2,
+			blendMm: 5,
+		};
+	}
+
+	// V2 legacy defaults (second iteration with too-small 0.74/0.8 scales)
+	const looksLikeV2 =
+		approx(raw.scaleU, 0.74, 0.03) &&
+		approx(raw.scaleV, 0.8, 0.03);
+
+	if (looksLikeV2) {
+		return {
+			...raw,
+			positionV: side === 'right' ? 0.50 : 0.50,
+			scaleU: 1.0,
+			scaleV: 1.0,
+		};
+	}
+
+	// V3 legacy defaults (third iteration with v=0.34/0.66 off-center position)
+	const looksLikeV3 =
+		(approx(raw.positionV, 0.34, 0.04) || approx(raw.positionV, 0.66, 0.04)) &&
+		approx(raw.positionU, 0.82, 0.04);
+
+	if (looksLikeV3) {
+		return {
+			...raw,
+			positionV: side === 'right' ? 0.50 : 0.50,
+		};
+	}
+
+	return raw;
+}
+
 /**
  * A getter function that DesignPageClient provides to supply all local
  * useState values (corrections, printer settings, hardness, etc.) for saving.
@@ -314,14 +371,15 @@ export function useDesignAutosave(
 			if (Array.isArray(elements) && elements.length > 0) {
 				elementsStore.clearAll();
 				for (const el of elements) {
+					const migratedElement = migrateLoadedElement(el);
 					// Migrate old floorMode values ('sole'|'scan'|'free') → 'vloeien'
-					if (el.floorMode && el.floorMode !== 'vloeien' && el.floorMode !== 'niet-vloeien') {
-						el.floorMode = 'vloeien';
+					if (migratedElement.floorMode && migratedElement.floorMode !== 'vloeien' && migratedElement.floorMode !== 'niet-vloeien') {
+						migratedElement.floorMode = 'vloeien';
 					}
 					// Directly populate placedElements rather than going through addElement
 					// since addElement requires a libraryKey lookup
 					useElementsStore.setState((state) => ({
-						placedElements: [...state.placedElements, el as never],
+						placedElements: [...state.placedElements, migratedElement as never],
 					}));
 				}
 			}

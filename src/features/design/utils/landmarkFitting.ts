@@ -641,6 +641,8 @@ export interface BasicInsoleOptions extends InsoleGenerationOptions {
 	lengthScale?: number;
 	/** Raise the lateral/medial edges above the top surface (world units). */
 	rimHeight?: number;
+	/** Width of the raised rim band measured inward from the outer edge (world units). */
+	rimBandThickness?: number;
 	/**
 	 * Optional override to scale the insole planform to a target foot length.
 	 * Uses the landmark-derived frame length as the reference.
@@ -677,6 +679,7 @@ export function buildBasicInsole(
 	const targetArchHeight = options?.targetArchHeight;
 	const lengthScale = options?.lengthScale;
 	const rimHeight = options?.rimHeight ?? 0;
+	const rimBandThickness = Math.max(0, options?.rimBandThickness ?? thickness);
 	const smoothstep = (edge0: number, edge1: number, x: number) => {
 		const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
 		return t * t * (3 - 2 * t);
@@ -757,7 +760,12 @@ export function buildBasicInsole(
 
 			if (rimHeight > 0) {
 				const edge = Math.abs(lateralOffset);
-				const rimWeight = smoothstep(0.65, 1.0, edge);
+				const rimBandNormalized = Math.max(
+					0.08,
+					Math.min(0.45, rimBandThickness / Math.max(1e-6, halfW))
+				);
+				const rimStart = Math.max(0.45, 1.0 - rimBandNormalized);
+				const rimWeight = smoothstep(rimStart, 1.0, edge);
 				h += rimHeight * rimWeight;
 			}
 
