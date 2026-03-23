@@ -12,6 +12,8 @@ import { cn } from '@/src/shared/lib/cn';
 type Props = {
 	element: PlacedElement;
 	className?: string;
+	editMode?: 'move' | 'scale' | 'trimline' | 'box' | null;
+	onEditModeChange?: (mode: 'move' | 'scale' | 'trimline' | 'box' | null) => void;
 };
 
 /**
@@ -28,7 +30,7 @@ type Props = {
  *   │  🗑 Verwijderen         │
  *   └────────────────────────┘
  */
-export function ElementActionsPanel({ element, className }: Props) {
+export function ElementActionsPanel({ element, className, editMode = null, onEditModeChange }: Props) {
 	const { updateElement, removeElement, duplicateElement, selectElement } =
 		useElementsStore();
 
@@ -41,11 +43,9 @@ export function ElementActionsPanel({ element, className }: Props) {
 		updateElement(element.id, { rotationRad: newRad });
 	}, [element.id, element.rotationRad, updateElement]);
 
-	const handleScale1 = useCallback(() => {
-		// Scale uniformly +10%
-		const newScale = Math.min(3, (element.scaleU + element.scaleV) / 2 * 1.1);
-		updateElement(element.id, { scaleU: newScale, scaleV: newScale });
-	}, [element.id, element.scaleU, element.scaleV, updateElement]);
+	const toggleMode = useCallback((mode: 'move' | 'scale' | 'trimline' | 'box') => {
+		onEditModeChange?.(editMode === mode ? null : mode);
+	}, [editMode, onEditModeChange]);
 
 	const handleMirror = useCallback(() => {
 		// Spiegelen = duplicate to other foot
@@ -68,8 +68,33 @@ export function ElementActionsPanel({ element, className }: Props) {
 		{
 			key: 'scale',
 			label: 'Schalen',
-			description: 'Grootte aanpassen',
-			onClick: handleScale1,
+			description: editMode === 'scale' ? 'Actief' : 'Grootte aanpassen',
+			onClick: () => toggleMode('scale'),
+			active: editMode === 'scale',
+			danger: false,
+		},
+		{
+			key: 'box',
+			label: 'Box',
+			description: editMode === 'box' ? 'Actief' : '2 richtingen',
+			onClick: () => toggleMode('box'),
+			active: editMode === 'box',
+			danger: false,
+		},
+		{
+			key: 'trimline',
+			label: 'Trimlijn aanpassen',
+			description: editMode === 'trimline' ? 'Actief' : 'Rand wijzigen',
+			onClick: () => toggleMode('trimline'),
+			active: editMode === 'trimline',
+			danger: false,
+		},
+		{
+			key: 'move',
+			label: 'Verplaatsen',
+			description: editMode === 'move' ? 'Pijlen actief' : 'Met pijlen verplaatsen',
+			onClick: () => toggleMode('move'),
+			active: editMode === 'move',
 			danger: false,
 		},
 		{
@@ -125,7 +150,9 @@ export function ElementActionsPanel({ element, className }: Props) {
 							'flex w-full items-center justify-between rounded-lg border px-3 py-2 text-sm transition',
 							action.danger
 								? 'border-red-500/40 bg-[rgba(239,68,68,0.06)] text-red-400 hover:bg-[rgba(239,68,68,0.14)]'
-								: 'border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) hover:bg-[rgba(255,255,255,0.08)]'
+								: action.active
+									? 'border-ui-accent/40 bg-ui-accent/10 text-(--ui-text)'
+									: 'border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) hover:bg-[rgba(255,255,255,0.08)]'
 						)}
 					>
 						<span>{action.label}</span>

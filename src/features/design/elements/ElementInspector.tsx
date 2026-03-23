@@ -7,7 +7,6 @@ import {
 	getElementByKey,
 	ELEMENT_COLORS,
 	type PlacedElement,
-	type ElementProfile,
 	type ElementFloorMode,
 } from '@/src/features/design/elements';
 
@@ -17,6 +16,8 @@ type Props = {
 	standalone?: boolean;
 	/** Callback to close / deselect (back button) */
 	onClose?: () => void;
+	/** Optional active element edit mode supplied by the action panel */
+	editMode?: 'move' | 'scale' | 'trimline' | 'box' | null;
 };
 
 /**
@@ -33,11 +34,13 @@ type Props = {
  *   │  [ Toevoegen aan bibliotheek]│
  *   └──────────────────────────────┘
  */
-export function ElementInspector({ element, standalone, onClose }: Props) {
+export function ElementInspector({ element, standalone, onClose, editMode: _editMode = null }: Props) {
 	const { updateElement } = useElementsStore();
 
 	const item = getElementByKey(element.libraryKey);
 	const color = item ? ELEMENT_COLORS[item.color] : '#999';
+	const isStandalone = Boolean(standalone);
+	const standaloneFloorMode = element.floorMode === 'sole' ? 'sole' : 'free';
 
 	const update = useCallback(
 		(updates: Partial<PlacedElement>) => {
@@ -50,7 +53,7 @@ export function ElementInspector({ element, standalone, onClose }: Props) {
 	const settingsContent = (
 		<div className="space-y-2.5">
 				{/* Profile selector (if multiple profiles) */}
-				{item && item.profiles.length > 1 && (
+				{!isStandalone && item && item.profiles.length > 1 && (
 					<div className="flex items-center justify-between">
 						<span className="text-sm text-ui-muted">Profiel</span>
 						<div className="flex gap-1">
@@ -103,7 +106,7 @@ export function ElementInspector({ element, standalone, onClose }: Props) {
 				<div className="flex items-center justify-between">
 					<span className="text-sm text-ui-muted">Vloeren</span>
 					<select
-						value={element.floorMode}
+						value={isStandalone ? standaloneFloorMode : element.floorMode}
 						onChange={(e) => update({ floorMode: e.target.value as ElementFloorMode })}
 						className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-2.5 py-1.5 text-right text-sm text-ui-text appearance-none pr-7 cursor-pointer"
 						style={{
@@ -112,33 +115,35 @@ export function ElementInspector({ element, standalone, onClose }: Props) {
 							backgroundPosition: 'right 8px center',
 						}}
 					>
-						<option value="sole">Op zool vloeren</option>
-						<option value="scan">Op scan vloeren</option>
-						<option value="free">Vrij</option>
+						<option value="sole">Op zool vloeien</option>
+						{!isStandalone && <option value="scan">Op scan vloeren</option>}
+						<option value="free">{isStandalone ? 'Niet vloeien' : 'Vrij'}</option>
 					</select>
 				</div>
 
 				{/* Opsplitsen */}
-				<div className="flex items-center justify-between">
-					<span className="text-sm text-ui-muted">Opsplitsen</span>
-					<button
-						type="button"
-						onClick={() => update({ split: !element.split })}
-						className={cn(
-							'relative h-6 w-11 rounded-full transition-colors',
-							element.split
-								? 'bg-ui-accent'
-								: 'bg-[rgba(255,255,255,0.12)]'
-						)}
-					>
-						<span
+				{!isStandalone && (
+					<div className="flex items-center justify-between">
+						<span className="text-sm text-ui-muted">Opsplitsen</span>
+						<button
+							type="button"
+							onClick={() => update({ split: !element.split })}
 							className={cn(
-								'absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform',
-								element.split && 'translate-x-5'
+								'relative h-6 w-11 rounded-full transition-colors',
+								element.split
+									? 'bg-ui-accent'
+									: 'bg-[rgba(255,255,255,0.12)]'
 							)}
-						/>
-					</button>
-				</div>
+						>
+							<span
+								className={cn(
+									'absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform',
+									element.split && 'translate-x-5'
+								)}
+							/>
+						</button>
+					</div>
+				)}
 			</div>
 	);
 
@@ -159,7 +164,7 @@ export function ElementInspector({ element, standalone, onClose }: Props) {
 		</div>
 	);
 
-	if (standalone) {
+	if (isStandalone) {
 		return (
 			<div className="ui-overlay-card rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
 				{/* Header — same pattern as BoxEditConfirmOverlay */}

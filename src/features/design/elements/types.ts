@@ -2,6 +2,9 @@
  *  Orthotic Element Types
  * ────────────────────────────────────────────── */
 
+import type { BoxGridSavedOffsets } from '@/src/features/design/components/InteractiveBoxGrid';
+import type { TrimlineAdjustments, TrimlineHandleProfile } from '@/src/shared/components/design/TrimlineEditOverlay';
+
 /** Tab in the elements modal */
 export type ElementTab = 'elementen' | 'diepelementen';
 
@@ -116,4 +119,10 @@ export interface PlacedElement {
 	rotationRad: number;
 	scaleU: number;
 	scaleV: number;
+	/** Optional per-region trimline edits for interactive element trimline mode */
+	trimlineAdjustments?: TrimlineAdjustments;
+	/** Optional freeform trimline handle profile for interactive element trimline mode */
+	trimlineHandleProfile?: TrimlineHandleProfile | null;
+	/** Optional saved box-grid deformation for interactive element box mode */
+	boxGridOffsets?: BoxGridSavedOffsets | null;
 }

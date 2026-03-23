@@ -284,8 +284,225 @@ type PlacementContext = {
 	mmToWorld: number;
 };
 
+type TopSurfaceHeightSamplerContext = {
+	positions: THREE.BufferAttribute;
+	normals: THREE.BufferAttribute;
+	vertexCount: number;
+	lengthAxis: string;
+	widthAxis: string;
+	heightAxis: string;
+	lengthMin: number;
+	widthMin: number;
+	heightMin: number;
+	heightSpan: number;
+	lengthSpan: number;
+	widthSpan: number;
+	heelAtMin: boolean;
+	gridSize?: number;
+};
+
+function buildTopSurfaceHeightSampler({
+	positions,
+	normals,
+	vertexCount,
+	lengthAxis,
+	widthAxis,
+	heightAxis,
+	lengthMin,
+	widthMin,
+	heightMin,
+	heightSpan,
+	lengthSpan,
+	widthSpan,
+	heelAtMin,
+	gridSize = 48,
+}: TopSurfaceHeightSamplerContext): (u: number, v: number) => number {
+	const normalIdx = heightAxis === 'x' ? 0 : heightAxis === 'y' ? 1 : 2;
+	const getNComp = (i: number): number => {
+		if (normalIdx === 0) return normals.getX(i);
+		if (normalIdx === 1) return normals.getY(i);
+		return normals.getZ(i);
+	};
+
+	let signSum = 0;
+	let signCount = 0;
+	const topThresh = heightMin + heightSpan * 0.8;
+	for (let i = 0; i < vertexCount; i++) {
+		if (getAxisValue(positions, i, heightAxis) >= topThresh) {
+			signSum += getNComp(i);
+			signCount++;
+		}
+	}
+	const upSign = signCount > 0 && signSum / signCount < 0 ? -1 : 1;
+
+	const heightGrid = new Float32Array(gridSize * gridSize).fill(heightMin);
+	for (let i = 0; i < vertexCount; i++) {
+		if (getNComp(i) * upSign < 0.1) continue;
+		const lv = getAxisValue(positions, i, lengthAxis);
+		const wv = getAxisValue(positions, i, widthAxis);
+		const hv = getAxisValue(positions, i, heightAxis);
+		const rawU = (lv - lengthMin) / Math.max(lengthSpan, 1e-6);
+		const u = heelAtMin ? rawU : 1 - rawU;
+		const v = (wv - widthMin) / Math.max(widthSpan, 1e-6);
+		const gu = Math.max(0, Math.min(gridSize - 1, Math.floor(u * gridSize)));
+		const gv = Math.max(0, Math.min(gridSize - 1, Math.floor(v * gridSize)));
+		const gridIndex = gu * gridSize + gv;
+		if (hv > heightGrid[gridIndex]) heightGrid[gridIndex] = hv;
+	}
+
+	for (let pass = 0; pass < 4; pass++) {
+		for (let gu = 0; gu < gridSize; gu++) {
+			for (let gv = 0; gv < gridSize; gv++) {
+				const gi = gu * gridSize + gv;
+				if (heightGrid[gi] > heightMin) continue;
+				let sum = 0;
+				let count = 0;
+				for (const [du, dv] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
+					const nu = gu + du;
+					const nv = gv + dv;
+					if (nu < 0 || nu >= gridSize || nv < 0 || nv >= gridSize) continue;
+					const ni = nu * gridSize + nv;
+					if (heightGrid[ni] > heightMin) {
+						sum += heightGrid[ni];
+						count++;
+					}
+				}
+				if (count > 0) heightGrid[gi] = sum / count;
+			}
+		}
+	}
+
+	return (u: number, v: number): number => {
+		const gu = Math.max(0, Math.min(gridSize - 0.001, u * gridSize));
+		const gv = Math.max(0, Math.min(gridSize - 0.001, v * gridSize));
+		const gui = Math.floor(gu);
+		const gvi = Math.floor(gv);
+		const guf = gu - gui;
+		const gvf = gv - gvi;
+		const gui1 = Math.min(gridSize - 1, gui + 1);
+		const gvi1 = Math.min(gridSize - 1, gvi + 1);
+		const h00 = heightGrid[gui * gridSize + gvi];
+		const h10 = heightGrid[gui1 * gridSize + gvi];
+		const h01 = heightGrid[gui * gridSize + gvi1];
+		const h11 = heightGrid[gui1 * gridSize + gvi1];
+		return h00 * (1 - guf) * (1 - gvf)
+			+ h10 * guf * (1 - gvf)
+			+ h01 * (1 - guf) * gvf
+			+ h11 * guf * gvf;
+	};
+}
+
 function clamp01(value: number) {
 	return Math.max(0, Math.min(1, value));
+}
+
+type TrimAdditiveOverlayGeometryOptions = {
+	geometry: THREE.BufferGeometry;
+	lengthAxis: string;
+	widthAxis: string;
+	heightAxis: string;
+	lengthMin: number;
+	widthMin: number;
+	lengthSpan: number;
+	widthSpan: number;
+	heelAtMin: boolean;
+	surfaceHeightSampler: (u: number, v: number) => number;
+	epsilon: number;
+};
+
+function trimAdditiveOverlayGeometry({
+	geometry,
+	lengthAxis,
+	widthAxis,
+	heightAxis,
+	lengthMin,
+	widthMin,
+	lengthSpan,
+	widthSpan,
+	heelAtMin,
+	surfaceHeightSampler,
+	epsilon,
+}: TrimAdditiveOverlayGeometryOptions): THREE.BufferGeometry | null {
+	const positions = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+	if (!positions || positions.count < 3) return null;
+
+	const visibleVertices = new Uint8Array(positions.count);
+	const invLengthSpan = 1 / Math.max(lengthSpan, 1e-6);
+	const invWidthSpan = 1 / Math.max(widthSpan, 1e-6);
+	const triA = new THREE.Vector3();
+	const triB = new THREE.Vector3();
+	const triC = new THREE.Vector3();
+	const edgeAB = new THREE.Vector3();
+	const edgeAC = new THREE.Vector3();
+	const cross = new THREE.Vector3();
+	const degenerateArea = Math.max(epsilon * epsilon * 0.02, 1e-10);
+
+	for (let i = 0; i < positions.count; i++) {
+		const worldLength = getAxisValue(positions, i, lengthAxis);
+		const worldWidth = getAxisValue(positions, i, widthAxis);
+		const rawU = (worldLength - lengthMin) * invLengthSpan;
+		const sampleU = clamp01(heelAtMin ? rawU : 1 - rawU);
+		const sampleV = clamp01((worldWidth - widthMin) * invWidthSpan);
+		const surfaceHeight = surfaceHeightSampler(sampleU, sampleV);
+		const currentHeight = getAxisValue(positions, i, heightAxis);
+
+		if (currentHeight <= surfaceHeight + epsilon) {
+			setAxisValue(positions, i, heightAxis, surfaceHeight + epsilon);
+			continue;
+		}
+
+		visibleVertices[i] = 1;
+	}
+
+	positions.needsUpdate = true;
+
+	const triangleArea = (a: number, b: number, c: number): number => {
+		triA.fromBufferAttribute(positions, a);
+		triB.fromBufferAttribute(positions, b);
+		triC.fromBufferAttribute(positions, c);
+		edgeAB.subVectors(triB, triA);
+		edgeAC.subVectors(triC, triA);
+		cross.crossVectors(edgeAB, edgeAC);
+		return cross.length() * 0.5;
+	};
+
+	const index = geometry.getIndex();
+	if (index) {
+		const keptIndices: number[] = [];
+		for (let i = 0; i < index.count; i += 3) {
+			const a = index.getX(i);
+			const b = index.getX(i + 1);
+			const c = index.getX(i + 2);
+			if (!visibleVertices[a] && !visibleVertices[b] && !visibleVertices[c]) continue;
+			if (triangleArea(a, b, c) <= degenerateArea) continue;
+			keptIndices.push(a, b, c);
+		}
+
+		if (keptIndices.length < 3) return null;
+		geometry.setIndex(keptIndices);
+		return geometry;
+	}
+
+	const keptPositions: number[] = [];
+	for (let i = 0; i < positions.count; i += 3) {
+		const a = i;
+		const b = i + 1;
+		const c = i + 2;
+		if (c >= positions.count) break;
+		if (!visibleVertices[a] && !visibleVertices[b] && !visibleVertices[c]) continue;
+		if (triangleArea(a, b, c) <= degenerateArea) continue;
+		keptPositions.push(
+			positions.getX(a), positions.getY(a), positions.getZ(a),
+			positions.getX(b), positions.getY(b), positions.getZ(b),
+			positions.getX(c), positions.getY(c), positions.getZ(c),
+		);
+	}
+
+	if (keptPositions.length < 9) return null;
+
+	const trimmedGeometry = new THREE.BufferGeometry();
+	trimmedGeometry.setAttribute('position', new THREE.Float32BufferAttribute(keptPositions, 3));
+	return trimmedGeometry;
 }
 
 function getDefaultPlacementForSide(item: ReturnType<typeof getElementByKey>, side: 'left' | 'right') {
@@ -1280,6 +1497,10 @@ export function applyElements(
 
 	const positions = geometry.getAttribute('position') as THREE.BufferAttribute;
 	const vertexCount = positions.count;
+	if (!geometry.getAttribute('normal')) {
+		geometry.computeVertexNormals();
+	}
+	const normals = geometry.getAttribute('normal') as THREE.BufferAttribute;
 
 	const lengthMin = getMinForAxis(bbox, lengthAxis);
 	const widthMin = getMinForAxis(bbox, widthAxis);
@@ -1290,6 +1511,21 @@ export function applyElements(
 	// The viewer canonicalizes insole meshes so heel is always at the minimum
 	// of the length axis before elements are applied.
 	const heelAtMin = true;
+	const sampleSurfaceHeight = buildTopSurfaceHeightSampler({
+		positions,
+		normals,
+		vertexCount,
+		lengthAxis,
+		widthAxis,
+		heightAxis,
+		lengthMin,
+		widthMin,
+		heightMin,
+		heightSpan,
+		lengthSpan,
+		widthSpan,
+		heelAtMin,
+	});
 
 	// Precompute transformed outlines and bounding boxes for each element
 	const prepared = elements.map((el) => {
@@ -1336,6 +1572,10 @@ export function applyElements(
 		const blendU = (el.blendMm * mmToWorld) / lengthSpan;
 		const blendV = (el.blendMm * mmToWorld) / widthSpan;
 		const blendNorm = Math.max(blendU, blendV);
+		const heightWorld = el.heightMm * mmToWorld;
+		const baseSurfaceHeight = heightWorld > 0 && el.floorMode !== 'sole'
+			? sampleSurfaceHeight(resolved.positionU, resolved.positionV)
+			: undefined;
 
 		return {
 			el,
@@ -1343,7 +1583,8 @@ export function applyElements(
 			resolved,
 			transformed,
 			profile: el.profile,
-			heightWorld: el.heightMm * mmToWorld,
+			heightWorld,
+			baseSurfaceHeight,
 			blendNorm,
 			bboxMinU: minU - blendNorm,
 			bboxMaxU: maxU + blendNorm,
@@ -1412,7 +1653,15 @@ export function applyElements(
 				}
 			}
 
-			totalDisplacement += p.heightWorld * weight;
+			if (p.heightWorld > 0 && p.el.floorMode !== 'sole' && p.baseSurfaceHeight !== undefined) {
+				const desiredTopHeight = p.baseSurfaceHeight + p.heightWorld * weight;
+				const currentTargetHeight = heightVal + totalDisplacement;
+				if (desiredTopHeight > currentTargetHeight) {
+					totalDisplacement += desiredTopHeight - currentTargetHeight;
+				}
+			} else {
+				totalDisplacement += p.heightWorld * weight;
+			}
 		}
 
 		if (Math.abs(totalDisplacement) > 0.0001) {
@@ -1473,6 +1722,21 @@ export function buildElementOverlayGeometries(
 	const positions = insoleGeometry.getAttribute('position') as THREE.BufferAttribute;
 	const normals   = insoleGeometry.getAttribute('normal')   as THREE.BufferAttribute;
 	const vertexCount = positions.count;
+	const sampleHeight = buildTopSurfaceHeightSampler({
+		positions,
+		normals,
+		vertexCount,
+		lengthAxis,
+		widthAxis,
+		heightAxis,
+		lengthMin,
+		widthMin,
+		heightMin,
+		heightSpan,
+		lengthSpan,
+		widthSpan,
+		heelAtMin: true,
+	});
 
 	// Detect which normal direction is "up" (toward the top surface)
 	const normalIdx = heightAxis === 'x' ? 0 : heightAxis === 'y' ? 1 : 2;
@@ -1493,9 +1757,7 @@ export function buildElementOverlayGeometries(
 	// The insole geometry is already canonicalized to heel-at-min in the viewer.
 	const heelAtMin = true;
 
-	// Build a UV → max-surface-height lookup grid from top-facing vertices
-	const GRID = 48;
-	const heightGrid = new Float32Array(GRID * GRID).fill(heightMin);
+	// Build a UV occupancy grid from top-facing vertices for boundary detection.
 	// Also build a boolean occupancy grid from the RAW vertices (before fill
 	// passes expand the height grid beyond the true insole footprint).
 	// Use a higher-resolution grid for accurate boundary detection.
@@ -1509,31 +1771,10 @@ export function buildElementOverlayGeometries(
 		const rawU = (lv - lengthMin) / lengthSpan;
 		const u = heelAtMin ? rawU : 1 - rawU;
 		const v = (wv - widthMin) / widthSpan;
-		const gu = Math.max(0, Math.min(GRID - 1, Math.floor(u * GRID)));
-		const gv = Math.max(0, Math.min(GRID - 1, Math.floor(v * GRID)));
-		if (hv > heightGrid[gu * GRID + gv]) heightGrid[gu * GRID + gv] = hv;
 		// Mark occupancy in the higher-res boundary grid
 		const bu = Math.max(0, Math.min(BGRID - 1, Math.floor(u * BGRID)));
 		const bv = Math.max(0, Math.min(BGRID - 1, Math.floor(v * BGRID)));
 		insoleOccupied[bu * BGRID + bv] = 1;
-	}
-	// Fill empty grid cells by spreading from neighbours
-	for (let pass = 0; pass < 4; pass++) {
-		for (let gu = 0; gu < GRID; gu++) {
-			for (let gv = 0; gv < GRID; gv++) {
-				const gi = gu * GRID + gv;
-				if (heightGrid[gi] > heightMin) continue;
-				let sum = 0, cnt = 0;
-				for (const [du, dv] of [[-1,0],[1,0],[0,-1],[0,1]] as const) {
-					const nu = gu+du, nv = gv+dv;
-					if (nu>=0 && nu<GRID && nv>=0 && nv<GRID) {
-						const ni = nu*GRID+nv;
-						if (heightGrid[ni] > heightMin) { sum += heightGrid[ni]; cnt++; }
-					}
-				}
-				if (cnt > 0) heightGrid[gi] = sum / cnt;
-			}
-		}
 	}
 
 	// Build per-U insole width extents for boundary clipping.
@@ -1639,20 +1880,6 @@ export function buildElementOverlayGeometries(
 		};
 	};
 
-	// Bilinear sample of the height grid at a UV point
-	const sampleHeight = (u: number, v: number): number => {
-		const gu = Math.max(0, Math.min(GRID - 0.001, u * GRID));
-		const gv = Math.max(0, Math.min(GRID - 0.001, v * GRID));
-		const gui = Math.floor(gu), guf = gu - gui;
-		const gvi = Math.floor(gv), gvf = gv - gvi;
-		const gui1 = Math.min(GRID-1, gui+1), gvi1 = Math.min(GRID-1, gvi+1);
-		const h00 = heightGrid[gui * GRID + gvi];
-		const h10 = heightGrid[gui1 * GRID + gvi];
-		const h01 = heightGrid[gui * GRID + gvi1];
-		const h11 = heightGrid[gui1 * GRID + gvi1];
-		return h00*(1-guf)*(1-gvf) + h10*guf*(1-gvf) + h01*(1-guf)*gvf + h11*guf*gvf;
-	};
-
 	// Map UV + height to 3D world-space position
 	const uvToWorld = (u: number, v: number, h: number): [number, number, number] => {
 		const rawU = heelAtMin ? u : 1-u;
@@ -1725,6 +1952,82 @@ export function buildElementOverlayGeometries(
 		return geom;
 	};
 
+	const buildTrimmedAdditiveSurfaceOverlay = (
+		outline: [number, number][],
+		overlayBaseHeight: number,
+	): THREE.BufferGeometry | null => {
+		if (outline.length < 3) return null;
+
+		let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+		for (const [u, v] of outline) {
+			if (u < minU) minU = u;
+			if (u > maxU) maxU = u;
+			if (v < minV) minV = v;
+			if (v > maxV) maxV = v;
+		}
+
+		const spanU = Math.max(1e-4, maxU - minU);
+		const spanV = Math.max(1e-4, maxV - minV);
+		const gridU = Math.max(10, Math.min(28, Math.ceil(spanU / 0.018)));
+		const gridV = Math.max(10, Math.min(28, Math.ceil(spanV / 0.018)));
+		const stepU = spanU / gridU;
+		const stepV = spanV / gridV;
+		const edgePad = Math.max(stepU, stepV) * 0.9;
+
+		const verts: number[] = [];
+		const indexGrid = Array.from({ length: gridU + 1 }, () => Array<number>(gridV + 1).fill(-1));
+
+		for (let gu = 0; gu <= gridU; gu++) {
+			for (let gv = 0; gv <= gridV; gv++) {
+				const u = minU + stepU * gu;
+				const v = minV + stepV * gv;
+				const inside = pointInPolygon(u, v, outline);
+				const edgeDist = distToPolygonEdge(u, v, outline);
+				if (!inside && edgeDist > edgePad) continue;
+				indexGrid[gu][gv] = verts.length / 3;
+				verts.push(...uvToWorld(u, v, overlayBaseHeight + SURFACE_EPSILON));
+			}
+		}
+
+		const indices: number[] = [];
+		for (let gu = 0; gu < gridU; gu++) {
+			for (let gv = 0; gv < gridV; gv++) {
+				const a = indexGrid[gu][gv];
+				const b = indexGrid[gu + 1][gv];
+				const c = indexGrid[gu][gv + 1];
+				const d = indexGrid[gu + 1][gv + 1];
+
+				if (a >= 0 && b >= 0 && c >= 0) indices.push(a, b, c);
+				if (b >= 0 && d >= 0 && c >= 0) indices.push(b, d, c);
+			}
+		}
+
+		if (verts.length < 9 || indices.length < 3) return null;
+
+		const geom = new THREE.BufferGeometry();
+		geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+		geom.setIndex(indices);
+
+		const trimmed = trimAdditiveOverlayGeometry({
+			geometry: geom,
+			lengthAxis,
+			widthAxis,
+			heightAxis,
+			lengthMin,
+			widthMin,
+			lengthSpan,
+			widthSpan,
+			heelAtMin,
+			surfaceHeightSampler: sampleHeight,
+			epsilon: SURFACE_EPSILON,
+		});
+		if (!trimmed) return null;
+
+		trimmed.computeVertexNormals();
+		trimmed.computeBoundingBox();
+		return trimmed;
+	};
+
 	const result: ElementOverlayData[] = [];
 	const placementContext: PlacementContext = {
 		positions,
@@ -1744,6 +2047,9 @@ export function buildElementOverlayGeometries(
 		if (!item) continue;
 		const resolved = resolveElementLayout(item, el, placementContext);
 		const isInset = el.heightMm < 0;
+		const baseSurfaceHeight = !isInset && el.floorMode !== 'sole'
+			? sampleHeight(resolved.positionU, resolved.positionV)
+			: undefined;
 
 		// ── STL-based overlay (preferred when stlUrl is available) ──
 		if (item.stlUrl && stlGeometries?.has(item.stlUrl) && !isInset) {
@@ -1979,9 +2285,29 @@ export function buildElementOverlayGeometries(
 				// Invert: at edges sit at surface, at centre push deepest into insole.
 				c[heightAxis] = isInset
 					? surfaceH - localHeight + SURFACE_EPSILON * 0.5
-					: surfaceH + localHeight + SURFACE_EPSILON;
+					: (el.floorMode === 'sole'
+						? surfaceH
+						: (baseSurfaceHeight ?? surfaceH)) + localHeight + SURFACE_EPSILON;
 
 				pos.setXYZ(i, c.x, c.y, c.z);
+			}
+
+			if (el.floorMode !== 'sole') {
+				const trimmedGeom = trimAdditiveOverlayGeometry({
+					geometry: geom,
+					lengthAxis,
+					widthAxis,
+					heightAxis,
+					lengthMin,
+					widthMin,
+					lengthSpan,
+					widthSpan,
+					heelAtMin,
+					surfaceHeightSampler: sampleHeight,
+					epsilon: SURFACE_EPSILON,
+				});
+				if (!trimmedGeom) continue;
+				geom = trimmedGeom;
 			}
 
 			pos.needsUpdate = true;
@@ -2030,6 +2356,20 @@ export function buildElementOverlayGeometries(
 			continue;
 		}
 
+		if (el.floorMode !== 'sole') {
+			const overlayBaseHeight = baseSurfaceHeight ?? sampleHeight(resolved.positionU, resolved.positionV);
+			const trimmedGeom = buildTrimmedAdditiveSurfaceOverlay(outline, overlayBaseHeight);
+			if (!trimmedGeom) continue;
+
+			result.push({
+				geometry: trimmedGeom,
+				colorHex: ELEMENT_COLORS[item.color] ?? '#999',
+				elementId: el.id,
+				isInset: false,
+			});
+			continue;
+		}
+
 		const n = outline.length;
 
 		// Triangulate polygon correctly (handles concave shapes like crescent/horseshoe)
@@ -2046,7 +2386,9 @@ export function buildElementOverlayGeometries(
 		// Build world-space vertices, each snapped to insole surface + lift
 		const verts: number[] = [];
 		for (const [u, v] of outline) {
-			const h = sampleHeight(u, v) + SURFACE_EPSILON;
+			const h = el.floorMode === 'sole'
+				? sampleHeight(u, v) + SURFACE_EPSILON
+				: (baseSurfaceHeight ?? sampleHeight(resolved.positionU, resolved.positionV)) + SURFACE_EPSILON;
 			verts.push(...uvToWorld(u, v, h));
 		}
 

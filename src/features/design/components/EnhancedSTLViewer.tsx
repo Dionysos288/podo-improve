@@ -87,8 +87,66 @@ interface STLMeshProps {
 		normal: [number, number, number];
 	}) => void;
 	placedElements?: PlacedElement[];
+	elementPlacementMode?: { elementId: string; side: 'left' | 'right' } | null;
+	onElementPlace?: (payload: { side: 'left' | 'right'; u: number; v: number }) => void;
+	selectedElementTrimlineEdit?: {
+		elementId: string;
+		side: 'left' | 'right';
+		adjustments: TrimlineAdjustments;
+		profile: TrimlineHandleProfile | null;
+	} | null;
+	selectedElementBoxEdit?: {
+		elementId: string;
+		side: 'left' | 'right';
+		savedOffsets: BoxGridSavedOffsets | null;
+	} | null;
+	onPendingElementTrimlineChange?: (adj: TrimlineAdjustments) => void;
+	onPendingElementTrimlineProfileChange?: (profile: TrimlineHandleProfile) => void;
+	onElementBoxGridSave?: (offsets: BoxGridSavedOffsets) => void;
 	/** When true, render a solid rectangular block around the insole (EVA milling mode) */
 	evaBlockMode?: boolean;
+}
+
+function getAxisValueFromVector(v: THREE.Vector3, axis: 'x' | 'y' | 'z') {
+	return axis === 'x' ? v.x : axis === 'y' ? v.y : v.z;
+}
+
+function getInsoleUvFromLocalPoint(geometry: THREE.BufferGeometry, localPoint: THREE.Vector3) {
+	geometry.computeBoundingBox();
+	const bbox = geometry.boundingBox!;
+	const sizeX = bbox.max.x - bbox.min.x;
+	const sizeY = bbox.max.y - bbox.min.y;
+	const sizeZ = bbox.max.z - bbox.min.z;
+	const sizes = [
+		{ axis: 'x' as const, size: sizeX },
+		{ axis: 'y' as const, size: sizeY },
+		{ axis: 'z' as const, size: sizeZ },
+	].sort((a, b) => b.size - a.size);
+	const lengthAxis = sizes[0].axis;
+	const widthAxis = sizes[1].axis;
+	const lengthMin = getAxisValueFromVector(bbox.min, lengthAxis);
+	const lengthMax = getAxisValueFromVector(bbox.max, lengthAxis);
+	const widthMin = getAxisValueFromVector(bbox.min, widthAxis);
+	const widthMax = getAxisValueFromVector(bbox.max, widthAxis);
+	const lengthSpan = Math.max(1e-6, lengthMax - lengthMin);
+	const widthSpan = Math.max(1e-6, widthMax - widthMin);
+	const positions = geometry.getAttribute('position') as THREE.BufferAttribute;
+	let minEnd = Infinity;
+	let maxEnd = Infinity;
+	for (let i = 0; i < positions.count; i++) {
+		const lenVal = lengthAxis === 'x' ? positions.getX(i) : lengthAxis === 'y' ? positions.getY(i) : positions.getZ(i);
+		const widthVal = widthAxis === 'x' ? positions.getX(i) : widthAxis === 'y' ? positions.getY(i) : positions.getZ(i);
+		const distMin = Math.abs(lenVal - lengthMin);
+		const distMax = Math.abs(lenVal - lengthMax);
+		if (distMin <= lengthSpan * 0.03) minEnd = Math.min(minEnd, widthVal);
+		if (distMax <= lengthSpan * 0.03) maxEnd = Math.min(maxEnd, widthVal);
+	}
+	const heelAtMin = minEnd <= maxEnd;
+	const rawU = (getAxisValueFromVector(localPoint, lengthAxis) - lengthMin) / lengthSpan;
+	return {
+		u: Math.max(0, Math.min(1, heelAtMin ? rawU : 1 - rawU)),
+		v: Math.max(0, Math.min(1, (getAxisValueFromVector(localPoint, widthAxis) - widthMin) / widthSpan)),
+	};
 }
 
 export type TextAnnotation = {
@@ -120,6 +178,80 @@ const ZONE_COLORS = {
 // Global viewer scale so ALL STLs keep real relative dimensions.
 // Source STLs are expected in millimeters.
 const MM_TO_WORLD = 0.4;
+
+function copyGeometryAttributes(target: THREE.BufferGeometry, source: THREE.BufferGeometry) {
+	const srcPos = source.getAttribute('position') as THREE.BufferAttribute | undefined;
+	const dstPos = target.getAttribute('position') as THREE.BufferAttribute | undefined;
+	if (srcPos && dstPos && srcPos.count === dstPos.count) {
+		(dstPos.array as Float32Array).set(srcPos.array as Float32Array);
+		dstPos.needsUpdate = true;
+		target.computeVertexNormals();
+		target.computeBoundingBox();
+		target.computeBoundingSphere();
+		return;
+	}
+	target.setAttribute('position', source.getAttribute('position')!.clone());
+	if (source.index) target.setIndex(source.index.clone());
+	else target.setIndex(null);
+	if (source.getAttribute('normal')) {
+		target.setAttribute('normal', source.getAttribute('normal')!.clone());
+	}
+	target.computeVertexNormals();
+	target.computeBoundingBox();
+	target.computeBoundingSphere();
+}
+
+function createTessellatedBoxBaseGeometry(
+	baseGeometry: THREE.BufferGeometry,
+	mmToWorld: number,
+) {
+	const base = baseGeometry.clone();
+	const posA = base.getAttribute('position') as THREE.BufferAttribute | undefined;
+	if (!posA || posA.count >= 500000) {
+		return base;
+	}
+	try {
+		const targetEdge = 0.55 * mmToWorld;
+		const mod = new TessellateModifier(targetEdge, 6);
+		const tessellated = mod.modify(base);
+		base.dispose();
+		const welded = BufferGeometryUtils.mergeVertices(tessellated, 1e-4);
+		welded.computeVertexNormals();
+		if (tessellated !== welded) tessellated.dispose();
+		return welded;
+	} catch {
+		return base;
+	}
+}
+
+function applySavedBoxGridOffsetsToGeometry(
+	geometry: THREE.BufferGeometry,
+	offsets: BoxGridSavedOffsets | null | undefined,
+	mmToWorld: number,
+) {
+	if (!offsets || !offsets.offsets.some((value) => Math.abs(value) > 0.001)) {
+		return geometry;
+	}
+	let finalGeometry = geometry;
+	const posA = finalGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+	if (posA && posA.count < 500000) {
+		try {
+			const targetEdge = 0.55 * mmToWorld;
+			const mod = new TessellateModifier(targetEdge, 6);
+			const tessellated = mod.modify(finalGeometry);
+			const welded = BufferGeometryUtils.mergeVertices(tessellated, 1e-4);
+			welded.computeVertexNormals();
+			if (tessellated !== welded) tessellated.dispose();
+			if (finalGeometry !== geometry) finalGeometry.dispose();
+			finalGeometry = welded;
+		} catch {
+			// keep original geometry when tessellation fails
+		}
+	}
+	const gridPoints = reconstructGridPointsFromSaved(finalGeometry, offsets, mmToWorld);
+	applyBoxGridDeformation(finalGeometry, gridPoints, 18 * mmToWorld, mmToWorld);
+	return finalGeometry;
+}
 
 // Smooth interpolation for zone boundaries
 function smoothstep(edge0: number, edge1: number, x: number): number {
@@ -1851,6 +1983,13 @@ function STLMesh({
 	bottomTextOverlay,
 	onTextPlace,
 	placedElements,
+	elementPlacementMode = null,
+	onElementPlace,
+	selectedElementTrimlineEdit = null,
+	selectedElementBoxEdit = null,
+	onPendingElementTrimlineChange,
+	onPendingElementTrimlineProfileChange,
+	onElementBoxGridSave,
 	evaBlockMode = false,
 }: STLMeshProps) {
 	const rawGeometry = useLoader(STLLoader, url);
@@ -1886,6 +2025,8 @@ function STLMesh({
 	const generalRafRef = useRef<number | null>(null);
 	const baseGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const boxTessellatedBaseRef = useRef<THREE.BufferGeometry | null>(null);
+	const elementBoxBaseGeometryRef = useRef<THREE.BufferGeometry | null>(null);
+	const elementBoxTessellatedBaseRef = useRef<THREE.BufferGeometry | null>(null);
 	// Live ref: updated on EVERY deformation callback so it always holds the latest
 	// box-grid offsets — avoids stale-state issues from debounced React state updates.
 	const pendingBoxGridOffsetsRef = useRef<BoxGridSavedOffsets | null>(null);
@@ -2802,8 +2943,16 @@ function STLMesh({
 			mmToWorld: mmToWorld || 1,
 			stlGeometries: elementStlGeometriesRef.current,
 		});
+		const mw = mmToWorld || 1;
+		for (const overlay of overlays) {
+			const sourceElement = placedElements.find((element) => element.id === overlay.elementId);
+			const effectiveOffsets = selectedElementBoxEdit?.elementId === overlay.elementId
+				? selectedElementBoxEdit.savedOffsets
+				: sourceElement?.boxGridOffsets;
+			overlay.geometry = applySavedBoxGridOffsetsToGeometry(overlay.geometry, effectiveOffsets, mw);
+		}
 		setElementOverlays(prev => { prev.forEach(d => d.geometry.dispose()); return overlays; });
-	}, [placedElements, mmToWorld]);
+	}, [placedElements, mmToWorld, selectedElementBoxEdit]);
 
 	// EVA block: contour-following solid block (side walls + bottom cap, no top)
 	const evaBlock = useMemo(() => {
@@ -3074,26 +3223,7 @@ function STLMesh({
 		}
 		// Re-apply saved box grid deformation (persists across page reloads)
 		const effectiveBoxOffsets = pendingBoxGridOffsetsRef.current ?? savedBoxGridOffsets;
-		if (effectiveBoxOffsets && effectiveBoxOffsets.offsets.some(v => Math.abs(v) > 0.001)) {
-			const mw = mmToWorld || 1;
-			// Tessellate for smooth results
-			const posA = finalGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
-			if (posA && posA.count < 500000) {
-				try {
-					const targetEdge = 0.55 * mw;
-					const mod = new TessellateModifier(targetEdge, 6);
-					const tessellated = mod.modify(finalGeometry);
-					const welded = BufferGeometryUtils.mergeVertices(tessellated, 1e-4);
-					welded.computeVertexNormals();
-					if (tessellated !== welded) tessellated.dispose();
-					finalGeometry.dispose();
-					finalGeometry = welded;
-				} catch { /* fall through with un-tessellated geometry */ }
-			}
-			const gridPoints = reconstructGridPointsFromSaved(finalGeometry, effectiveBoxOffsets, mw);
-			const influenceRadiusMm = 18;
-			applyBoxGridDeformation(finalGeometry, gridPoints, influenceRadiusMm * mw, mw);
-		}
+		finalGeometry = applySavedBoxGridOffsetsToGeometry(finalGeometry, effectiveBoxOffsets, mmToWorld || 1);
 		animateGeometryTo(finalGeometry);
 	}, [applyGeneral, applyTotalInsoleHeightAfterCorrections, applySoleThicknessAfterCorrections, animateGeometryTo, placedElements, mmToWorld, meshRole, bottomTextOverlay, gridEditMode, savedBoxGridOffsets, heelEdgeThicknessMm]);
 
@@ -3262,6 +3392,23 @@ function STLMesh({
 		}
 	}, [geometry, showBoxGrid, gridEditMode]);
 
+	useEffect(() => {
+		elementBoxBaseGeometryRef.current?.dispose();
+		elementBoxBaseGeometryRef.current = null;
+		if (elementBoxTessellatedBaseRef.current) {
+			elementBoxTessellatedBaseRef.current.dispose();
+			elementBoxTessellatedBaseRef.current = null;
+		}
+		if (!selectedElementBoxEdit || selectedElementBoxEdit.side !== side) {
+			return;
+		}
+		const editingOverlay = elementOverlays.find(
+			(overlay) => overlay.elementId === selectedElementBoxEdit.elementId
+		);
+		if (!editingOverlay) return;
+		elementBoxBaseGeometryRef.current = editingOverlay.geometry.clone();
+	}, [elementOverlays, selectedElementBoxEdit, side]);
+
 	// Notify parent about geometry — but NOT during grid editing, where
 	// setGeometry produces deformed clones.  Propagating those to the parent
 	// would reset camera position (parent camera effect depends on geometry).
@@ -3348,6 +3495,13 @@ function STLMesh({
 			onClick={interactive ? (event) => {
 				event.stopPropagation();
 				if (textPlacementEnabled) return;
+				if (elementPlacementMode && elementPlacementMode.side === side && onElementPlace && geometry) {
+					const localPt = event.point.clone();
+					if (meshRef.current) meshRef.current.worldToLocal(localPt);
+					const uv = getInsoleUvFromLocalPoint(geometry, localPt);
+					onElementPlace({ side, u: uv.u, v: uv.v });
+					return;
+				}
 				if (pointPickMode && onPickPoint) {
 					onPickPoint(event.point.clone());
 					return;
@@ -3441,24 +3595,7 @@ function STLMesh({
 
 						// Tessellate for smooth results (only once, cache result)
 						if (!boxTessellatedBaseRef.current) {
-							const base = baseGeometryRef.current.clone();
-							const posA = base.getAttribute('position') as THREE.BufferAttribute | undefined;
-							if (posA && posA.count < 500000) {
-								try {
-									const targetEdge = 0.55 * mw;
-									const mod = new TessellateModifier(targetEdge, 6);
-									const tessellated = mod.modify(base);
-									base.dispose();
-									// Weld duplicate vertices to eliminate seams between original triangles
-									boxTessellatedBaseRef.current = BufferGeometryUtils.mergeVertices(tessellated, 1e-4);
-									boxTessellatedBaseRef.current.computeVertexNormals();
-									if (tessellated !== boxTessellatedBaseRef.current) tessellated.dispose();
-								} catch {
-									boxTessellatedBaseRef.current = base;
-								}
-							} else {
-								boxTessellatedBaseRef.current = base;
-							}
+							boxTessellatedBaseRef.current = createTessellatedBoxBaseGeometry(baseGeometryRef.current, mw);
 						}
 
 						const working = boxTessellatedBaseRef.current.clone();
@@ -3469,28 +3606,7 @@ function STLMesh({
 							influenceRadiusMm * mw,
 							mw,
 						);
-
-						// The tessellated geometry has more vertices than the
-						// display geometry — swap it in entirely.
-						const srcPos = working.getAttribute('position') as THREE.BufferAttribute | undefined;
-						const dstPos = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
-						if (srcPos && dstPos && srcPos.count === dstPos.count) {
-							// Same vertex count → fast path: copy in place
-							(dstPos.array as Float32Array).set(srcPos.array as Float32Array);
-							dstPos.needsUpdate = true;
-							geometry.computeVertexNormals();
-						} else {
-							// Different count → replace geometry attributes wholesale
-							geometry.setAttribute('position', working.getAttribute('position')!.clone());
-							if (working.index) geometry.setIndex(working.index.clone());
-							else geometry.setIndex(null);
-							if (working.getAttribute('normal')) {
-								geometry.setAttribute('normal', working.getAttribute('normal')!.clone());
-							}
-							geometry.computeVertexNormals();
-							geometry.computeBoundingBox();
-							geometry.computeBoundingSphere();
-						}
+						copyGeometryAttributes(geometry, working);
 
 						if (showZones) applyZoneColors(geometry);
 						else if (heatmap) applyHeightmapColors(geometry);
@@ -3517,6 +3633,50 @@ function STLMesh({
 					/>
 				</mesh>
 			))}
+			{selectedElementBoxEdit && selectedElementBoxEdit.side === side && (() => {
+				const editingOverlay = elementOverlays.find((overlay) => overlay.elementId === selectedElementBoxEdit.elementId);
+				if (!editingOverlay) return null;
+				return (
+					<InteractiveBoxGrid
+						insoleGeometry={editingOverlay.geometry}
+						mmToWorld={mmToWorld || 1}
+						active={true}
+						savedOffsets={selectedElementBoxEdit.savedOffsets}
+						onSave={onElementBoxGridSave}
+						onDeformationChange={(points) => {
+							if (!elementBoxBaseGeometryRef.current) return;
+							const mw = mmToWorld || 1;
+							if (!elementBoxTessellatedBaseRef.current) {
+								elementBoxTessellatedBaseRef.current = createTessellatedBoxBaseGeometry(
+									elementBoxBaseGeometryRef.current,
+									mw,
+								);
+							}
+							const working = elementBoxTessellatedBaseRef.current.clone();
+							applyBoxGridDeformation(working, points, 18 * mw, mw);
+							copyGeometryAttributes(editingOverlay.geometry, working);
+							working.dispose();
+						}}
+					/>
+				);
+			})()}
+			{selectedElementTrimlineEdit && selectedElementTrimlineEdit.side === side && (() => {
+				const editingOverlay = elementOverlays.find((overlay) => overlay.elementId === selectedElementTrimlineEdit.elementId);
+				if (!editingOverlay) return null;
+				return (
+					<InteractiveTrimline
+						insoleGeometry={editingOverlay.geometry}
+						adjustments={selectedElementTrimlineEdit.adjustments}
+						onPendingChange={(adj) => onPendingElementTrimlineChange?.(adj)}
+						onPendingProfileChange={(profile) => onPendingElementTrimlineProfileChange?.(profile)}
+						profile={selectedElementTrimlineEdit.profile}
+						side={side}
+						mmToWorld={mmToWorld || MM_TO_WORLD}
+						active
+						mode="freeform"
+					/>
+				);
+			})()}
 		</mesh>
 	);
 }
@@ -3572,6 +3732,22 @@ interface EnhancedSTLViewerProps {
 	selectedSide?: 'left' | 'right' | null;
 	onSelectSide?: (side: 'left' | 'right') => void;
 	onDeselectSide?: () => void;
+	selectedElementTrimlineEdit?: {
+		elementId: string;
+		side: 'left' | 'right';
+		adjustments: TrimlineAdjustments;
+		profile: TrimlineHandleProfile | null;
+	} | null;
+	selectedElementBoxEdit?: {
+		elementId: string;
+		side: 'left' | 'right';
+		savedOffsets: import('./InteractiveBoxGrid').BoxGridSavedOffsets | null;
+	} | null;
+	onPendingElementTrimlineChange?: (adj: TrimlineAdjustments) => void;
+	onPendingElementTrimlineProfileChange?: (profile: TrimlineHandleProfile) => void;
+	onElementBoxGridSave?: (offsets: import('./InteractiveBoxGrid').BoxGridSavedOffsets) => void;
+	elementPlacementMode?: { elementId: string; side: 'left' | 'right' } | null;
+	onElementPlace?: (payload: { side: 'left' | 'right'; u: number; v: number }) => void;
 	onZoneClick?: (zone: 'front' | 'middle' | 'back', side: 'left' | 'right') => void;
 	boxEnabled?: { left: boolean; right: boolean };
 	gridEditMode?: boolean;
@@ -3684,6 +3860,13 @@ export const EnhancedSTLViewer = forwardRef<
 			onTextPlace,
 			onSelectSide,
 			onDeselectSide,
+			selectedElementTrimlineEdit = null,
+			selectedElementBoxEdit = null,
+			onPendingElementTrimlineChange,
+			onPendingElementTrimlineProfileChange,
+			onElementBoxGridSave,
+			elementPlacementMode = null,
+			onElementPlace,
 			onZoneClick,
 			boxEnabled = { left: false, right: false },
 			gridEditMode = false,
@@ -4525,6 +4708,13 @@ export const EnhancedSTLViewer = forwardRef<
 									textPlacementText={textPlacementText}
 									bottomTextOverlay={bottomTextOverlay}
 									onTextPlace={onTextPlace}
+									elementPlacementMode={elementPlacementMode?.side === 'left' ? elementPlacementMode : null}
+									onElementPlace={onElementPlace}
+									selectedElementTrimlineEdit={selectedElementTrimlineEdit?.side === 'left' ? selectedElementTrimlineEdit : null}
+									selectedElementBoxEdit={selectedElementBoxEdit?.side === 'left' ? selectedElementBoxEdit : null}
+									onPendingElementTrimlineChange={onPendingElementTrimlineChange}
+									onPendingElementTrimlineProfileChange={onPendingElementTrimlineProfileChange}
+									onElementBoxGridSave={onElementBoxGridSave}
 									side="left"
 									placedElements={leftPlacedElements}
 									evaBlockMode={evaBlockMode}
@@ -4589,6 +4779,13 @@ export const EnhancedSTLViewer = forwardRef<
 									textPlacementText={textPlacementText}
 									bottomTextOverlay={bottomTextOverlay}
 									onTextPlace={onTextPlace}
+									elementPlacementMode={elementPlacementMode?.side === 'right' ? elementPlacementMode : null}
+									onElementPlace={onElementPlace}
+									selectedElementTrimlineEdit={selectedElementTrimlineEdit?.side === 'right' ? selectedElementTrimlineEdit : null}
+									selectedElementBoxEdit={selectedElementBoxEdit?.side === 'right' ? selectedElementBoxEdit : null}
+									onPendingElementTrimlineChange={onPendingElementTrimlineChange}
+									onPendingElementTrimlineProfileChange={onPendingElementTrimlineProfileChange}
+									onElementBoxGridSave={onElementBoxGridSave}
 									side="right"
 									placedElements={rightPlacedElements}
 									evaBlockMode={evaBlockMode}

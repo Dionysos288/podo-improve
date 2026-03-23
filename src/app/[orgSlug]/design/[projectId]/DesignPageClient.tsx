@@ -99,7 +99,31 @@ import { MillingModeSelector } from '@/src/shared/components/design/MillingModeS
 import { useDesignAutosave, type ClientSettingsGetter } from '@/src/features/design/hooks/useDesignAutosave';
 import { UploadScansModal } from '@/src/features/projects/components/UploadScansModal';
 import { useRouter } from 'next/navigation';
-import { Check, Loader2, AlertCircle } from 'lucide-react';
+import { Check, Loader2, AlertCircle, ArrowUp, ArrowDown, ArrowLeft, ArrowRight } from 'lucide-react';
+import { flushSync } from 'react-dom';
+
+type ElementEditMode = 'move' | 'scale' | 'trimline' | 'box' | null;
+const ELEMENT_MOVE_STEP_UV = 0.01;
+
+function normalizeElementTrimlineAdjustments(
+	source?: TrimlineAdjustments | null,
+): TrimlineAdjustments {
+	return {
+		...DEFAULT_TRIMLINE_ADJUSTMENTS,
+		global: source?.global ?? 0,
+	};
+}
+
+function cloneBoxGridOffsets(
+	source?: BoxGridSavedOffsets | null,
+): BoxGridSavedOffsets | null {
+	if (!source) return null;
+	return {
+		cols: source.cols,
+		rows: source.rows,
+		offsets: [...source.offsets],
+	};
+}
 
 // Dynamic imports for heavy 3D components - reduces initial bundle by ~200-500KB
 const EnhancedSTLViewer = dynamic(
@@ -890,11 +914,26 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const addCorrectionAnchorRef = useRef<HTMLDivElement | null>(null);
 	const [elementsModalOpen, setElementsModalOpen] = useState(false);
 	const [elementsModalSide, setElementsModalSide] = useState<'left' | 'right'>('left');
-	const { placedElements, addElement: addPlacedElement, selectedElementId, selectElement: selectPlacedElement } = useElementsStore();
+	const {
+		placedElements,
+		addElement: addPlacedElement,
+		selectedElementId,
+		selectElement: selectPlacedElement,
+		updateElement: updatePlacedElement,
+	} = useElementsStore();
 	const selectedPlacedElement = useMemo(
 		() => placedElements.find((el) => el.id === selectedElementId) ?? null,
 		[placedElements, selectedElementId]
 	);
+	const [elementEditMode, setElementEditMode] = useState<ElementEditMode>(null);
+	const [elementTrimlineEditId, setElementTrimlineEditId] = useState<string | null>(null);
+	const [elementBoxEditId, setElementBoxEditId] = useState<string | null>(null);
+	const [pendingElementTrimlineAdj, setPendingElementTrimlineAdj] = useState<TrimlineAdjustments>({
+		...DEFAULT_TRIMLINE_ADJUSTMENTS,
+	});
+	const [pendingElementTrimlineHandleProfile, setPendingElementTrimlineHandleProfile] = useState<TrimlineHandleProfile | null>(null);
+	const [pendingElementBoxOffsets, setPendingElementBoxOffsets] = useState<BoxGridSavedOffsets | null>(null);
+	const elementBoxSnapshotRef = useRef<BoxGridSavedOffsets | null>(null);
 	const leftPlacedElements = useMemo(
 		() => placedElements.filter((el) => el.side === 'left'),
 		[placedElements]
@@ -906,6 +945,101 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const [activeCorrections, setActiveCorrections] = useState<CorrectionKey[]>(
 		DEFAULT_ACTIVE_CORRECTIONS
 	);
+
+	const handleElementEditModeChange = useCallback((mode: ElementEditMode) => {
+		if (mode === 'trimline' && selectedPlacedElement) {
+			setElementTrimlineEditId(selectedPlacedElement.id);
+			setPendingElementTrimlineAdj(normalizeElementTrimlineAdjustments(selectedPlacedElement.trimlineAdjustments));
+			setPendingElementTrimlineHandleProfile(
+				selectedPlacedElement.trimlineHandleProfile
+					? {
+						...selectedPlacedElement.trimlineHandleProfile,
+						tValues: [...selectedPlacedElement.trimlineHandleProfile.tValues],
+						rightOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.rightOffsetsMm],
+						leftOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.leftOffsetsMm],
+					}
+					: null
+			);
+		} else if (elementTrimlineEditId && mode !== 'trimline') {
+			setElementTrimlineEditId(null);
+			setPendingElementTrimlineAdj(normalizeElementTrimlineAdjustments());
+			setPendingElementTrimlineHandleProfile(null);
+		}
+		if (mode === 'box' && selectedPlacedElement) {
+			const initialOffsets = cloneBoxGridOffsets(selectedPlacedElement.boxGridOffsets);
+			setElementBoxEditId(selectedPlacedElement.id);
+			setPendingElementBoxOffsets(initialOffsets);
+			elementBoxSnapshotRef.current = cloneBoxGridOffsets(initialOffsets);
+		} else if (elementBoxEditId && mode !== 'box') {
+			setElementBoxEditId(null);
+			setPendingElementBoxOffsets(null);
+			elementBoxSnapshotRef.current = null;
+		}
+		setElementEditMode(mode);
+		if (mode === 'box' || mode === 'scale' || mode === 'trimline' || mode === 'move') {
+			setViewerViewPreset('top');
+		}
+	}, [selectedPlacedElement, elementTrimlineEditId, elementBoxEditId]);
+	const nudgeSelectedElement = useCallback((direction: 'up' | 'down' | 'left' | 'right') => {
+		if (!selectedPlacedElement) return;
+
+		const deltaU = direction === 'up'
+			? -ELEMENT_MOVE_STEP_UV
+			: direction === 'down'
+				? ELEMENT_MOVE_STEP_UV
+				: 0;
+		const deltaV = direction === 'right'
+			? -ELEMENT_MOVE_STEP_UV
+			: direction === 'left'
+				? ELEMENT_MOVE_STEP_UV
+				: 0;
+
+		flushSync(() => {
+			updatePlacedElement(selectedPlacedElement.id, {
+				positionU: Math.max(0, Math.min(1, selectedPlacedElement.positionU + deltaU)),
+				positionV: Math.max(0, Math.min(1, selectedPlacedElement.positionV + deltaV)),
+			});
+		});
+	}, [selectedPlacedElement, updatePlacedElement]);
+	useEffect(() => {
+		if (!selectedPlacedElement) {
+			setElementEditMode(null);
+			setElementTrimlineEditId(null);
+			setElementBoxEditId(null);
+			setPendingElementTrimlineAdj(normalizeElementTrimlineAdjustments());
+			setPendingElementTrimlineHandleProfile(null);
+			setPendingElementBoxOffsets(null);
+			elementBoxSnapshotRef.current = null;
+		}
+	}, [selectedPlacedElement]);
+	useEffect(() => {
+		if (!selectedPlacedElement || elementEditMode !== 'move') return;
+
+		const handleKeyDown = (event: KeyboardEvent) => {
+			const target = event.target as HTMLElement | null;
+			const tag = target?.tagName;
+			if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
+				return;
+			}
+
+			if (event.key === 'ArrowUp') {
+				event.preventDefault();
+				nudgeSelectedElement('up');
+			} else if (event.key === 'ArrowDown') {
+				event.preventDefault();
+				nudgeSelectedElement('down');
+			} else if (event.key === 'ArrowLeft') {
+				event.preventDefault();
+				nudgeSelectedElement('left');
+			} else if (event.key === 'ArrowRight') {
+				event.preventDefault();
+				nudgeSelectedElement('right');
+			}
+		};
+
+		window.addEventListener('keydown', handleKeyDown);
+		return () => window.removeEventListener('keydown', handleKeyDown);
+	}, [elementEditMode, nudgeSelectedElement, selectedPlacedElement]);
 
 	useEffect(() => {
 		if (workflowStep !== 'base' || !isViewerReady) return;
@@ -963,6 +1097,11 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const isSelectedGridModeOn = selectedInsoleSide
 		? boxEnabled[selectedInsoleSide]
 		: false;
+	const isElementBoxGridModeOn = !!(
+		selectedPlacedElement &&
+		elementEditMode === 'box' &&
+		elementBoxEditId === selectedPlacedElement.id
+	);
 	const [trimlineEditSide, setTrimlineEditSide] = useState<'left' | 'right' | null>(null);
 	const [trimlineAdjustments, setTrimlineAdjustments] = useState<{
 		left: TrimlineAdjustments;
@@ -1101,6 +1240,29 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	/** Called by InteractiveBoxGrid on every deformation — keeps boxGridPoints up to date */
 	const handleBoxGridSave = useCallback((side: 'left' | 'right', offsets: BoxGridSavedOffsets) => {
 		setBoxGridPoints((prev) => ({ ...prev, [side]: offsets }));
+	}, []);
+
+	const handleElementBoxGridSave = useCallback((offsets: BoxGridSavedOffsets) => {
+		setPendingElementBoxOffsets(cloneBoxGridOffsets(offsets));
+	}, []);
+
+	const handleElementBoxSaveAndExit = useCallback(() => {
+		if (selectedPlacedElement && elementBoxEditId === selectedPlacedElement.id) {
+			updatePlacedElement(selectedPlacedElement.id, {
+				boxGridOffsets: cloneBoxGridOffsets(pendingElementBoxOffsets),
+			});
+		}
+		setElementBoxEditId(null);
+		setPendingElementBoxOffsets(null);
+		elementBoxSnapshotRef.current = null;
+		setElementEditMode(null);
+	}, [selectedPlacedElement, elementBoxEditId, pendingElementBoxOffsets, updatePlacedElement]);
+
+	const handleElementBoxCancelAndExit = useCallback(() => {
+		setPendingElementBoxOffsets(cloneBoxGridOffsets(elementBoxSnapshotRef.current));
+		setElementBoxEditId(null);
+		elementBoxSnapshotRef.current = null;
+		setElementEditMode(null);
 	}, []);
 
 	const handleToggleBoxMode = useCallback((side: 'left' | 'right') => {
@@ -3037,7 +3199,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								onDeselectSide={activeDesignStep === 3 ? undefined : () => setSelectedInsoleSide(null)}
 								onZoneClick={activeDesignStep === 3 && step3Current.elementsSplit ? (zone, side) => { setSelectedZone(zone); setStep3Side(side); } : undefined}
 								boxEnabled={boxEnabled}
-								gridEditMode={isSelectedGridModeOn}
+								gridEditMode={isSelectedGridModeOn || isElementBoxGridModeOn}
 								heelEdgeThicknessMm={{
 									left: step3Left.heelEdgeThicknessMm,
 									right: step3Right.heelEdgeThicknessMm,
@@ -3062,8 +3224,38 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										[side]: profile,
 									}))
 								}
+								selectedElementTrimlineEdit={
+									elementTrimlineEditId && selectedPlacedElement && selectedPlacedElement.id === elementTrimlineEditId
+										? {
+											elementId: elementTrimlineEditId,
+											side: selectedPlacedElement.side,
+											adjustments: pendingElementTrimlineAdj,
+											profile: pendingElementTrimlineHandleProfile,
+										}
+										: null
+								}
+								onPendingElementTrimlineChange={setPendingElementTrimlineAdj}
+								onPendingElementTrimlineProfileChange={setPendingElementTrimlineHandleProfile}
+								selectedElementBoxEdit={
+									isElementBoxGridModeOn && selectedPlacedElement
+										? {
+											elementId: selectedPlacedElement.id,
+											side: selectedPlacedElement.side,
+											savedOffsets: pendingElementBoxOffsets,
+										}
+										: null
+								}
+								onElementBoxGridSave={handleElementBoxGridSave}
 								onReady={() => setIsViewerReady(true)}
-								disableInteraction={!scansActive}
+								disableInteraction={!scansActive || !!selectedPlacedElement}
+								elementPlacementMode={selectedPlacedElement && elementEditMode === 'move'
+									? { elementId: selectedPlacedElement.id, side: selectedPlacedElement.side }
+									: null}
+								onElementPlace={selectedPlacedElement ? ({ side, u, v }) => {
+									if (selectedPlacedElement.side !== side) return;
+									updatePlacedElement(selectedPlacedElement.id, { positionU: u, positionV: v });
+									setElementEditMode(null);
+								} : undefined}
 							/>
 							{/* ── Viewer loading overlay ── */}
 							{!isViewerReady && (
@@ -3168,12 +3360,124 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								analysisSide={analysisProbe?.side ?? null}
 								className="absolute left-6 top-6 z-20"
 							/>
-							{/* Element action panel – bottom-left corner of canvas */}
+							{/* Element action panel – bottom-right corner of canvas */}
 							{selectedPlacedElement && !selectedInsoleSide && (
 								<ElementActionsPanel
 									element={selectedPlacedElement}
-									className="absolute bottom-6 left-6 z-20 w-[280px]"
+									editMode={elementEditMode}
+									onEditModeChange={handleElementEditModeChange}
+									className="absolute bottom-6 right-6 z-20 w-[280px]"
 								/>
+							)}
+							{selectedPlacedElement && !selectedInsoleSide && elementEditMode === 'move' && (
+								<div className="absolute bottom-6 right-[310px] z-20 ui-overlay-card w-[320px] rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
+									<div className="flex items-center justify-between">
+										<div>
+											<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">Verplaatsen</div>
+											<div className="mt-0.5 text-xs text-(--ui-muted)">Gebruik de pijlen of pijltjestoetsen om het element te verplaatsen</div>
+										</div>
+										<button type="button" onClick={() => setElementEditMode(null)} className="rounded-lg border border-(--ui-border) px-3 py-1.5 text-xs text-(--ui-text)">Annuleren</button>
+									</div>
+									<div className="mt-4 flex justify-center">
+										<div className="grid grid-cols-3 gap-2">
+											<div />
+											<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('up'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Voor">
+												<ArrowUp className="h-4 w-4" />
+											</button>
+											<div />
+											<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('left'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Links">
+												<ArrowLeft className="h-4 w-4" />
+											</button>
+											<div className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.02)] text-[10px] font-semibold uppercase tracking-wide text-(--ui-muted)">Move</div>
+											<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('right'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Rechts">
+												<ArrowRight className="h-4 w-4" />
+											</button>
+											<div />
+											<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('down'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Achter">
+												<ArrowDown className="h-4 w-4" />
+											</button>
+											<div />
+										</div>
+									</div>
+									<div className="mt-3 grid grid-cols-2 gap-2 text-xs text-(--ui-muted)">
+										<div className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.02)] px-3 py-2 text-center">Links / Rechts</div>
+										<div className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.02)] px-3 py-2 text-center">Voor / Achter</div>
+									</div>
+								</div>
+							)}
+							{selectedPlacedElement && !selectedInsoleSide && elementTrimlineEditId === selectedPlacedElement.id && elementEditMode === 'trimline' && (
+								<div className="absolute left-6 bottom-6 z-20 ui-overlay-card w-[320px] rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
+									<div className="flex items-center justify-between">
+										<div>
+											<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">
+												Trimline aanpassen
+											</div>
+											<div className="mt-0.5 text-xs text-(--ui-muted)">
+												{selectedPlacedElement.side === 'left' ? 'Links' : 'Rechts'} — sleep de punten om de rand te wijzigen
+											</div>
+										</div>
+										<button
+											type="button"
+											onClick={() => {
+												setPendingElementTrimlineAdj(normalizeElementTrimlineAdjustments(selectedPlacedElement.trimlineAdjustments));
+												setPendingElementTrimlineHandleProfile(
+													selectedPlacedElement.trimlineHandleProfile
+														? {
+															...selectedPlacedElement.trimlineHandleProfile,
+															tValues: [...selectedPlacedElement.trimlineHandleProfile.tValues],
+															rightOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.rightOffsetsMm],
+															leftOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.leftOffsetsMm],
+														}
+														: null
+												);
+												setElementTrimlineEditId(null);
+												setElementEditMode(null);
+											}}
+											className="rounded-lg border border-(--ui-border) px-2.5 py-1 text-xs text-(--ui-muted) transition hover:bg-[rgba(255,255,255,0.08)] hover:text-(--ui-text)"
+										>
+											Sluiten
+										</button>
+									</div>
+									<div className="mt-3 rounded-xl border border-(--ui-border) bg-black/10 px-3 py-2.5 text-xs text-(--ui-muted)">
+										Vrije contour: sleep de punten rondom het element precies zoals je de rand wilt hebben.
+										<span className="ml-2 font-mono text-(--ui-text)">{pendingElementTrimlineAdj.global > 0 ? '+' : ''}{pendingElementTrimlineAdj.global.toFixed(1)} mm gemiddeld</span>
+									</div>
+									<div className="mt-3 flex gap-2">
+										<button
+											type="button"
+											onClick={() => {
+												updatePlacedElement(selectedPlacedElement.id, {
+													trimlineAdjustments: normalizeElementTrimlineAdjustments(pendingElementTrimlineAdj),
+													trimlineHandleProfile: pendingElementTrimlineHandleProfile
+														? {
+															...pendingElementTrimlineHandleProfile,
+															tValues: [...pendingElementTrimlineHandleProfile.tValues],
+															rightOffsetsMm: [...pendingElementTrimlineHandleProfile.rightOffsetsMm],
+															leftOffsetsMm: [...pendingElementTrimlineHandleProfile.leftOffsetsMm],
+														}
+														: null,
+												});
+												setElementTrimlineEditId(null);
+												setElementEditMode(null);
+											}}
+											className="flex-1 rounded-lg bg-[#56f2d6] px-3 py-2 text-xs font-semibold text-gray-900 transition hover:bg-[#3ddbb8]"
+										>
+											Opslaan
+										</button>
+										{(pendingElementTrimlineAdj.global !== 0 || !!pendingElementTrimlineHandleProfile) && (
+											<button
+												type="button"
+												onClick={() => {
+													setPendingElementTrimlineAdj(normalizeElementTrimlineAdjustments());
+													setPendingElementTrimlineHandleProfile(null);
+												}}
+												className="rounded-lg border border-(--ui-border) px-3 py-2 text-xs text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)]"
+											>
+												Reset
+											</button>
+										)}
+									</div>
+								</div>
 							)}
 							{selectedInsoleSide && !isSelectedGridModeOn && !trimlineEditSide && (
 								<GeneratedInsoleOverlay
@@ -3278,6 +3582,31 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									</div>
 								</div>
 							)}
+							{selectedPlacedElement && !selectedInsoleSide && isElementBoxGridModeOn && (
+								<div className="absolute bottom-6 left-6 z-20 w-[min(92vw,360px)] rounded-2xl border border-ui-border bg-ui-panel/92 px-4 py-3 text-ui-text shadow-xl backdrop-blur">
+									<div className="flex flex-col gap-3">
+										<div className="min-w-0">
+											<div className="flex items-center gap-2">
+												<span className="text-[11px] font-semibold uppercase tracking-wide text-ui-muted">Box bewerken</span>
+												<span className="rounded-full bg-ui-accent/15 px-2 py-0.5 text-[11px] font-semibold text-ui-accent">
+													{selectedPlacedElement.side === 'left' ? 'Links' : 'Rechts'}
+												</span>
+											</div>
+											<p className="mt-1 text-xs leading-relaxed text-ui-muted">
+												Sleep de punten direct op het element om lokaal volume aan te passen. Alleen punten op het element zijn zichtbaar.
+											</p>
+										</div>
+										<div className="flex items-center justify-end gap-2">
+											<Button variant="outline" size="sm" onClick={handleElementBoxCancelAndExit}>
+												Annuleren
+											</Button>
+											<Button size="sm" className="bg-ui-accent text-slate-900 hover:opacity-90" onClick={handleElementBoxSaveAndExit}>
+												Opslaan
+											</Button>
+										</div>
+									</div>
+								</div>
+							)}
 
 							{selectedInsoleSide && isSelectedGridModeOn && (
 								<div className="absolute bottom-6 left-6 z-20 w-[min(92vw,360px)] rounded-2xl border border-ui-border bg-ui-panel/92 px-4 py-3 text-ui-text shadow-xl backdrop-blur">
@@ -3319,6 +3648,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									<ElementInspector
 										element={selectedPlacedElement}
 										standalone
+										editMode={elementEditMode}
 										onClose={() => selectPlacedElement(null)}
 									/>
 								</div>
