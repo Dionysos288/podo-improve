@@ -10,7 +10,7 @@ import {
 	useMemo,
 	useEffect,
 } from 'react';
-import { Canvas, useLoader } from '@react-three/fiber';
+import { Canvas, useLoader, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Text } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
@@ -28,7 +28,7 @@ import { applyAllCorrections } from '@/src/features/design/utils/insoleCorrectio
 import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpPanel';
 import type { CorrectionKey } from '@/src/shared/components/design/correctionsCatalog';
 import type { PlacedElement } from '@/src/features/design/elements/types';
-import { applyElements, applyElementColors, buildElementOverlayGeometries, getElementByKey, type ElementOverlayData } from '@/src/features/design/elements';
+import { applyElements, applyElementColors, buildElementOverlayGeometries, DIEPELEMENTEN_ITEMS, ELEMENTEN_ITEMS, getElementByKey, getElementPreferredStlUrl, getElementStlLoadUrls, type ElementOverlayData } from '@/src/features/design/elements';
 import type {
 	TrimlineAdjustments,
 	TrimlineHandleProfile,
@@ -81,6 +81,10 @@ interface STLMeshProps {
 	textPlacementEnabled?: boolean;
 	textPlacementText?: string;
 	bottomTextOverlay?: BottomTextOverlay;
+	onBottomTextLoadingChange?: (payload: {
+		side: 'left' | 'right';
+		isLoading: boolean;
+	}) => void;
 	onTextPlace?: (payload: {
 		side: 'left' | 'right';
 		point: [number, number, number];
@@ -149,6 +153,61 @@ function getInsoleUvFromLocalPoint(geometry: THREE.BufferGeometry, localPoint: T
 	};
 }
 
+function formatSignatureNumber(value: number | null | undefined): string {
+	if (value == null || !Number.isFinite(value)) return '';
+	return value.toFixed(4);
+}
+
+function getBoxGridOffsetsSignature(offsets: BoxGridSavedOffsets | null | undefined): string {
+	if (!offsets) return '';
+	return `${offsets.cols}x${offsets.rows}:${offsets.offsets
+		.map((value) => formatSignatureNumber(value))
+		.join(',')}`;
+}
+
+function getBottomTextOverlaySignature(overlay: BottomTextOverlay | null | undefined): string {
+	if (!overlay) return '';
+	return [
+		overlay.enabled ? '1' : '0',
+		overlay.text,
+		formatSignatureNumber(overlay.sizeMm),
+		overlay.orientation ?? '',
+		overlay.color ?? '',
+	].join('|');
+}
+
+function getSelectedElementBoxEditSignature(edit: STLMeshProps['selectedElementBoxEdit']): string {
+	if (!edit) return '';
+	return [edit.elementId, edit.side, getBoxGridOffsetsSignature(edit.savedOffsets)].join('|');
+}
+
+function getPlacedElementsSignature(elements: PlacedElement[] | undefined): string {
+	if (!elements || elements.length === 0) return '';
+	return elements
+		.map((element) =>
+			[
+				element.id,
+				element.libraryKey,
+				element.side,
+				element.profile,
+				formatSignatureNumber(element.heightMm),
+				formatSignatureNumber(element.blendMm),
+				formatSignatureNumber(element.trimOffsetMm),
+				element.floorMode,
+				element.split ? '1' : '0',
+				formatSignatureNumber(element.positionU),
+				formatSignatureNumber(element.positionV),
+				formatSignatureNumber(element.rotationRad),
+				formatSignatureNumber(element.scaleU),
+				formatSignatureNumber(element.scaleV),
+				JSON.stringify(element.trimlineAdjustments ?? null),
+				JSON.stringify(element.trimlineHandleProfile ?? null),
+				getBoxGridOffsetsSignature(element.boxGridOffsets),
+			].join('|')
+		)
+		.join('||');
+}
+
 export type TextAnnotation = {
 	id: string;
 	side: 'left' | 'right';
@@ -178,6 +237,11 @@ const ZONE_COLORS = {
 // Global viewer scale so ALL STLs keep real relative dimensions.
 // Source STLs are expected in millimeters.
 const MM_TO_WORLD = 0.4;
+const DEFAULT_VEC3: [number, number, number] = [0, 0, 0];
+const EMPTY_TEXT_ANNOTATIONS: TextAnnotation[] = [];
+const EMPTY_PICKED_POINTS: [number, number, number][] = [];
+const DEFAULT_BOX_ENABLED = { left: false, right: false };
+const DEFAULT_HEEL_EDGE_THICKNESS = { left: 1, right: 1 };
 
 function copyGeometryAttributes(target: THREE.BufferGeometry, source: THREE.BufferGeometry) {
 	const srcPos = source.getAttribute('position') as THREE.BufferAttribute | undefined;
@@ -199,6 +263,18 @@ function copyGeometryAttributes(target: THREE.BufferGeometry, source: THREE.Buff
 	target.computeVertexNormals();
 	target.computeBoundingBox();
 	target.computeBoundingSphere();
+}
+
+function restoreGeometryPositions(
+	geometry: THREE.BufferGeometry,
+	basePositions: Float32Array,
+) {
+	const position = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+	if (!position) return;
+	const array = position.array as Float32Array;
+	if (array.length !== basePositions.length) return;
+	array.set(basePositions);
+	position.needsUpdate = true;
 }
 
 function createTessellatedBoxBaseGeometry(
@@ -250,6 +326,9 @@ function applySavedBoxGridOffsetsToGeometry(
 	}
 	const gridPoints = reconstructGridPointsFromSaved(finalGeometry, offsets, mmToWorld);
 	applyBoxGridDeformation(finalGeometry, gridPoints, 18 * mmToWorld, mmToWorld);
+	finalGeometry.computeVertexNormals();
+	finalGeometry.computeBoundingBox();
+	finalGeometry.computeBoundingSphere();
 	return finalGeometry;
 }
 
@@ -263,22 +342,85 @@ type CachedTextMask = {
 	width: number;
 	height: number;
 	data: Uint8ClampedArray;
+	signedDistance: Float32Array;
 	aspect: number;
 };
 
 const bottomTextMaskCache = new Map<string, CachedTextMask>();
+const MAX_BOTTOM_TEXT_MASK_CACHE_ENTRIES = 24;
+
+function trimBottomTextMaskCache() {
+	while (bottomTextMaskCache.size > MAX_BOTTOM_TEXT_MASK_CACHE_ENTRIES) {
+		const oldestKey = bottomTextMaskCache.keys().next().value;
+		if (!oldestKey) break;
+		bottomTextMaskCache.delete(oldestKey);
+	}
+}
+
+function buildChamferDistanceField(
+	alpha: Uint8ClampedArray,
+	width: number,
+	height: number,
+	insideAsZero: boolean
+) {
+	const count = width * height;
+	const dist = new Float32Array(count);
+	const INF = 1e9;
+	const diag = Math.SQRT2;
+	for (let i = 0; i < count; i++) {
+		const isInside = (alpha[i * 4 + 3] ?? 0) >= 24;
+		dist[i] = insideAsZero ? (isInside ? 0 : INF) : (isInside ? INF : 0);
+	}
+	for (let y = 0; y < height; y++) {
+		for (let x = 0; x < width; x++) {
+			const idx = y * width + x;
+			let best = dist[idx];
+			if (x > 0) best = Math.min(best, dist[idx - 1] + 1);
+			if (y > 0) best = Math.min(best, dist[idx - width] + 1);
+			if (x > 0 && y > 0) best = Math.min(best, dist[idx - width - 1] + diag);
+			if (x + 1 < width && y > 0) best = Math.min(best, dist[idx - width + 1] + diag);
+			dist[idx] = best;
+		}
+	}
+	for (let y = height - 1; y >= 0; y--) {
+		for (let x = width - 1; x >= 0; x--) {
+			const idx = y * width + x;
+			let best = dist[idx];
+			if (x + 1 < width) best = Math.min(best, dist[idx + 1] + 1);
+			if (y + 1 < height) best = Math.min(best, dist[idx + width] + 1);
+			if (x + 1 < width && y + 1 < height) best = Math.min(best, dist[idx + width + 1] + diag);
+			if (x > 0 && y + 1 < height) best = Math.min(best, dist[idx + width - 1] + diag);
+			dist[idx] = best;
+		}
+	}
+	return dist;
+}
+
+function buildSignedDistanceField(alpha: Uint8ClampedArray, width: number, height: number) {
+	const insideDist = buildChamferDistanceField(alpha, width, height, false);
+	const outsideDist = buildChamferDistanceField(alpha, width, height, true);
+	const signed = new Float32Array(width * height);
+	for (let i = 0; i < signed.length; i++) {
+		signed[i] = outsideDist[i] - insideDist[i];
+	}
+	return signed;
+}
 
 function getBottomTextMask(text: string): CachedTextMask | null {
 	const normalized = text.trim();
 	if (!normalized) return null;
 	const cacheKey = normalized.toUpperCase();
 	const cached = bottomTextMaskCache.get(cacheKey);
-	if (cached) return cached;
+	if (cached) {
+		bottomTextMaskCache.delete(cacheKey);
+		bottomTextMaskCache.set(cacheKey, cached);
+		return cached;
+	}
 	if (typeof document === 'undefined') return null;
 
 	const fontSizePx = 480;
-	const paddingX = 120;
-	const paddingY = 96;
+	const paddingX = Math.ceil(fontSizePx * 0.28);
+	const paddingY = Math.ceil(fontSizePx * 0.2);
 	const measureCanvas = document.createElement('canvas');
 	const measureCtx = measureCanvas.getContext('2d');
 	if (!measureCtx) return null;
@@ -290,7 +432,7 @@ function getBottomTextMask(text: string): CachedTextMask | null {
 	const canvas = document.createElement('canvas');
 	canvas.width = width;
 	canvas.height = height;
-	const ctx = canvas.getContext('2d', { willReadFrequently: true });
+	const ctx = canvas.getContext('2d');
 	if (!ctx) return null;
 	ctx.clearRect(0, 0, width, height);
 	ctx.font = `900 ${fontSizePx}px Arial Black, Arial, Helvetica, sans-serif`;
@@ -299,17 +441,48 @@ function getBottomTextMask(text: string): CachedTextMask | null {
 	ctx.lineJoin = 'round';
 	ctx.lineCap = 'round';
 	ctx.imageSmoothingEnabled = true;
-	ctx.fillStyle = '#fff';
-	ctx.fillText(cacheKey, width / 2, height / 2 + fontSizePx * 0.02);
+	ctx.strokeStyle = '#ffffff';
+	ctx.fillStyle = '#ffffff';
+	ctx.lineWidth = Math.max(16, fontSizePx * 0.05);
+	ctx.strokeText(cacheKey, width / 2, height / 2);
+	ctx.fillText(cacheKey, width / 2, height / 2);
 
-	const data = ctx.getImageData(0, 0, width, height).data;
+	const fullImage = ctx.getImageData(0, 0, width, height);
+	const fullData = fullImage.data;
+	let minX = width;
+	let minY = height;
+	let maxX = -1;
+	let maxY = -1;
+	for (let y = 0; y < height; y++) {
+		for (let x = 0; x < width; x++) {
+			const idx = (y * width + x) * 4 + 3;
+			if ((fullData[idx] ?? 0) < 24) continue;
+			if (x < minX) minX = x;
+			if (x > maxX) maxX = x;
+			if (y < minY) minY = y;
+			if (y > maxY) maxY = y;
+		}
+	}
+	if (maxX < minX || maxY < minY) return null;
+	const cropPadding = Math.max(20, Math.ceil(fontSizePx * 0.08));
+	minX = Math.max(0, minX - cropPadding);
+	minY = Math.max(0, minY - cropPadding);
+	maxX = Math.min(width - 1, maxX + cropPadding);
+	maxY = Math.min(height - 1, maxY + cropPadding);
+	const croppedWidth = maxX - minX + 1;
+	const croppedHeight = maxY - minY + 1;
+	const croppedImage = ctx.getImageData(minX, minY, croppedWidth, croppedHeight);
+	const data = croppedImage.data;
+	const signedDistance = buildSignedDistanceField(data, croppedWidth, croppedHeight);
 	const mask: CachedTextMask = {
-		width,
-		height,
+		width: croppedWidth,
+		height: croppedHeight,
 		data,
-		aspect: width / Math.max(1, height),
+		signedDistance,
+		aspect: croppedWidth / Math.max(1, croppedHeight),
 	};
 	bottomTextMaskCache.set(cacheKey, mask);
+	trimBottomTextMaskCache();
 	return mask;
 }
 
@@ -326,6 +499,7 @@ function readBottomTextMaskPixel(mask: CachedTextMask, x: number, y: number) {
 
 function sampleBottomTextMask(mask: CachedTextMask, u: number, v: number) {
 	if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
+
 	const sampleUv = (uu: number, vv: number) => {
 		const fx = Math.max(0, Math.min(1, uu)) * (mask.width - 1);
 		const fy = Math.max(0, Math.min(1, vv)) * (mask.height - 1);
@@ -354,7 +528,42 @@ function sampleBottomTextMask(mask: CachedTextMask, u: number, v: number) {
 		sampleUv(u, v + featherV)
 	) * 0.25;
 	const sampled = sampleCenter * 0.68 + sampleBlur * 0.32;
-	return smoothstep(0.46, 0.64, sampled);
+	return smoothstep(0.16, 0.52, sampled);
+}
+
+function readBottomTextSignedDistance(mask: CachedTextMask, x: number, y: number) {
+	const clampedX = Math.max(0, Math.min(mask.width - 1, x));
+	const clampedY = Math.max(0, Math.min(mask.height - 1, y));
+	return mask.signedDistance[clampedY * mask.width + clampedX] ?? -1e3;
+}
+
+function sampleBottomTextSignedDistance(mask: CachedTextMask, u: number, v: number) {
+	if (u < 0 || u > 1 || v < 0 || v > 1) return -1e3;
+	const fx = u * (mask.width - 1);
+	const fy = v * (mask.height - 1);
+	const x0 = Math.floor(fx);
+	const y0 = Math.floor(fy);
+	const x1 = Math.min(mask.width - 1, x0 + 1);
+	const y1 = Math.min(mask.height - 1, y0 + 1);
+	const tx = fx - x0;
+	const ty = fy - y0;
+	const p00 = readBottomTextSignedDistance(mask, x0, y0);
+	const p10 = readBottomTextSignedDistance(mask, x1, y0);
+	const p01 = readBottomTextSignedDistance(mask, x0, y1);
+	const p11 = readBottomTextSignedDistance(mask, x1, y1);
+	const top = p00 * (1 - tx) + p10 * tx;
+	const bottom = p01 * (1 - tx) + p11 * tx;
+	return top * (1 - ty) + bottom * ty;
+}
+
+function sampleBottomTextSdfFill(mask: CachedTextMask, u: number, v: number, bevelPx: number) {
+	const sdf = sampleBottomTextSignedDistance(mask, u, v);
+	return smoothstep(-bevelPx, bevelPx, sdf);
+}
+
+function sampleBottomTextSdfSupport(mask: CachedTextMask, u: number, v: number, outerPx: number, innerPx: number) {
+	const sdf = sampleBottomTextSignedDistance(mask, u, v);
+	return smoothstep(-outerPx, innerPx, sdf);
 }
 
 function sampleExpandedBottomTextMask(mask: CachedTextMask, u: number, v: number, radiusPx = 10) {
@@ -404,31 +613,29 @@ function applyBottomTextEngraving(
 	const baselineAxis = params.orientation === 'horizontal' ? widthAxis : lengthAxis;
 	const crossAxis = params.orientation === 'horizontal' ? lengthAxis : widthAxis;
 
-	const getAxis = (axis: 'x' | 'y' | 'z', i: number) =>
-		axis === 'x' ? posAttr.getX(i) : axis === 'y' ? posAttr.getY(i) : posAttr.getZ(i);
-	const setAxis = (axis: 'x' | 'y' | 'z', i: number, value: number) => {
-		if (axis === 'x') posAttr.setX(i, value);
-		else if (axis === 'y') posAttr.setY(i, value);
-		else posAttr.setZ(i, value);
+	const getAxis = (axis: 'x' | 'y' | 'z', index: number) =>
+		axis === 'x' ? posAttr.getX(index) : axis === 'y' ? posAttr.getY(index) : posAttr.getZ(index);
+	const setAxis = (axis: 'x' | 'y' | 'z', index: number, value: number) => {
+		if (axis === 'x') posAttr.setX(index, value);
+		else if (axis === 'y') posAttr.setY(index, value);
+		else posAttr.setZ(index, value);
 	};
 
 	const minThickness = thicknessAxis === 'x' ? bbox.min.x : thicknessAxis === 'y' ? bbox.min.y : bbox.min.z;
-	const thicknessSpan = Math.max(
-		1e-6,
-		thicknessAxis === 'x' ? size.x : thicknessAxis === 'y' ? size.y : size.z
-	);
-	const lengthSpan = Math.max(1e-6, lengthAxis === 'x' ? size.x : lengthAxis === 'y' ? size.y : size.z);
+	const thicknessSpan = Math.max(1e-6, thicknessAxis === 'x' ? size.x : thicknessAxis === 'y' ? size.y : size.z);
 	const widthSpan = Math.max(1e-6, widthAxis === 'x' ? size.x : widthAxis === 'y' ? size.y : size.z);
+	const lengthSpan = Math.max(1e-6, lengthAxis === 'x' ? size.x : lengthAxis === 'y' ? size.y : size.z);
 	const baselineMin = baselineAxis === 'x' ? bbox.min.x : baselineAxis === 'y' ? bbox.min.y : bbox.min.z;
 	const baselineMax = baselineAxis === 'x' ? bbox.max.x : baselineAxis === 'y' ? bbox.max.y : bbox.max.z;
 	const baselineSpan = Math.max(1e-6, baselineMax - baselineMin);
+	const endSlice = baselineSpan * 0.03;
 	let minEndMinCross = Number.POSITIVE_INFINITY;
 	let minEndMaxCross = Number.NEGATIVE_INFINITY;
 	let minEndCount = 0;
 	let maxEndMinCross = Number.POSITIVE_INFINITY;
 	let maxEndMaxCross = Number.NEGATIVE_INFINITY;
 	let maxEndCount = 0;
-	const endSlice = baselineSpan * 0.1;
+
 	for (let i = 0; i < posAttr.count; i++) {
 		const baselineValue = getAxis(baselineAxis, i);
 		const crossValue = getAxis(crossAxis, i);
@@ -443,12 +650,11 @@ function applyBottomTextEngraving(
 			maxEndCount++;
 		}
 	}
+
 	const minEndSpan = minEndCount > 10 ? Math.max(0, minEndMaxCross - minEndMinCross) : Number.POSITIVE_INFINITY;
 	const maxEndSpan = maxEndCount > 10 ? Math.max(0, maxEndMaxCross - maxEndMinCross) : Number.POSITIVE_INFINITY;
 	const heelAtMin = minEndSpan <= maxEndSpan;
-	const centerBaseline = heelAtMin
-		? baselineMin + baselineSpan * 0.54
-		: baselineMax - baselineSpan * 0.54;
+	const centerBaseline = heelAtMin ? baselineMin + baselineSpan * 0.54 : baselineMax - baselineSpan * 0.54;
 	const centerCross = crossAxis === 'x'
 		? (bbox.min.x + bbox.max.x) * 0.5
 		: crossAxis === 'y'
@@ -494,12 +700,15 @@ function applyBottomTextEngraving(
 
 		const u = (baselineValue - (centerBaseline - halfBaseline)) / Math.max(1e-6, textBoxBaselineSpan);
 		const v = 1 - (crossValue - (centerCross - halfCross)) / Math.max(1e-6, textBoxCrossSpan);
-		const supportAlpha = sampleExpandedBottomTextMask(mask, u, v, 12);
+		const bevelPx = Math.max(2, Math.min(10, mask.height * 0.045));
+		const supportOuterPx = Math.max(8, Math.min(24, mask.height * 0.12));
+		const supportInnerPx = Math.max(2, Math.min(8, mask.height * 0.03));
+		const supportAlpha = sampleBottomTextSdfSupport(mask, u, v, supportOuterPx, supportInnerPx);
 		if (supportAlpha > 1e-4) {
-			nextThickness = Math.max(nextThickness, minThickness + supportDepthWorld * supportAlpha * bottomWeight);
+			nextThickness = Math.max(nextThickness, minThickness + supportDepthWorld * Math.pow(supportAlpha, 1.1) * bottomWeight);
 		}
-		const alpha = sampleBottomTextMask(mask, u, v);
-		if (alpha <= 0.32) {
+		const alpha = sampleBottomTextSdfFill(mask, u, v, bevelPx);
+		if (alpha <= 0.02) {
 			if (nextThickness !== thicknessValue) {
 				setAxis(thicknessAxis, i, nextThickness);
 			}
@@ -508,7 +717,7 @@ function applyBottomTextEngraving(
 
 		const edgeFadeU = smoothstep(0.02, 0.08, u) * (1 - smoothstep(0.92, 0.98, u));
 		const edgeFadeV = smoothstep(0.02, 0.08, v) * (1 - smoothstep(0.92, 0.98, v));
-		const strength = Math.pow(alpha, 1.95) * edgeFadeU * edgeFadeV * bottomWeight;
+		const strength = Math.pow(alpha, 1.35) * edgeFadeU * edgeFadeV * bottomWeight;
 		if (strength <= 1e-4) {
 			if (nextThickness !== thicknessValue) {
 				setAxis(thicknessAxis, i, nextThickness);
@@ -516,7 +725,7 @@ function applyBottomTextEngraving(
 			continue;
 		}
 
-		nextThickness = Math.max(nextThickness, minThickness + supportDepthWorld * 0.55 + depthWorld * strength);
+		nextThickness = Math.max(nextThickness, minThickness + supportDepthWorld * 0.48 + depthWorld * strength);
 		setAxis(thicknessAxis, i, nextThickness);
 	}
 
@@ -536,8 +745,8 @@ function ensureBottomTextGeometryDetail(
 	const effectiveSizeMm = Math.max(14, Math.max(1, params.sizeMm) * 1.35);
 
 	const targetEdgeWorld = Math.max(
-		0.14 * Math.max(1e-6, params.mmToWorld),
-		(effectiveSizeMm * Math.max(1e-6, params.mmToWorld)) / 20
+		0.11 * Math.max(1e-6, params.mmToWorld),
+		(effectiveSizeMm * Math.max(1e-6, params.mmToWorld)) / 26
 	);
 
 	try {
@@ -595,13 +804,12 @@ function applyGeometryTotalHeight(
 function applyHeelEdgeThicknessBand(
 	geom: THREE.BufferGeometry,
 	heelEdgeThicknessMm: number | null | undefined,
-	mmToWorld: number
+	mmToWorld: number,
+	side: 'left' | 'right' = 'right'
 ) {
 	const targetMm = typeof heelEdgeThicknessMm === 'number' && Number.isFinite(heelEdgeThicknessMm)
-		? heelEdgeThicknessMm
+		? Math.max(0.25, heelEdgeThicknessMm)
 		: 1;
-	const extraMm = Math.max(0, targetMm - 1);
-	if (extraMm <= 1e-6) return;
 
 	const posAttr = geom.getAttribute('position') as THREE.BufferAttribute | undefined;
 	if (!posAttr) return;
@@ -633,33 +841,69 @@ function applyHeelEdgeThicknessBand(
 	const maxW = widthAxis === 'x' ? bbox.max.x : widthAxis === 'y' ? bbox.max.y : bbox.max.z;
 	const minL = lengthAxis === 'x' ? bbox.min.x : lengthAxis === 'y' ? bbox.min.y : bbox.min.z;
 	const maxL = lengthAxis === 'x' ? bbox.max.x : lengthAxis === 'y' ? bbox.max.y : bbox.max.z;
+	const minH = heightAxis === 'x' ? bbox.min.x : heightAxis === 'y' ? bbox.min.y : bbox.min.z;
+	const maxH = heightAxis === 'x' ? bbox.max.x : heightAxis === 'y' ? bbox.max.y : bbox.max.z;
 	const widthSpan = Math.max(1e-6, maxW - minW);
 	const lengthSpan = Math.max(1e-6, maxL - minL);
+	const heightSpan = Math.max(1e-6, maxH - minH);
 	const centerW = (minW + maxW) * 0.5;
-	const extraWorld = extraMm * Math.max(1e-6, mmToWorld);
-	const bandStart = Math.max(0.5, 0.76 - extraMm * 0.08);
+	const halfW = Math.max(1e-6, widthSpan * 0.5);
+	const oneMmWorld = Math.max(1e-6, mmToWorld);
+	const targetBandWorld = Math.max(
+		0.75 * oneMmWorld,
+		Math.min(halfW * 0.42, targetMm * oneMmWorld)
+	);
+	const baselineBandWorld = Math.max(
+		0.75 * oneMmWorld,
+		Math.min(halfW * 0.42, oneMmWorld)
+	);
+	if (Math.abs(targetBandWorld - baselineBandWorld) <= 1e-6) return;
+	const lateralSign = side === 'left' ? -1 : 1;
+	const shoulderLiftWorld = Math.max(oneMmWorld * 0.9, heightSpan * 0.22);
+	const rimTopReference = maxH;
+	const rimInnerReference = maxH - shoulderLiftWorld;
+	const bandWeightAtDistance = (bandWorld: number, distanceFromOuterEdge: number) => {
+		if (distanceFromOuterEdge >= bandWorld) return 0;
+		return 1 - smoothstep01(bandWorld * 0.15, bandWorld, distanceFromOuterEdge);
+	};
 
 	for (let i = 0; i < posAttr.count; i++) {
 		const widthVal = getAxis(i, widthAxis);
 		const lengthVal = getAxis(i, lengthAxis);
-		const lateralNorm = Math.abs(widthVal - centerW) / Math.max(1e-6, widthSpan * 0.5);
-		const edgeWeight = smoothstep01(bandStart, 1.0, lateralNorm);
-		if (edgeWeight <= 1e-4) continue;
+		const heightVal = getAxis(i, heightAxis);
+		const distFromCenter = widthVal - centerW;
+		const lateralSignedNorm = Math.max(-1, Math.min(1, (distFromCenter / halfW) * lateralSign));
+		const lateralSideWeight = smoothstep01(0.2, 0.98, lateralSignedNorm);
+		if (lateralSideWeight <= 1e-4) continue;
+		const signedLateralDistance = distFromCenter * lateralSign;
+		const distanceFromOuterEdge = Math.max(0, halfW - Math.max(0, signedLateralDistance));
+		const targetBandWeight = bandWeightAtDistance(targetBandWorld, distanceFromOuterEdge);
+		const baselineBandWeight = bandWeightAtDistance(baselineBandWorld, distanceFromOuterEdge);
+		const bandDelta = targetBandWeight - baselineBandWeight;
+		if (Math.abs(bandDelta) <= 1e-4) continue;
 
 		const tLen = Math.max(0, Math.min(1, (lengthVal - minL) / lengthSpan));
-		const heelWeight = 1 - smoothstep01(0.48, 0.9, tLen);
-		if (heelWeight <= 1e-4) continue;
+		const heelToArchWeight = 1 - smoothstep01(0.58, 0.84, tLen);
+		if (heelToArchWeight <= 1e-4) continue;
 
-		const sign = widthVal >= centerW ? 1 : -1;
-		const outward = extraWorld * edgeWeight * heelWeight;
-		setAxis(i, widthAxis, widthVal + sign * outward);
+		const heightNorm = Math.max(0, Math.min(1, (heightVal - minH) / heightSpan));
+		const topWeight = smoothstep01(0.36, 0.94, heightNorm);
+		if (topWeight <= 1e-4) continue;
+		const totalWeight = lateralSideWeight * heelToArchWeight * topWeight;
+		if (totalWeight <= 1e-4) continue;
 
-		const heightVal = getAxis(i, heightAxis);
-		setAxis(i, heightAxis, heightVal + outward * 0.12);
+		const desiredHeight = rimInnerReference + (rimTopReference - rimInnerReference) * targetBandWeight;
+		const shoulderDelta = bandDelta > 0
+			? Math.max(0, desiredHeight - heightVal)
+			: -Math.min(shoulderLiftWorld, Math.max(0, heightVal - rimInnerReference));
+		const nextHeight = heightVal + shoulderDelta * Math.abs(bandDelta) * totalWeight;
+		setAxis(i, heightAxis, nextHeight);
 	}
 
 	posAttr.needsUpdate = true;
 	geom.computeVertexNormals();
+	geom.computeBoundingBox();
+	geom.computeBoundingSphere();
 }
 
 /**
@@ -1232,9 +1476,6 @@ function applyZoneColors(geometry: THREE.BufferGeometry): void {
 
 	const tempColor = new THREE.Color();
 
-	console.log('Zone coloring - length axis:', lengthAxis, 'height axis:', heightAxis);
-	console.log('Bounding box:', { sizeX, sizeY, sizeZ });
-
 	for (let i = 0; i < positions.count; i++) {
 		const x = positions.getX(i);
 		const y = positions.getY(i);
@@ -1270,7 +1511,6 @@ function applyZoneColors(geometry: THREE.BufferGeometry): void {
 	}
 
 	geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-	console.log('Zone colors applied to', positions.count, 'vertices');
 }
 
 function applyHeightmapColors(geometry: THREE.BufferGeometry): void {
@@ -1703,6 +1943,56 @@ function rigidFromFrames(source: { heel: THREE.Vector3; meta1: THREE.Vector3; me
 	return new THREE.Matrix4().copy(rot).setPosition(translation);
 }
 
+function snapRegistrationToHeelEdge(
+	source: THREE.BufferGeometry,
+	target: THREE.BufferGeometry,
+	initial: THREE.Matrix4,
+	targetFrame: { heel: THREE.Vector3; meta1: THREE.Vector3; meta5: THREE.Vector3 }
+) {
+	const srcPos = source.getAttribute('position') as THREE.BufferAttribute | undefined;
+	const tgtPos = target.getAttribute('position') as THREE.BufferAttribute | undefined;
+	if (!srcPos || !tgtPos || srcPos.count < 16 || tgtPos.count < 16) return initial;
+
+	const targetFore = new THREE.Vector3()
+		.addVectors(targetFrame.meta1, targetFrame.meta5)
+		.multiplyScalar(0.5);
+	const tLong = new THREE.Vector3().subVectors(targetFore, targetFrame.heel).normalize();
+	if (!Number.isFinite(tLong.lengthSq()) || tLong.lengthSq() < 1e-6) return initial;
+
+	const transformed = new THREE.Vector3();
+	const sourceProj: number[] = [];
+	const targetProj: number[] = [];
+
+	for (let i = 0; i < srcPos.count; i++) {
+		transformed
+			.set(srcPos.getX(i), srcPos.getY(i), srcPos.getZ(i))
+			.applyMatrix4(initial);
+		sourceProj.push(transformed.dot(tLong));
+	}
+	for (let i = 0; i < tgtPos.count; i++) {
+		transformed.set(tgtPos.getX(i), tgtPos.getY(i), tgtPos.getZ(i));
+		targetProj.push(transformed.dot(tLong));
+	}
+
+	sourceProj.sort((a, b) => a - b);
+	targetProj.sort((a, b) => a - b);
+	const sampleCount = Math.max(8, Math.min(64, Math.floor(Math.min(sourceProj.length, targetProj.length) * 0.02)));
+	let srcHeelEdge = 0;
+	let tgtHeelEdge = 0;
+	for (let i = 0; i < sampleCount; i++) {
+		srcHeelEdge += sourceProj[i];
+		tgtHeelEdge += targetProj[i];
+	}
+	srcHeelEdge /= sampleCount;
+	tgtHeelEdge /= sampleCount;
+
+	const deltaWorld = tgtHeelEdge - srcHeelEdge;
+	if (Math.abs(deltaWorld) <= 1e-6) return initial;
+	return new THREE.Matrix4()
+		.makeTranslation(tLong.x * deltaWorld, tLong.y * deltaWorld, tLong.z * deltaWorld)
+		.multiply(initial);
+}
+
 function estimateRigidTransformFromPairs(
 	srcPoints: THREE.Vector3[],
 	tgtPoints: THREE.Vector3[]
@@ -1831,15 +2121,29 @@ function refineRigidICPTrimmed(
 	return { matrix: current, rmseWorld: lastRmse };
 }
 
-function computeOverlayRegistration(source: THREE.BufferGeometry | null, target: THREE.BufferGeometry | null): OverlayRegistration {
+function computeOverlayRegistration(
+	source: THREE.BufferGeometry | null,
+	target: THREE.BufferGeometry | null,
+	options?: { skipIcp?: boolean; snapHeelEdge?: boolean }
+): OverlayRegistration {
 	if (!source || !target) return identityRegistration();
 	const srcAnchors = extractFrameAnchors(source);
 	const tgtAnchors = extractFrameAnchors(target);
 	if (!srcAnchors || !tgtAnchors) return identityRegistration();
 
 	const base = rigidFromFrames(srcAnchors, tgtAnchors);
-	const refined = refineRigidICPTrimmed(source, target, base, 5);
 	const worldToMm = 1 / Math.max(1e-6, MM_TO_WORLD);
+	if (options?.skipIcp) {
+		const snapped = options?.snapHeelEdge
+			? snapRegistrationToHeelEdge(source, target, base, tgtAnchors)
+			: base;
+		return {
+			matrix: snapped,
+			rmseMm: 0,
+			valid: true,
+		};
+	}
+	const refined = refineRigidICPTrimmed(source, target, base, 5);
 
 	return {
 		matrix: refined.matrix,
@@ -1946,7 +2250,7 @@ function buildTrimlineProfileFromGeometry(
 function STLMesh({
 	url,
 	color = '#e8b99a',
-	position = [0, 0, 0],
+	position = DEFAULT_VEC3,
 	meshRole = 'insole',
 	flipLongAxis = false,
 	targetForefootWidthMm,
@@ -1955,7 +2259,7 @@ function STLMesh({
 	trimlineAdjustments,
 	trimlineHandleProfile,
 	interactive = true,
-	rotationOffset = [0, 0, 0],
+	rotationOffset = DEFAULT_VEC3,
 	opacity,
 	onGeometryReady,
 	onPickPoint,
@@ -1981,6 +2285,7 @@ function STLMesh({
 	textPlacementEnabled = false,
 	textPlacementText = '',
 	bottomTextOverlay,
+	onBottomTextLoadingChange,
 	onTextPlace,
 	placedElements,
 	elementPlacementMode = null,
@@ -1993,8 +2298,10 @@ function STLMesh({
 	evaBlockMode = false,
 }: STLMeshProps) {
 	const rawGeometry = useLoader(STLLoader, url);
-	const { parameters } = useDesignStore();
-	const general = parameters.general;
+	const general = useDesignStore((state) => state.parameters.general);
+	const { invalidate } = useThree();
+	const invalidateRef = useRef(invalidate);
+	invalidateRef.current = invalidate;
 	const isLRNumber = (value: unknown): value is { left: number; right: number } => {
 		if (!value || typeof value !== 'object') return false;
 		const maybe = value as Record<string, unknown>;
@@ -2012,6 +2319,7 @@ function STLMesh({
 	};
 	const generalUnknown = general as unknown as Record<string, unknown> | undefined;
 	const shoeSize = getSideNumber(generalUnknown?.shoeSize, 40);
+	const seededShoeSize = getSideNumber(generalUnknown?.seededShoeSize, shoeSize);
 	const soleThicknessMm = getSideNumber(generalUnknown?.soleThicknessMm, 2);
 	const totalInsoleHeightMm = getSideNumber(generalUnknown?.maxInsoleHeightMm, 10);
 	const applyGeneral = meshRole === 'insole';
@@ -2020,13 +2328,67 @@ function STLMesh({
 	const pendingSignatureRef = useRef<string>('');
 	const geometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const animRafRef = useRef<number | null>(null);
+	const placedElementsRafRef = useRef<number | null>(null);
+	const overlayRafRef = useRef<number | null>(null);
+	const hasPlacedElements = Boolean(placedElements && placedElements.length > 0);
+	const placedElementsSignature = useMemo(() => getPlacedElementsSignature(placedElements), [placedElements]);
+	const selectedElementBoxEditSignature = useMemo(
+		() => getSelectedElementBoxEditSignature(selectedElementBoxEdit),
+		[selectedElementBoxEdit]
+	);
+	const savedBoxGridOffsetsSignature = useMemo(
+		() => getBoxGridOffsetsSignature(savedBoxGridOffsets),
+		[savedBoxGridOffsets]
+	);
+	const bottomTextOverlaySignature = useMemo(
+		() => getBottomTextOverlaySignature(bottomTextOverlay),
+		[bottomTextOverlay]
+	);
+	const placedElementsRef = useRef<PlacedElement[] | undefined>(placedElements);
+	placedElementsRef.current = placedElements;
+	const selectedElementBoxEditRef = useRef<STLMeshProps['selectedElementBoxEdit']>(selectedElementBoxEdit);
+	selectedElementBoxEditRef.current = selectedElementBoxEdit;
+	const savedBoxGridOffsetsRef = useRef<BoxGridSavedOffsets | null | undefined>(savedBoxGridOffsets);
+	savedBoxGridOffsetsRef.current = savedBoxGridOffsets;
+	const bottomTextOverlayRef = useRef<BottomTextOverlay | undefined>(bottomTextOverlay);
+	bottomTextOverlayRef.current = bottomTextOverlay;
+	const onBottomTextLoadingChangeRef = useRef(onBottomTextLoadingChange);
+	onBottomTextLoadingChangeRef.current = onBottomTextLoadingChange;
+	const onGeometryReadyRef = useRef(onGeometryReady);
+	onGeometryReadyRef.current = onGeometryReady;
+	const hasPlacedElementsRef = useRef(hasPlacedElements);
+	hasPlacedElementsRef.current = hasPlacedElements;
+	const placedElementsSignatureRef = useRef(placedElementsSignature);
+	placedElementsSignatureRef.current = placedElementsSignature;
+	const selectedElementBoxEditSignatureRef = useRef(selectedElementBoxEditSignature);
+	selectedElementBoxEditSignatureRef.current = selectedElementBoxEditSignature;
+	const lastRenderedOverlaySignatureRef = useRef<string>('');
+	const debugBuildCountersRef = useRef({ overlay: 0, final: 0 });
+	const rebuildElementOverlaysRef = useRef<() => void>(() => undefined);
+	const elementStlCacheVersionRef = useRef(0);
+	const lastOverlayBuildRef = useRef<{
+		geometry: THREE.BufferGeometry | null;
+		positionVersion: number;
+		placedElementsSignature: string;
+		selectedBoxEditSignature: string;
+		stlCacheVersion: number;
+	} | null>(null);
 	const correctedGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const correctedSignatureRef = useRef<string>('');
 	const generalRafRef = useRef<number | null>(null);
+	const bottomTextRebuildRafRef = useRef<number | null>(null);
+	const bottomTextReadyRafRef = useRef<number | null>(null);
 	const baseGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const boxTessellatedBaseRef = useRef<THREE.BufferGeometry | null>(null);
+	const boxPreviewGeometryRef = useRef<THREE.BufferGeometry | null>(null);
+	const boxPreviewBasePositionsRef = useRef<Float32Array | null>(null);
+	const bottomTextBaseGeometryRef = useRef<THREE.BufferGeometry | null>(null);
+	const bottomTextBasePositionsRef = useRef<Float32Array | null>(null);
+	const bottomTextDetailSignatureRef = useRef<string>('');
 	const elementBoxBaseGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const elementBoxTessellatedBaseRef = useRef<THREE.BufferGeometry | null>(null);
+	const elementBoxPreviewGeometryRef = useRef<THREE.BufferGeometry | null>(null);
+	const elementBoxPreviewBasePositionsRef = useRef<Float32Array | null>(null);
 	// Live ref: updated on EVERY deformation callback so it always holds the latest
 	// box-grid offsets — avoids stale-state issues from debounced React state updates.
 	const pendingBoxGridOffsetsRef = useRef<BoxGridSavedOffsets | null>(null);
@@ -2037,6 +2399,10 @@ function STLMesh({
 		pendingBoxGridOffsetsRef.current = null;
 	}
 	const [baselineZ, setBaselineZ] = useState<number | null>(null);
+
+	const logViewerDebug = useCallback((event: string, payload?: Record<string, unknown>) => {
+		console.debug(`[STLMesh ${meshRole}:${side}] ${event}`, payload ?? {});
+	}, [meshRole, side]);
 
 	const applyOrientation = useCallback((mesh: THREE.Mesh) => {
 		mesh.rotation.set(
@@ -2190,17 +2556,24 @@ function STLMesh({
 
 			// 1) Length fitting:
 			// - default: shoe size heel-anchored stretch/compress
-			// - preferred when trimline exists: fit to scan length + offset envelope
+			// - when trimline exists: fit to scan length + offset envelope, then apply
+			//   the user shoe-size delta relative to the scan-seeded shoe size.
 			const shoeSizeScale =
 				typeof shoeSize === 'number' && Number.isFinite(shoeSize) && shoeSize > 0
 					? euSizeToLengthMm(shoeSize) / euSizeToLengthMm(DEFAULT_SHOE_SIZE)
 					: 1;
+			const seededShoeSizeScale =
+				typeof seededShoeSize === 'number' && Number.isFinite(seededShoeSize) && seededShoeSize > 0
+					? euSizeToLengthMm(seededShoeSize) / euSizeToLengthMm(DEFAULT_SHOE_SIZE)
+					: shoeSizeScale;
+			const relativeShoeSizeScale =
+				seededShoeSizeScale > 1e-6 ? shoeSizeScale / seededShoeSizeScale : 1;
 			const trimOffsetWorld = Math.max(0, trimlineOffsetMm + (trimlineAdjustments?.global ?? 0)) * nextMmToWorld;
 			const targetTrimLength = targetTrimlineProfile
 				? targetTrimlineProfile.lengthWorld + trimOffsetWorld * 2
 				: null;
 			const lengthScale = targetTrimLength
-				? Math.max(0.8, Math.min(1.35, targetTrimLength / lenSpan))
+				? Math.max(0.8, Math.min(1.35, (targetTrimLength / lenSpan) * relativeShoeSizeScale))
 				: shoeSizeScale;
 			const requestedTotalWidthScale =
 				typeof targetForefootWidthMm === 'number' &&
@@ -2872,6 +3245,7 @@ function STLMesh({
 	}, [
 		rawGeometry,
 		shoeSize,
+		seededShoeSize,
 		applyGeneral,
 		flipLongAxis,
 		targetForefootWidthMm,
@@ -2880,35 +3254,109 @@ function STLMesh({
 		trimlineAdjustments,
 		trimlineHandleProfile,
 	]);
+	const mmToWorldRef = useRef(mmToWorld);
+	mmToWorldRef.current = mmToWorld;
 
 	// Create a working geometry that includes corrections
 	const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
 	useEffect(() => {
 		geometryRef.current = geometry;
+		return () => {
+			if (geometryRef.current === geometry) {
+				geometryRef.current = null;
+			}
+			geometry?.dispose();
+		};
 	}, [geometry]);
 
 	// Overlay meshes for each placed element (rendered on top of insole)
 	const [elementOverlays, setElementOverlays] = useState<ElementOverlayData[]>([]);
+	const elementOverlaysRef = useRef<ElementOverlayData[]>([]);
+	useEffect(() => {
+		elementOverlaysRef.current = elementOverlays;
+	}, [elementOverlays]);
+	const elementOverlayById = useMemo(() => {
+		const next = new Map<string, ElementOverlayData>();
+		for (const overlay of elementOverlays) {
+			next.set(overlay.elementId, overlay);
+		}
+		return next;
+	}, [elementOverlays]);
+	const clearElementOverlays = useCallback(() => {
+		lastRenderedOverlaySignatureRef.current = '';
+		setElementOverlays((prev) => {
+			if (prev.length === 0) return prev;
+			prev.forEach((data) => data.geometry.dispose());
+			return [];
+		});
+	}, []);
 
 	// Pre-loaded STL geometries for elements that have stlUrl in their catalog entry
 	const elementStlGeometriesRef = useRef<Map<string, THREE.BufferGeometry>>(new Map());
+	const preloadElementStlLoadUrls = useMemo(() => {
+		const next = new Map<string, string[]>();
+		for (const item of [...ELEMENTEN_ITEMS, ...DIEPELEMENTEN_ITEMS]) {
+			const preferredUrl = getElementPreferredStlUrl(item);
+			const loadUrls = getElementStlLoadUrls(item);
+			if (!preferredUrl || loadUrls.length === 0 || next.has(preferredUrl)) continue;
+			next.set(preferredUrl, loadUrls);
+		}
+		return next;
+	}, []);
+	const elementStlUrlsKey = useMemo(() => {
+		const urls = new Set<string>(preloadElementStlLoadUrls.keys());
+		for (const el of placedElements ?? []) {
+			const item = getElementByKey(el.libraryKey);
+			const stlUrl = item ? getElementPreferredStlUrl(item) : undefined;
+			if (stlUrl) urls.add(stlUrl);
+		}
+		return Array.from(urls).sort().join('|');
+	}, [placedElements, preloadElementStlLoadUrls]);
 
 	// Load element STL files when placed elements change
 	useEffect(() => {
-		if (!placedElements || placedElements.length === 0) return;
+		const desiredUrls = new Set<string>(preloadElementStlLoadUrls.keys());
+		for (const el of placedElements ?? []) {
+			const item = getElementByKey(el.libraryKey);
+			const stlUrl = item ? getElementPreferredStlUrl(item) : undefined;
+			if (stlUrl) desiredUrls.add(stlUrl);
+		}
+		for (const [url, geometry] of elementStlGeometriesRef.current.entries()) {
+			if (!desiredUrls.has(url)) {
+				geometry.dispose();
+				elementStlGeometriesRef.current.delete(url);
+				elementStlCacheVersionRef.current += 1;
+			}
+		}
+		if (desiredUrls.size === 0) return;
 
 		const loader = new STLLoader();
 		const pending = new Map<string, Promise<THREE.BufferGeometry>>();
+		const loadGeometry = (urls: string[], index = 0): Promise<THREE.BufferGeometry> => new Promise((resolve, reject) => {
+			const url = urls[index];
+			if (!url) {
+				reject(new Error('No STL URL available'));
+				return;
+			}
+			loader.load(
+				url,
+				resolve,
+				undefined,
+				(err) => {
+					if (index < urls.length - 1) {
+						loadGeometry(urls, index + 1).then(resolve).catch(reject);
+						return;
+					}
+					reject(err);
+				},
+			);
+		});
 
-		for (const el of placedElements) {
-			const item = getElementByKey(el.libraryKey);
-			if (!item?.stlUrl) continue;
-			if (elementStlGeometriesRef.current.has(item.stlUrl)) continue;
-			if (pending.has(item.stlUrl)) continue;
-
-			pending.set(item.stlUrl, new Promise<THREE.BufferGeometry>((resolve, reject) => {
-				loader.load(item.stlUrl!, resolve, undefined, reject);
-			}));
+		for (const preferredUrl of desiredUrls) {
+			if (elementStlGeometriesRef.current.has(preferredUrl)) continue;
+			if (pending.has(preferredUrl)) continue;
+			const loadUrls = preloadElementStlLoadUrls.get(preferredUrl) ?? [preferredUrl];
+			pending.set(preferredUrl, loadGeometry(loadUrls));
 		}
 
 		if (pending.size === 0) return;
@@ -2920,39 +3368,156 @@ function STLMesh({
 					const geom = await p;
 					if (!cancelled) {
 						elementStlGeometriesRef.current.set(url, geom);
+						elementStlCacheVersionRef.current += 1;
 					}
 				} catch (err) {
 					console.warn(`Failed to load element STL: ${url}`, err);
 				}
 			})
 		).then(() => {
-			if (!cancelled) rebuildElementOverlays();
+			if (!cancelled) {
+				lastOverlayBuildRef.current = null;
+				rebuildElementOverlaysRef.current();
+			}
 		});
 
 		return () => { cancelled = true; };
 	// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [placedElements]);
+	}, [elementStlUrlsKey, placedElements, preloadElementStlLoadUrls]);
+
+	useEffect(() => {
+		return () => {
+			if (animRafRef.current != null) cancelAnimationFrame(animRafRef.current);
+			if (placedElementsRafRef.current != null) cancelAnimationFrame(placedElementsRafRef.current);
+			if (overlayRafRef.current != null) cancelAnimationFrame(overlayRafRef.current);
+			if (generalRafRef.current != null) cancelAnimationFrame(generalRafRef.current);
+			elementOverlaysRef.current.forEach((overlay) => overlay.geometry.dispose());
+			elementOverlaysRef.current = [];
+			for (const geometry of elementStlGeometriesRef.current.values()) {
+				geometry.dispose();
+			}
+			elementStlGeometriesRef.current.clear();
+			correctedGeometryRef.current?.dispose();
+			correctedGeometryRef.current = null;
+			baseGeometryRef.current?.dispose();
+			baseGeometryRef.current = null;
+			boxTessellatedBaseRef.current?.dispose();
+			boxTessellatedBaseRef.current = null;
+			boxPreviewGeometryRef.current?.dispose();
+			boxPreviewGeometryRef.current = null;
+			bottomTextBaseGeometryRef.current?.dispose();
+			bottomTextBaseGeometryRef.current = null;
+			bottomTextBasePositionsRef.current = null;
+			bottomTextDetailSignatureRef.current = '';
+			elementBoxBaseGeometryRef.current?.dispose();
+			elementBoxBaseGeometryRef.current = null;
+			elementBoxTessellatedBaseRef.current?.dispose();
+			elementBoxTessellatedBaseRef.current = null;
+			elementBoxPreviewGeometryRef.current?.dispose();
+			elementBoxPreviewGeometryRef.current = null;
+			lastOverlayBuildRef.current = null;
+			pendingBoxGridOffsetsRef.current = null;
+		};
+	}, []);
 
 	const rebuildElementOverlays = useCallback(() => {
 		const geom = geometryRef.current;
-		if (!geom || !placedElements || placedElements.length === 0) {
-			setElementOverlays(prev => { prev.forEach(d => d.geometry.dispose()); return []; });
+		const posAttr = geom?.getAttribute('position') as THREE.BufferAttribute | undefined;
+		const positionVersion = posAttr?.version ?? 0;
+		const stlCacheVersion = elementStlCacheVersionRef.current;
+		const currentPlacedElementsSignature = placedElementsSignatureRef.current;
+		const currentSelectedElementBoxEditSignature = selectedElementBoxEditSignatureRef.current;
+		const overlayBuildSignature = `${positionVersion}|${currentPlacedElementsSignature}|${currentSelectedElementBoxEditSignature}|${stlCacheVersion}`;
+		const currentPlacedElements = placedElementsRef.current;
+		const currentSelectedBoxEdit = selectedElementBoxEditRef.current;
+		const currentHasPlacedElements = hasPlacedElementsRef.current;
+		const currentMmToWorld = mmToWorldRef.current || 1;
+		const lastBuild = lastOverlayBuildRef.current;
+		if (
+			lastBuild &&
+			lastBuild.geometry === geom &&
+			lastBuild.positionVersion === positionVersion &&
+			lastBuild.placedElementsSignature === currentPlacedElementsSignature &&
+			lastBuild.selectedBoxEditSignature === currentSelectedElementBoxEditSignature &&
+			lastBuild.stlCacheVersion === stlCacheVersion
+		) {
 			return;
 		}
-		const overlays = buildElementOverlayGeometries(geom, placedElements, {
-			mmToWorld: mmToWorld || 1,
+
+		if (!geom || !currentHasPlacedElements || !currentPlacedElements) {
+			lastOverlayBuildRef.current = {
+				geometry: geom ?? null,
+				positionVersion,
+				placedElementsSignature: currentPlacedElementsSignature,
+				selectedBoxEditSignature: currentSelectedElementBoxEditSignature,
+				stlCacheVersion,
+			};
+			logViewerDebug('overlay-clear', {
+				positionVersion,
+				signature: overlayBuildSignature,
+			});
+			clearElementOverlays();
+			invalidateRef.current();
+			return;
+		}
+		const startedAt = performance.now();
+		const boxOffsetsByElementId = new Map<string, BoxGridSavedOffsets | null | undefined>();
+		for (const element of currentPlacedElements) {
+			boxOffsetsByElementId.set(element.id, element.boxGridOffsets);
+		}
+		if (currentSelectedBoxEdit?.elementId) {
+			boxOffsetsByElementId.set(currentSelectedBoxEdit.elementId, currentSelectedBoxEdit.savedOffsets);
+		}
+		const overlays = buildElementOverlayGeometries(geom, currentPlacedElements, {
+			mmToWorld: currentMmToWorld,
 			stlGeometries: elementStlGeometriesRef.current,
 		});
-		const mw = mmToWorld || 1;
+		const mw = currentMmToWorld;
 		for (const overlay of overlays) {
-			const sourceElement = placedElements.find((element) => element.id === overlay.elementId);
-			const effectiveOffsets = selectedElementBoxEdit?.elementId === overlay.elementId
-				? selectedElementBoxEdit.savedOffsets
-				: sourceElement?.boxGridOffsets;
+			const effectiveOffsets = boxOffsetsByElementId.get(overlay.elementId);
 			overlay.geometry = applySavedBoxGridOffsetsToGeometry(overlay.geometry, effectiveOffsets, mw);
 		}
+		lastOverlayBuildRef.current = {
+			geometry: geom,
+			positionVersion,
+			placedElementsSignature: currentPlacedElementsSignature,
+			selectedBoxEditSignature: currentSelectedElementBoxEditSignature,
+			stlCacheVersion,
+		};
+		const nextRenderedOverlaySignature = `${overlayBuildSignature}|${overlays.length}`;
+		if (lastRenderedOverlaySignatureRef.current === nextRenderedOverlaySignature) {
+			overlays.forEach((overlay) => overlay.geometry.dispose());
+			logViewerDebug('overlay-deduped', {
+				ms: Number((performance.now() - startedAt).toFixed(1)),
+				overlays: overlays.length,
+				signature: overlayBuildSignature,
+			});
+			invalidateRef.current();
+			return;
+		}
+		lastRenderedOverlaySignatureRef.current = nextRenderedOverlaySignature;
+		const sequence = ++debugBuildCountersRef.current.overlay;
+		logViewerDebug('overlay-rebuild', {
+			seq: sequence,
+			ms: Number((performance.now() - startedAt).toFixed(1)),
+			overlays: overlays.length,
+			elements: currentPlacedElements.length,
+			positionVersion,
+			signature: overlayBuildSignature,
+		});
 		setElementOverlays(prev => { prev.forEach(d => d.geometry.dispose()); return overlays; });
-	}, [placedElements, mmToWorld, selectedElementBoxEdit]);
+		invalidateRef.current();
+	}, [clearElementOverlays, logViewerDebug]);
+
+	rebuildElementOverlaysRef.current = rebuildElementOverlays;
+
+	const scheduleElementOverlayRebuild = useCallback(() => {
+		if (overlayRafRef.current != null) return;
+		overlayRafRef.current = requestAnimationFrame(() => {
+			overlayRafRef.current = null;
+			rebuildElementOverlaysRef.current();
+		});
+	}, []);
 
 	// EVA block: contour-following solid block (side walls + bottom cap, no top)
 	const evaBlock = useMemo(() => {
@@ -3072,20 +3637,29 @@ function STLMesh({
 			if (Math.abs(thicknessDeltaWorld) < 1e-6) return;
 			const posAttr = geom.getAttribute('position') as THREE.BufferAttribute | undefined;
 			if (!posAttr) return;
+
+			// Ensure we have normals to identify bottom-facing vertices.
+			geom.computeVertexNormals();
+			const normAttr = geom.getAttribute('normal') as THREE.BufferAttribute | undefined;
+			if (!normAttr) return;
+
 			geom.computeBoundingBox();
 			const bbox = geom.boundingBox;
 			if (!bbox) return;
-			// Zooldikte should affect the *bottom layer* only (outsole), i.e. extrude downward.
-			// STLs can come in different axis conventions; pick the smallest bbox dimension
-			// as the thickness axis, then only move a narrow band near the bottom.
+
+			// Zooldikte: extrude the bottom (outsole) surface downward uniformly.
+			// Identify the thickness axis (smallest bbox dimension).
 			const size = bbox.getSize(new THREE.Vector3());
 			const axes: Array<'x' | 'y' | 'z'> = ['x', 'y', 'z'];
 			const sizes = { x: size.x, y: size.y, z: size.z };
 			axes.sort((a, b) => sizes[a] - sizes[b]);
 			const thicknessAxis = axes[0];
-			const minH = thicknessAxis === 'x' ? bbox.min.x : thicknessAxis === 'y' ? bbox.min.y : bbox.min.z;
-			const maxH = thicknessAxis === 'x' ? bbox.max.x : thicknessAxis === 'y' ? bbox.max.y : bbox.max.z;
-			const hSpan = Math.max(1e-6, maxH - minH);
+			const widthAxis = axes[1];
+			const lengthAxis = axes[2];
+
+			const axIdx = thicknessAxis === 'x' ? 0 : thicknessAxis === 'y' ? 1 : 2;
+			const getAxis = (i: number, axis: 'x' | 'y' | 'z') =>
+				axis === 'x' ? posAttr.getX(i) : axis === 'y' ? posAttr.getY(i) : posAttr.getZ(i);
 			const getH = (i: number) =>
 				thicknessAxis === 'x'
 					? posAttr.getX(i)
@@ -3097,18 +3671,128 @@ function STLMesh({
 				else if (thicknessAxis === 'y') posAttr.setY(i, v);
 				else posAttr.setZ(i, v);
 			};
+			const getNormal = (i: number) => {
+				if (axIdx === 0) return normAttr.getX(i);
+				if (axIdx === 1) return normAttr.getY(i);
+				return normAttr.getZ(i);
+			};
+			const minL = lengthAxis === 'x' ? bbox.min.x : lengthAxis === 'y' ? bbox.min.y : bbox.min.z;
+			const maxL = lengthAxis === 'x' ? bbox.max.x : lengthAxis === 'y' ? bbox.max.y : bbox.max.z;
+			const minW = widthAxis === 'x' ? bbox.min.x : widthAxis === 'y' ? bbox.min.y : bbox.min.z;
+			const maxW = widthAxis === 'x' ? bbox.max.x : widthAxis === 'y' ? bbox.max.y : bbox.max.z;
+			const minH = thicknessAxis === 'x' ? bbox.min.x : thicknessAxis === 'y' ? bbox.min.y : bbox.min.z;
+			const maxH = thicknessAxis === 'x' ? bbox.max.x : thicknessAxis === 'y' ? bbox.max.y : bbox.max.z;
+			const lengthSpan = Math.max(1e-6, maxL - minL);
+			const widthSpan = Math.max(1e-6, maxW - minW);
+			const heightSpan = Math.max(1e-6, maxH - minH);
+			const centerW = (minW + maxW) * 0.5;
+			const halfW = Math.max(1e-6, widthSpan * 0.5);
 
-			for (let i = 0; i < posAttr.count; i++) {
+			// --- Step 1: compute initial per-vertex weight from normals ---
+			const count = posAttr.count;
+			const weights = new Float32Array(count);
+			for (let i = 0; i < count; i++) {
+				const nComp = getNormal(i); // negative = bottom-facing
+				weights[i] = Math.max(0, -nComp);
+			}
+
+			// --- Step 2: build adjacency from index buffer and diffuse weights ---
+			// This blends the hard normal-based boundary into a smooth gradient so
+			// there's no visible seam between the thickened outsole and the top surface.
+			const idxAttr = geom.getIndex();
+			if (idxAttr) {
+				// Build adjacency: for each vertex, collect its neighbours.
+				const adj = new Array<Set<number>>(count);
+				for (let i = 0; i < count; i++) adj[i] = new Set();
+				const idx = idxAttr.array;
+				for (let f = 0; f < idx.length; f += 3) {
+					const a = idx[f], b = idx[f + 1], c = idx[f + 2];
+					adj[a].add(b); adj[a].add(c);
+					adj[b].add(a); adj[b].add(c);
+					adj[c].add(a); adj[c].add(b);
+				}
+
+				// A generous number of Laplacian diffusion passes so the weight field
+				// transitions very gradually, eliminating visible seams at edges.
+				const DIFF_PASSES = 18;
+				const DIFF_ALPHA = 0.5;
+				const tmp = new Float32Array(count);
+				for (let pass = 0; pass < DIFF_PASSES; pass++) {
+					for (let i = 0; i < count; i++) {
+						const nbrs = adj[i];
+						if (nbrs.size === 0) { tmp[i] = weights[i]; continue; }
+						let sum = 0;
+						for (const n of nbrs) sum += weights[n];
+						tmp[i] = weights[i] * (1 - DIFF_ALPHA) + (sum / nbrs.size) * DIFF_ALPHA;
+					}
+					weights.set(tmp);
+				}
+			}
+
+			// --- Step 2b: targeted forefoot sidewall wrap ---
+			// The remaining visible seam is mainly at the forefoot sidewall where the
+			// added outsole thickness transitions into the original shell. Boost the
+			// medium-weight lower sidewall vertices only in the forefoot so it reads
+			// as one continuous piece without changing the heel/arch areas.
+			const endSlice = Math.max(lengthSpan * 0.08, 1e-6);
+			let minEndMinWidth = Number.POSITIVE_INFINITY;
+			let minEndMaxWidth = Number.NEGATIVE_INFINITY;
+			let maxEndMinWidth = Number.POSITIVE_INFINITY;
+			let maxEndMaxWidth = Number.NEGATIVE_INFINITY;
+			let minEndCount = 0;
+			let maxEndCount = 0;
+			for (let i = 0; i < count; i++) {
+				const lenVal = getAxis(i, lengthAxis);
+				const widthVal = getAxis(i, widthAxis);
+				if (lenVal <= minL + endSlice) {
+					minEndMinWidth = Math.min(minEndMinWidth, widthVal);
+					minEndMaxWidth = Math.max(minEndMaxWidth, widthVal);
+					minEndCount++;
+				}
+				if (lenVal >= maxL - endSlice) {
+					maxEndMinWidth = Math.min(maxEndMinWidth, widthVal);
+					maxEndMaxWidth = Math.max(maxEndMaxWidth, widthVal);
+					maxEndCount++;
+				}
+			}
+			const minEndWidthSpan =
+				minEndCount > 10 ? Math.max(0, minEndMaxWidth - minEndMinWidth) : widthSpan;
+			const maxEndWidthSpan =
+				maxEndCount > 10 ? Math.max(0, maxEndMaxWidth - maxEndMinWidth) : widthSpan;
+			const heelAtMin = minEndWidthSpan <= maxEndWidthSpan;
+
+			for (let i = 0; i < count; i++) {
+				const lenVal = getAxis(i, lengthAxis);
+				const widthVal = getAxis(i, widthAxis);
+				const rawU = (lenVal - minL) / lengthSpan;
+				const u = Math.max(0, Math.min(1, heelAtMin ? rawU : 1 - rawU));
+				const hNorm = (getH(i) - minH) / heightSpan;
+				const sideNorm = Math.abs((widthVal - centerW) / halfW);
+				const baseWeight = weights[i];
+				const forefootWeight = smoothstep01(0.6, 0.86, u);
+				const lowerSideWeight = 1 - smoothstep01(0.24, 0.72, hNorm);
+				const sidewallFocus = smoothstep01(0.45, 0.82, sideNorm);
+				const seamBandWeight =
+					smoothstep01(0.08, 0.28, baseWeight) * (1 - smoothstep01(0.6, 0.92, baseWeight));
+				const wrapBoost = forefootWeight * lowerSideWeight * sidewallFocus * seamBandWeight;
+				if (wrapBoost <= 1e-4) continue;
+				weights[i] = Math.max(baseWeight, Math.min(1, baseWeight + wrapBoost * 0.65));
+			}
+
+			// --- Step 3: apply displacement ---
+			for (let i = 0; i < count; i++) {
+				const w = weights[i];
+				if (w <= 0.001) continue;
 				const h = getH(i);
-				// Weight = 1 at very bottom, fades quickly to 0.
-				const hNorm = (h - minH) / hSpan;
-				const bottomWeight = 1 - smoothstep01(0.03, 0.18, hNorm);
-				if (bottomWeight <= 0) continue;
-				setH(i, h - thicknessDeltaWorld * bottomWeight);
+				setH(i, h - thicknessDeltaWorld * w);
 			}
 			posAttr.needsUpdate = true;
+
+			// Recompute normals after vertex displacement so shading is smooth
+			// across the transition and there's no visible lighting seam.
+			geom.computeVertexNormals();
 		},
-		[soleThicknessMm, mmToWorld, smoothstep01]
+		[soleThicknessMm, mmToWorld]
 	);
 
 	const applyTotalInsoleHeightAfterCorrections = useCallback((geom: THREE.BufferGeometry) => {
@@ -3117,6 +3801,37 @@ function STLMesh({
 
 	const animateGeometryTo = useCallback((target: THREE.BufferGeometry) => {
 		const existing = geometryRef.current;
+		const currentSavedBoxGridOffsets = savedBoxGridOffsetsRef.current;
+		const currentBottomTextOverlay = bottomTextOverlayRef.current;
+		const currentOnGeometryReady = onGeometryReadyRef.current;
+		const finalizeGeometryUpdate = (geometryToFinalize: THREE.BufferGeometry) => {
+			geometryToFinalize.computeVertexNormals();
+			currentOnGeometryReady?.(geometryToFinalize, { mmToWorld: mmToWorld || 1 });
+			if (showZones) applyZoneColors(geometryToFinalize);
+			else if (heatmap) applyHeightmapColors(geometryToFinalize);
+			else if (deviationMap) applyDeviationColors(geometryToFinalize);
+			else if (clampDebug && meshRole === 'insole') {
+				const applied = applyForefootClampDebugColors(geometryToFinalize, {
+					side,
+					mmToWorld: mmToWorld || 1,
+					targetForefootWidthMm,
+					targetTrimlineProfile,
+					trimlineOffsetMm,
+					trimlineAdjustments,
+				});
+				if (!applied) geometryToFinalize.deleteAttribute('color');
+			} else {
+				geometryToFinalize.deleteAttribute('color');
+			}
+			if (hasPlacedElements) scheduleElementOverlayRebuild();
+			if (meshRef.current) {
+				applyOrientation(meshRef.current);
+				meshRef.current.updateWorldMatrix(true, false);
+				const worldBox = probeWorldBoxRef.current.setFromObject(meshRef.current);
+				setBaselineZ(worldBox.min.z);
+			}
+			invalidate();
+		};
 		// During grid editing, never overwrite geometry — box deformation owns it
 		if (gridEditMode) {
 			target.dispose();
@@ -3124,12 +3839,36 @@ function STLMesh({
 		}
 		if (!existing) {
 			setGeometry(target);
+			invalidate();
 			return;
 		}
 		const existingPos = existing.getAttribute('position') as THREE.BufferAttribute | undefined;
 		const targetPos = target.getAttribute('position') as THREE.BufferAttribute | undefined;
 		if (!existingPos || !targetPos || existingPos.count !== targetPos.count) {
 			setGeometry(target);
+			requestAnimationFrame(() => finalizeGeometryUpdate(target));
+			invalidate();
+			return;
+		}
+		const positionCount = existingPos.count;
+		const shouldSkipTransition =
+			positionCount > 60000 ||
+			hasPlacedElements ||
+			Boolean(currentSavedBoxGridOffsets?.offsets.some((value) => Math.abs(value) > 0.001)) ||
+			Boolean(currentBottomTextOverlay?.enabled && currentBottomTextOverlay.text.trim()) ||
+			Boolean(targetTrimlineProfile) ||
+			Boolean(trimlineAdjustments && (
+				Math.abs(trimlineAdjustments.global ?? 0) > 1e-6 ||
+				Math.abs(trimlineAdjustments.heel ?? 0) > 1e-6 ||
+				Math.abs(trimlineAdjustments.midfoot ?? 0) > 1e-6 ||
+				Math.abs(trimlineAdjustments.forefoot ?? 0) > 1e-6 ||
+				Math.abs(trimlineAdjustments.toe ?? 0) > 1e-6
+			));
+		if (shouldSkipTransition) {
+			copyGeometryAttributes(existing, target);
+			requestAnimationFrame(() => finalizeGeometryUpdate(existing));
+			target.dispose();
+			invalidate();
 			return;
 		}
 		if (animRafRef.current) {
@@ -3149,96 +3888,164 @@ function STLMesh({
 				arr[i] = from[i] + (to[i] - from[i]) * k;
 			}
 			existingPos.needsUpdate = true;
+			invalidate();
 			if (t < 1) {
 				animRafRef.current = requestAnimationFrame(step);
 				return;
 			}
 			animRafRef.current = null;
-			existing.computeVertexNormals();
-			onGeometryReady?.(existing, { mmToWorld: mmToWorld || 1 });
-			// Keep colors in sync when showing heatmap/zones.
-			if (showZones) applyZoneColors(existing);
-			else if (heatmap) applyHeightmapColors(existing);
-			else if (deviationMap) applyDeviationColors(existing);
-			else if (clampDebug && meshRole === 'insole') {
-				const applied = applyForefootClampDebugColors(existing, {
-					side,
-					mmToWorld: mmToWorld || 1,
-					targetForefootWidthMm,
-					targetTrimlineProfile,
-					trimlineOffsetMm,
-					trimlineAdjustments,
-				});
-				if (!applied) existing.deleteAttribute('color');
-			}
-			else existing.deleteAttribute('color');
-			// Rebuild element overlays now that geometry has settled
-			if (placedElements && placedElements.length > 0) rebuildElementOverlays();
-			// Update analysis baseline after geometry changes
-			if (meshRef.current) {
-				applyOrientation(meshRef.current);
-				meshRef.current.updateWorldMatrix(true, false);
-				const worldBox = new THREE.Box3().setFromObject(meshRef.current);
-				setBaselineZ(worldBox.min.z);
-			}
+			finalizeGeometryUpdate(existing);
 		};
 		animRafRef.current = requestAnimationFrame(step);
 		// We no longer need the target geometry object.
 		target.dispose();
-	}, [gridEditMode, showZones, heatmap, clampDebug, deviationMap, placedElements, applyOrientation, onGeometryReady, mmToWorld, rebuildElementOverlays, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments]);
+	}, [gridEditMode, showZones, heatmap, clampDebug, deviationMap, hasPlacedElements, applyOrientation, mmToWorld, scheduleElementOverlayRebuild, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments, invalidate, savedBoxGridOffsetsSignature, bottomTextOverlaySignature]);
 
 	const rebuildFinalGeometryFromCorrected = useCallback(() => {
 		// Don't rebuild geometry while box-grid editing is active
 		if (gridEditMode) return;
 		const corrected = correctedGeometryRef.current;
 		if (!corrected) return;
+		const currentPlacedElements = placedElementsRef.current;
+		const currentBottomTextOverlay = bottomTextOverlayRef.current;
+		const currentSavedBoxGridOffsets = savedBoxGridOffsetsRef.current;
+		const startedAt = performance.now();
 		const workingGeometry = corrected.clone();
 		if (applyGeneral) {
 			applySoleThicknessAfterCorrections(workingGeometry);
 			applyTotalInsoleHeightAfterCorrections(workingGeometry);
 		}
-		// Re-weld to keep mesh as one continuous, watertight piece
-		let finalGeometry = weldAndSmoothNormals(workingGeometry);
-		// Carry scan-deviation data so the diagnostic overlay still works
-		if (workingGeometry.userData.scanDeviations) {
-			finalGeometry.userData.scanDeviations = workingGeometry.userData.scanDeviations;
+		// The corrected geometry is already cached in a welded/smoothed form.
+		// Re-running weldAndSmoothNormals here makes live editing much slower,
+		// especially for element moves and slider changes, without adding value.
+		let finalGeometry = workingGeometry;
+		if (corrected.userData.scanDeviations) {
+			finalGeometry.userData.scanDeviations = corrected.userData.scanDeviations;
 		}
 		// Apply element height displacements (raised pads)
-		if (placedElements && placedElements.length > 0) {
-			applyElements(finalGeometry, placedElements, { mmToWorld: mmToWorld || 1 });
+		if (hasPlacedElements && currentPlacedElements) {
+			applyElements(finalGeometry, currentPlacedElements, { mmToWorld: mmToWorld || 1 });
 		}
-		applyHeelEdgeThicknessBand(finalGeometry, heelEdgeThicknessMm, mmToWorld || 1);
-		if (meshRole === 'insole' && bottomTextOverlay?.enabled && bottomTextOverlay.text.trim()) {
-			finalGeometry = ensureBottomTextGeometryDetail(finalGeometry, {
-				sizeMm: bottomTextOverlay.sizeMm,
-				mmToWorld: mmToWorld || 1,
-			});
+		applyHeelEdgeThicknessBand(finalGeometry, heelEdgeThicknessMm, mmToWorld || 1, side);
+		if (meshRole === 'insole' && currentBottomTextOverlay?.enabled && currentBottomTextOverlay.text.trim()) {
+			const textDetailSignature = [
+				correctedSignatureRef.current,
+				placedElementsSignature,
+				formatSignatureNumber(heelEdgeThicknessMm),
+				formatSignatureNumber(mmToWorld || 1),
+				formatSignatureNumber(currentBottomTextOverlay.sizeMm),
+			].join('|');
+			if (
+				bottomTextDetailSignatureRef.current !== textDetailSignature ||
+				!bottomTextBaseGeometryRef.current ||
+				!bottomTextBasePositionsRef.current
+			) {
+				bottomTextBaseGeometryRef.current?.dispose();
+				const detailed = ensureBottomTextGeometryDetail(finalGeometry, {
+					sizeMm: currentBottomTextOverlay.sizeMm,
+					mmToWorld: mmToWorld || 1,
+				});
+				bottomTextBaseGeometryRef.current = detailed === finalGeometry ? finalGeometry.clone() : detailed;
+				const basePos = bottomTextBaseGeometryRef.current.getAttribute('position') as THREE.BufferAttribute | undefined;
+				bottomTextBasePositionsRef.current = basePos
+					? (basePos.array as Float32Array).slice()
+					: null;
+				bottomTextDetailSignatureRef.current = textDetailSignature;
+			}
+			finalGeometry.dispose();
+			finalGeometry = bottomTextBaseGeometryRef.current.clone();
+			if (bottomTextBasePositionsRef.current) {
+				restoreGeometryPositions(finalGeometry, bottomTextBasePositionsRef.current);
+			}
 			applyBottomTextEngraving(finalGeometry, {
-				text: bottomTextOverlay.text,
-				sizeMm: bottomTextOverlay.sizeMm,
-				orientation: bottomTextOverlay.orientation,
+				text: currentBottomTextOverlay.text,
+				sizeMm: currentBottomTextOverlay.sizeMm,
+				orientation: currentBottomTextOverlay.orientation,
 				mmToWorld: mmToWorld || 1,
 			});
 			finalGeometry.computeVertexNormals();
 		}
 		// Re-apply saved box grid deformation (persists across page reloads)
-		const effectiveBoxOffsets = pendingBoxGridOffsetsRef.current ?? savedBoxGridOffsets;
+		const effectiveBoxOffsets = pendingBoxGridOffsetsRef.current ?? currentSavedBoxGridOffsets;
 		finalGeometry = applySavedBoxGridOffsetsToGeometry(finalGeometry, effectiveBoxOffsets, mmToWorld || 1);
+		finalGeometry.computeVertexNormals();
+		finalGeometry.computeBoundingBox();
+		finalGeometry.computeBoundingSphere();
+		const sequence = ++debugBuildCountersRef.current.final;
+		const finalPos = finalGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+		logViewerDebug('final-geometry-rebuild', {
+			seq: sequence,
+			ms: Number((performance.now() - startedAt).toFixed(1)),
+			vertices: finalPos?.count ?? 0,
+			elements: currentPlacedElements?.length ?? 0,
+			hasBottomText: Boolean(currentBottomTextOverlay?.enabled && currentBottomTextOverlay.text.trim()),
+			signature: placedElementsSignature,
+		});
 		animateGeometryTo(finalGeometry);
-	}, [applyGeneral, applyTotalInsoleHeightAfterCorrections, applySoleThicknessAfterCorrections, animateGeometryTo, placedElements, mmToWorld, meshRole, bottomTextOverlay, gridEditMode, savedBoxGridOffsets, heelEdgeThicknessMm]);
+	}, [applyGeneral, applyTotalInsoleHeightAfterCorrections, applySoleThicknessAfterCorrections, animateGeometryTo, hasPlacedElements, placedElementsSignature, mmToWorld, meshRole, bottomTextOverlaySignature, gridEditMode, savedBoxGridOffsetsSignature, heelEdgeThicknessMm, logViewerDebug]);
 
 	useEffect(() => {
 		if (!correctedGeometryRef.current) return;
-		rebuildFinalGeometryFromCorrected();
-	}, [bottomTextOverlay, rebuildFinalGeometryFromCorrected]);
+		const hasBottomText = Boolean(
+			bottomTextOverlayRef.current?.enabled &&
+			bottomTextOverlayRef.current.text.trim()
+		);
+		if (bottomTextRebuildRafRef.current != null) {
+			cancelAnimationFrame(bottomTextRebuildRafRef.current);
+			bottomTextRebuildRafRef.current = null;
+		}
+		if (bottomTextReadyRafRef.current != null) {
+			cancelAnimationFrame(bottomTextReadyRafRef.current);
+			bottomTextReadyRafRef.current = null;
+		}
+		if (!hasBottomText) {
+			onBottomTextLoadingChangeRef.current?.({ side, isLoading: false });
+			rebuildFinalGeometryFromCorrected();
+			return;
+		}
+		onBottomTextLoadingChangeRef.current?.({ side, isLoading: true });
+		bottomTextRebuildRafRef.current = requestAnimationFrame(() => {
+			bottomTextRebuildRafRef.current = null;
+			rebuildFinalGeometryFromCorrected();
+			bottomTextReadyRafRef.current = requestAnimationFrame(() => {
+				bottomTextReadyRafRef.current = null;
+				onBottomTextLoadingChangeRef.current?.({ side, isLoading: false });
+			});
+		});
+		return () => {
+			if (bottomTextRebuildRafRef.current != null) {
+				cancelAnimationFrame(bottomTextRebuildRafRef.current);
+				bottomTextRebuildRafRef.current = null;
+			}
+			if (bottomTextReadyRafRef.current != null) {
+				cancelAnimationFrame(bottomTextReadyRafRef.current);
+				bottomTextReadyRafRef.current = null;
+			}
+			onBottomTextLoadingChangeRef.current?.({ side, isLoading: false });
+		};
+	}, [bottomTextOverlaySignature, rebuildFinalGeometryFromCorrected]);
+
+	useEffect(() => {
+		return () => {
+			if (bottomTextRebuildRafRef.current != null) {
+				cancelAnimationFrame(bottomTextRebuildRafRef.current);
+				bottomTextRebuildRafRef.current = null;
+			}
+			if (bottomTextReadyRafRef.current != null) {
+				cancelAnimationFrame(bottomTextReadyRafRef.current);
+				bottomTextReadyRafRef.current = null;
+			}
+			onBottomTextLoadingChangeRef.current?.({ side, isLoading: false });
+		};
+	}, [side]);
 
 	// Initialize corrected geometry (base + corrections) when they change (debounced)
 	useEffect(() => {
 		if (!baseGeometry) return;
 
 		const correctionsKey = corrections ? JSON.stringify(corrections) : '';
-		const elementsKey = placedElements ? JSON.stringify(placedElements) : '';
-		const signature = `${baseGeometry.uuid}|${mmToWorld || 1}|${side}|${correctionsKey}|${elementsKey}`;
+		const activeCorrectionsKey = activeCorrections ? activeCorrections.join('|') : '';
+		const signature = `${baseGeometry.uuid}|${mmToWorld || 1}|${side}|${applyGeneral ? '1' : '0'}|${correctionsKey}|${activeCorrectionsKey}`;
 		pendingSignatureRef.current = signature;
 
 		// Only recompute corrected geometry if base/corrections/side are unchanged
@@ -3298,12 +4105,37 @@ function STLMesh({
 		baseGeometry,
 		corrections,
 		activeCorrections,
-		placedElements,
 		side,
 		mmToWorld,
 		applyGeneral,
 		rebuildFinalGeometryFromCorrected,
 	]);
+
+	useEffect(() => {
+		if (!correctedGeometryRef.current) return;
+		if (placedElementsRafRef.current != null) {
+			cancelAnimationFrame(placedElementsRafRef.current);
+		}
+		placedElementsRafRef.current = requestAnimationFrame(() => {
+			placedElementsRafRef.current = null;
+			rebuildFinalGeometryFromCorrected();
+		});
+		return () => {
+			if (placedElementsRafRef.current != null) {
+				cancelAnimationFrame(placedElementsRafRef.current);
+				placedElementsRafRef.current = null;
+			}
+		};
+	}, [placedElementsSignature, rebuildFinalGeometryFromCorrected]);
+
+	useEffect(() => {
+		return () => {
+			if (overlayRafRef.current != null) {
+				cancelAnimationFrame(overlayRafRef.current);
+				overlayRafRef.current = null;
+			}
+		};
+	}, []);
 
 	// Apply general sliders (thickness/rim) immediately without waiting for the debounce.
 	useEffect(() => {
@@ -3328,15 +4160,21 @@ function STLMesh({
 	useEffect(() => {
 		if (!geometry) return;
 		if (showZones) {
+			clearElementOverlays();
 			applyZoneColors(geometry);
+			invalidate();
 			return;
 		}
 		if (heatmap) {
+			clearElementOverlays();
 			applyHeightmapColors(geometry);
+			invalidate();
 			return;
 		}
 		if (deviationMap) {
+			clearElementOverlays();
 			applyDeviationColors(geometry);
+			invalidate();
 			return;
 		}
 		if (clampDebug && meshRole === 'insole') {
@@ -3348,33 +4186,63 @@ function STLMesh({
 				trimlineOffsetMm,
 				trimlineAdjustments,
 			});
-			if (applied) return;
+			if (applied) {
+				clearElementOverlays();
+				invalidate();
+				return;
+			}
 		}
 		geometry.deleteAttribute('color');
 		// Element overlays are rebuilt via rebuildElementOverlays (called from animateGeometryTo
 		// and here when placedElements/geometry reference changes)
-		if (placedElements && placedElements.length > 0) {
-			rebuildElementOverlays();
+		if (hasPlacedElements) {
+			scheduleElementOverlayRebuild();
 		} else {
-			setElementOverlays(prev => { prev.forEach(d => d.geometry.dispose()); return []; });
+			clearElementOverlays();
+			invalidate();
 		}
-	}, [geometry, showZones, heatmap, clampDebug, deviationMap, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments, placedElements, mmToWorld, rebuildElementOverlays]);
+		invalidate();
+	}, [geometry, showZones, heatmap, clampDebug, deviationMap, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments, hasPlacedElements, mmToWorld, scheduleElementOverlayRebuild, clearElementOverlays, invalidate]);
 
 	const probeRafRef = useRef<number | null>(null);
-	const pendingProbeRef = useRef<{
-		point: THREE.Vector3;
+	const pendingProbeInputRef = useRef<{
+		x: number;
+		y: number;
+		z: number;
+		side: 'left' | 'right';
+		baseline: number;
+		mmToWorld: number;
+	} | null>(null);
+	const probePointRef = useRef(new THREE.Vector3());
+	const lastProbePayloadRef = useRef<{
+		x: number;
+		y: number;
+		z: number;
 		heightMm: number;
 		side: 'left' | 'right';
 	} | null>(null);
+	const probeWorldBoxRef = useRef(new THREE.Box3());
+	const probeRaycasterRef = useRef(new THREE.Raycaster());
+	const probeRayOriginRef = useRef(new THREE.Vector3());
+	const probeRayDirectionRef = useRef(new THREE.Vector3(0, 0, -1));
 
 	useEffect(() => {
 		if (!meshRef.current || !geometry) return;
 		// Ensure consistent STL orientation (avoid per-frame mutation)
 		applyOrientation(meshRef.current);
 		meshRef.current.updateWorldMatrix(true, false);
-		const worldBox = new THREE.Box3().setFromObject(meshRef.current);
+		const worldBox = probeWorldBoxRef.current.setFromObject(meshRef.current);
 		setBaselineZ(worldBox.min.z);
 	}, [geometry, applyOrientation]);
+
+	useEffect(() => {
+		return () => {
+			if (probeRafRef.current != null) {
+				cancelAnimationFrame(probeRafRef.current);
+				probeRafRef.current = null;
+			}
+		};
+	}, []);
 
 	// Clone the base geometry when entering grid edit mode (for non-destructive editing)
 	useEffect(() => {
@@ -3384,6 +4252,11 @@ function STLMesh({
 				boxTessellatedBaseRef.current.dispose();
 				boxTessellatedBaseRef.current = null;
 			}
+			if (boxPreviewGeometryRef.current) {
+				boxPreviewGeometryRef.current.dispose();
+				boxPreviewGeometryRef.current = null;
+			}
+			boxPreviewBasePositionsRef.current = null;
 			return;
 		}
 		// Only snapshot once per grid session — don't overwrite with deformed clones
@@ -3399,6 +4272,11 @@ function STLMesh({
 			elementBoxTessellatedBaseRef.current.dispose();
 			elementBoxTessellatedBaseRef.current = null;
 		}
+		if (elementBoxPreviewGeometryRef.current) {
+			elementBoxPreviewGeometryRef.current.dispose();
+			elementBoxPreviewGeometryRef.current = null;
+		}
+		elementBoxPreviewBasePositionsRef.current = null;
 		if (!selectedElementBoxEdit || selectedElementBoxEdit.side !== side) {
 			return;
 		}
@@ -3413,10 +4291,10 @@ function STLMesh({
 	// setGeometry produces deformed clones.  Propagating those to the parent
 	// would reset camera position (parent camera effect depends on geometry).
 	useEffect(() => {
-		if (geometry && onGeometryReady && !gridEditMode) {
-			onGeometryReady(geometry, { mmToWorld: mmToWorld || 1 });
+		if (geometry && !gridEditMode) {
+			onGeometryReadyRef.current?.(geometry, { mmToWorld: mmToWorld || 1 });
 		}
-	}, [geometry, onGeometryReady, mmToWorld, gridEditMode]);
+	}, [geometry, mmToWorld, gridEditMode]);
 
 
 	if (!geometry) {
@@ -3455,41 +4333,60 @@ function STLMesh({
 				if (pointPickMode || gridEditMode) return;
 				const baseline = baselineZ;
 				if (baseline == null) return;
-				// Measure height as top surface at hovered XY (not the touched face),
-				// so probing from underside still reports the top contour height.
-				let topZ = event.point.z;
-				if (meshRef.current) {
-					const worldBox = new THREE.Box3().setFromObject(meshRef.current);
-					const rayOrigin = new THREE.Vector3(
-						event.point.x,
-						event.point.y,
-						worldBox.max.z + Math.max(5, 10 * (mmToWorld || 1))
-					);
-					const rayDir = new THREE.Vector3(0, 0, -1);
-					const ray = new THREE.Raycaster(
-						rayOrigin,
-						rayDir,
-						0,
-						Math.max(20, (worldBox.max.z - worldBox.min.z) + 20)
-					);
-					const hits = ray.intersectObject(meshRef.current, false);
-					if (hits.length > 0) {
-						topZ = hits[0].point.z;
-					}
-				}
-				const worldHeight = topZ - baseline;
-				const heightMm = worldHeight / (mmToWorld || 1);
-				pendingProbeRef.current = {
-					point: event.point.clone(),
-					heightMm,
+				pendingProbeInputRef.current = {
+					x: event.point.x,
+					y: event.point.y,
+					z: event.point.z,
 					side,
+					baseline,
+					mmToWorld: mmToWorld || 1,
 				};
 				if (probeRafRef.current != null) return;
 				probeRafRef.current = window.requestAnimationFrame(() => {
 					probeRafRef.current = null;
-					const payload = pendingProbeRef.current;
-					if (!payload) return;
-					onProbe(payload);
+					const next = pendingProbeInputRef.current;
+					const mesh = meshRef.current;
+					if (!next || !mesh) return;
+					let topZ = next.z;
+					const worldBox = probeWorldBoxRef.current.setFromObject(mesh);
+					const rayOrigin = probeRayOriginRef.current.set(
+						next.x,
+						next.y,
+						worldBox.max.z + Math.max(5, 10 * next.mmToWorld)
+					);
+					const ray = probeRaycasterRef.current;
+					ray.near = 0;
+					ray.far = Math.max(20, (worldBox.max.z - worldBox.min.z) + 20);
+					ray.set(rayOrigin, probeRayDirectionRef.current);
+					const hits = ray.intersectObject(mesh, false);
+					if (hits.length > 0) {
+						topZ = hits[0].point.z;
+					}
+					const heightMm = (topZ - next.baseline) / next.mmToWorld;
+					const last = lastProbePayloadRef.current;
+					if (
+						last &&
+						last.side === next.side &&
+						last.x === next.x &&
+						last.y === next.y &&
+						last.z === next.z &&
+						last.heightMm === heightMm
+					) {
+						return;
+					}
+					lastProbePayloadRef.current = {
+						x: next.x,
+						y: next.y,
+						z: next.z,
+						heightMm,
+						side: next.side,
+					};
+					const point = probePointRef.current.set(next.x, next.y, next.z);
+					onProbe({
+						point: point.clone(),
+						heightMm,
+						side: next.side,
+					});
 				});
 			} : undefined}
 			onClick={interactive ? (event) => {
@@ -3593,12 +4490,18 @@ function STLMesh({
 
 						const mw = mmToWorld || 1;
 
-						// Tessellate for smooth results (only once, cache result)
 						if (!boxTessellatedBaseRef.current) {
-							boxTessellatedBaseRef.current = createTessellatedBoxBaseGeometry(baseGeometryRef.current, mw);
+							boxTessellatedBaseRef.current = baseGeometryRef.current.clone();
+							const basePos = boxTessellatedBaseRef.current.getAttribute('position') as THREE.BufferAttribute | undefined;
+							boxPreviewBasePositionsRef.current = basePos ? new Float32Array(basePos.array as Float32Array) : null;
 						}
-
-						const working = boxTessellatedBaseRef.current.clone();
+						if (!boxPreviewGeometryRef.current) {
+							boxPreviewGeometryRef.current = boxTessellatedBaseRef.current.clone();
+						}
+						const working = boxPreviewGeometryRef.current;
+						if (boxPreviewBasePositionsRef.current) {
+							restoreGeometryPositions(working, boxPreviewBasePositionsRef.current);
+						}
 						const influenceRadiusMm = 18;
 						applyBoxGridDeformation(
 							working,
@@ -3612,15 +4515,13 @@ function STLMesh({
 						else if (heatmap) applyHeightmapColors(geometry);
 						else if (deviationMap) applyDeviationColors(geometry);
 						else geometry.deleteAttribute('color');
-
-						working.dispose();
 					}}
 				/>
 			)}
 
 			{/* Element overlay meshes — solid coloured pads sitting on the insole surface */}
 			{elementOverlays.map(overlay => (
-				<mesh key={overlay.elementId} geometry={overlay.geometry}>
+				<mesh key={overlay.elementId} geometry={overlay.geometry} frustumCulled={false} renderOrder={4}>
 					<meshStandardMaterial
 						color={overlay.colorHex}
 						roughness={0.45}
@@ -3634,7 +4535,7 @@ function STLMesh({
 				</mesh>
 			))}
 			{selectedElementBoxEdit && selectedElementBoxEdit.side === side && (() => {
-				const editingOverlay = elementOverlays.find((overlay) => overlay.elementId === selectedElementBoxEdit.elementId);
+				const editingOverlay = elementOverlayById.get(selectedElementBoxEdit.elementId);
 				if (!editingOverlay) return null;
 				return (
 					<InteractiveBoxGrid
@@ -3647,21 +4548,25 @@ function STLMesh({
 							if (!elementBoxBaseGeometryRef.current) return;
 							const mw = mmToWorld || 1;
 							if (!elementBoxTessellatedBaseRef.current) {
-								elementBoxTessellatedBaseRef.current = createTessellatedBoxBaseGeometry(
-									elementBoxBaseGeometryRef.current,
-									mw,
-								);
+								elementBoxTessellatedBaseRef.current = elementBoxBaseGeometryRef.current.clone();
+								const basePos = elementBoxTessellatedBaseRef.current.getAttribute('position') as THREE.BufferAttribute | undefined;
+								elementBoxPreviewBasePositionsRef.current = basePos ? new Float32Array(basePos.array as Float32Array) : null;
 							}
-							const working = elementBoxTessellatedBaseRef.current.clone();
+							if (!elementBoxPreviewGeometryRef.current) {
+								elementBoxPreviewGeometryRef.current = elementBoxTessellatedBaseRef.current.clone();
+							}
+							const working = elementBoxPreviewGeometryRef.current;
+							if (elementBoxPreviewBasePositionsRef.current) {
+								restoreGeometryPositions(working, elementBoxPreviewBasePositionsRef.current);
+							}
 							applyBoxGridDeformation(working, points, 18 * mw, mw);
 							copyGeometryAttributes(editingOverlay.geometry, working);
-							working.dispose();
 						}}
 					/>
 				);
 			})()}
 			{selectedElementTrimlineEdit && selectedElementTrimlineEdit.side === side && (() => {
-				const editingOverlay = elementOverlays.find((overlay) => overlay.elementId === selectedElementTrimlineEdit.elementId);
+				const editingOverlay = elementOverlayById.get(selectedElementTrimlineEdit.elementId);
 				if (!editingOverlay) return null;
 				return (
 					<InteractiveTrimline
@@ -3719,6 +4624,10 @@ interface EnhancedSTLViewerProps {
 	textPlacementSizeMm?: number;
 	textAnnotations?: TextAnnotation[];
 	bottomTextOverlay?: BottomTextOverlay;
+	onBottomTextLoadingChange?: (payload: {
+		side: 'left' | 'right';
+		isLoading: boolean;
+	}) => void;
 	onTextPlace?: (payload: {
 		side: 'left' | 'right';
 		point: [number, number, number];
@@ -3820,6 +4729,128 @@ export interface EnhancedSTLViewerRef {
 	getRightMmToWorld: () => number;
 }
 
+function DevPerformanceOverlay() {
+	const [enabled, setEnabled] = useState(false);
+	const [stats, setStats] = useState<{
+		fps: number;
+		avgFrameMs: number;
+		maxFrameMs: number;
+		slowFrames: number;
+		longTasks: number;
+		heapMb: number | null;
+	}>({
+		fps: 0,
+		avgFrameMs: 0,
+		maxFrameMs: 0,
+		slowFrames: 0,
+		longTasks: 0,
+		heapMb: null,
+	});
+
+	useEffect(() => {
+		if (process.env.NODE_ENV !== 'development' || typeof window === 'undefined') {
+			return;
+		}
+		const search = new URLSearchParams(window.location.search);
+		const href = window.location.href;
+		const perfEnabled =
+			search.get('perf') === '1' ||
+			href.includes('&perf=1') ||
+			href.includes('?perf=1');
+		setEnabled(perfEnabled);
+	}, []);
+
+	useEffect(() => {
+		if (!enabled || typeof window === 'undefined') return;
+
+		let rafId: number | null = null;
+		let lastSample = performance.now();
+		let lastFlush = lastSample;
+		let frameCount = 0;
+		let totalFrameMs = 0;
+		let maxFrameMs = 0;
+		let slowFrames = 0;
+		let longTasks = 0;
+
+		const perfWithMemory = performance as Performance & {
+			memory?: {
+				usedJSHeapSize?: number;
+			};
+		};
+
+		let observer: PerformanceObserver | null = null;
+		if (typeof PerformanceObserver !== 'undefined') {
+			try {
+				observer = new PerformanceObserver((list) => {
+					longTasks += list.getEntries().length;
+				});
+				observer.observe({ entryTypes: ['longtask'] });
+			} catch {
+				observer = null;
+			}
+		}
+
+		const tick = (now: number) => {
+			const delta = now - lastSample;
+			lastSample = now;
+			frameCount += 1;
+			totalFrameMs += delta;
+			if (delta > maxFrameMs) maxFrameMs = delta;
+			if (delta > 32) slowFrames += 1;
+
+			if (now - lastFlush >= 500) {
+				const fps = frameCount > 0 ? (frameCount * 1000) / Math.max(1, now - lastFlush) : 0;
+				const avgFrameMs = frameCount > 0 ? totalFrameMs / frameCount : 0;
+				const heapMb = typeof perfWithMemory.memory?.usedJSHeapSize === 'number'
+					? perfWithMemory.memory.usedJSHeapSize / (1024 * 1024)
+					: null;
+				setStats({
+					fps: Number(fps.toFixed(1)),
+					avgFrameMs: Number(avgFrameMs.toFixed(1)),
+					maxFrameMs: Number(maxFrameMs.toFixed(1)),
+					slowFrames,
+					longTasks,
+					heapMb: heapMb == null ? null : Number(heapMb.toFixed(1)),
+				});
+				lastFlush = now;
+				frameCount = 0;
+				totalFrameMs = 0;
+				maxFrameMs = 0;
+				slowFrames = 0;
+				longTasks = 0;
+			}
+
+			rafId = window.requestAnimationFrame(tick);
+		};
+
+		rafId = window.requestAnimationFrame(tick);
+
+		return () => {
+			if (rafId != null) {
+				window.cancelAnimationFrame(rafId);
+			}
+			observer?.disconnect();
+		};
+	}, [enabled]);
+
+	if (!enabled) return null;
+
+	return (
+		<div className="pointer-events-none absolute right-3 top-3 z-50 rounded-xl border border-ui-border bg-ui-panel/90 px-3 py-2 text-[11px] text-ui-text shadow-xl backdrop-blur">
+			<div className="font-semibold text-ui-accent">Perf Monitor</div>
+			<div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-ui-muted">
+				<span>FPS</span><span className="text-right text-ui-text">{stats.fps}</span>
+				<span>Avg frame</span><span className="text-right text-ui-text">{stats.avgFrameMs} ms</span>
+				<span>Max frame</span><span className="text-right text-ui-text">{stats.maxFrameMs} ms</span>
+				<span>Slow frames</span><span className="text-right text-ui-text">{stats.slowFrames}</span>
+				<span>Long tasks</span><span className="text-right text-ui-text">{stats.longTasks}</span>
+				<span>Heap</span><span className="text-right text-ui-text">{stats.heapMb == null ? 'n/a' : `${stats.heapMb} MB`}</span>
+			</div>
+			<div className="mt-2 text-[10px] text-ui-muted">Enable with <span className="text-ui-text">?perf=1</span></div>
+		</div>
+	);
+}
+
 export const EnhancedSTLViewer = forwardRef<
 	EnhancedSTLViewerRef,
 	EnhancedSTLViewerProps
@@ -3855,7 +4886,7 @@ export const EnhancedSTLViewer = forwardRef<
 			textPlacementEnabled = false,
 			textPlacementText = '',
 			textPlacementSizeMm = 8,
-			textAnnotations = [],
+			textAnnotations = EMPTY_TEXT_ANNOTATIONS,
 			bottomTextOverlay,
 			onTextPlace,
 			onSelectSide,
@@ -3868,14 +4899,14 @@ export const EnhancedSTLViewer = forwardRef<
 			elementPlacementMode = null,
 			onElementPlace,
 			onZoneClick,
-			boxEnabled = { left: false, right: false },
+			boxEnabled = DEFAULT_BOX_ENABLED,
 			gridEditMode = false,
-			heelEdgeThicknessMm = { left: 1, right: 1 },
+			heelEdgeThicknessMm = DEFAULT_HEEL_EDGE_THICKNESS,
 			savedBoxGridOffsets,
 			onBoxGridSave,
 			corrections,
 			onPickPoint,
-			pickedPoints = [],
+			pickedPoints = EMPTY_PICKED_POINTS,
 			onRightBBox,
 			landmarkPoints,
 			showGeneratedInsole = false,
@@ -3884,14 +4915,17 @@ export const EnhancedSTLViewer = forwardRef<
 			evaBlockMode = false,
 			trimlineAdjustments,
 			trimlineHandleProfiles,
+			baseInsoleType = 'man',
 			trimlineEditSide = null,
 			onPendingTrimlineChange,
 			onPendingTrimlineProfileChange,
 			onReady,
+			onBottomTextLoadingChange,
 			disableInteraction = false,
 		},
 		ref
 	) => {
+		const shouldFlipBaseLongAxis = baseInsoleType === 'driekwart';
 		const [leftGeometry, setLeftGeometry] =
 			useState<THREE.BufferGeometry | null>(null);
 		const [rightGeometry, setRightGeometry] =
@@ -3902,27 +4936,99 @@ export const EnhancedSTLViewer = forwardRef<
 			useState<THREE.BufferGeometry | null>(null);
 		const [leftMmToWorld, setLeftMmToWorld] = useState<number>(1);
 		const [rightMmToWorld, setRightMmToWorld] = useState<number>(1);
+		const lastRightBBoxSignatureRef = useRef<string>('');
+		const handleLeftGeometryReady = useCallback((geom: THREE.BufferGeometry, meta?: { mmToWorld: number }) => {
+			setLeftGeometry(geom);
+			setLeftMmToWorld(meta?.mmToWorld || 1);
+		}, []);
+		const handleRightGeometryReady = useCallback((geom: THREE.BufferGeometry, meta?: { mmToWorld: number }) => {
+			setRightGeometry(geom);
+			setRightMmToWorld(meta?.mmToWorld || 1);
+			if (!onRightBBox) return;
+			const posAttr = geom.getAttribute('position') as THREE.BufferAttribute | undefined;
+			if (!posAttr) return;
+			const box = new THREE.Box3().setFromBufferAttribute(posAttr);
+			const signature = [
+				box.min.x.toFixed(4),
+				box.min.y.toFixed(4),
+				box.min.z.toFixed(4),
+				box.max.x.toFixed(4),
+				box.max.y.toFixed(4),
+				box.max.z.toFixed(4),
+			].join('|');
+			if (lastRightBBoxSignatureRef.current === signature) return;
+			lastRightBBoxSignatureRef.current = signature;
+			onRightBBox(box);
+		}, [onRightBBox]);
 
-		// Fire onReady once when at least one geometry has loaded
+		// Fire onReady only after the visible geometry + overlays have actually settled.
 		const onReadyFiredRef = useRef(false);
+		const onReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+		const readyKey = [
+			leftUrl ?? '',
+			rightUrl ?? '',
+			leftOverlayUrl ?? '',
+			rightOverlayUrl ?? '',
+		].join('|');
+
+		useEffect(() => {
+			onReadyFiredRef.current = false;
+			if (onReadyTimerRef.current) {
+				clearTimeout(onReadyTimerRef.current);
+				onReadyTimerRef.current = null;
+			}
+		}, [readyKey]);
+
 		useEffect(() => {
 			if (onReadyFiredRef.current) return;
 			const hasLeft = !leftUrl || leftGeometry !== null;
 			const hasRight = !rightUrl || rightGeometry !== null;
-			if (hasLeft && hasRight) {
-				onReadyFiredRef.current = true;
-				onReady?.();
+			const hasLeftOverlay = !leftOverlayUrl || leftOverlayGeometry !== null;
+			const hasRightOverlay = !rightOverlayUrl || rightOverlayGeometry !== null;
+			if (hasLeft && hasRight && hasLeftOverlay && hasRightOverlay) {
+				if (onReadyTimerRef.current != null) return;
+				onReadyTimerRef.current = setTimeout(() => {
+					onReadyTimerRef.current = null;
+					requestAnimationFrame(() => {
+						if (onReadyFiredRef.current) return;
+						onReadyFiredRef.current = true;
+						onReady?.();
+					});
+				}, 260);
+				return;
 			}
-		}, [leftGeometry, rightGeometry, leftUrl, rightUrl, onReady]);
+			if (onReadyTimerRef.current) {
+				clearTimeout(onReadyTimerRef.current);
+				onReadyTimerRef.current = null;
+			}
+		}, [leftGeometry, rightGeometry, leftOverlayGeometry, rightOverlayGeometry, leftUrl, rightUrl, leftOverlayUrl, rightOverlayUrl, onReady]);
+
+		useEffect(() => {
+			return () => {
+				if (onReadyTimerRef.current) {
+					clearTimeout(onReadyTimerRef.current);
+					onReadyTimerRef.current = null;
+				}
+			};
+		}, []);
 
 		const [localLandmarks, setLocalLandmarks] = useState<LandmarkPoints | null>(
 			null
 		);
-		const { setMatchTransform, parameters } = useDesignStore();
-		const general = parameters.general;
+		const setMatchTransform = useDesignStore((state) => state.setMatchTransform);
+		const general = useDesignStore((state) => state.parameters.general);
 		const shoeSize = general?.shoeSize;
 		const soleThicknessMm = general?.soleThicknessMm;
 		const maxInsoleHeightMm = general?.maxInsoleHeightMm;
+		const rightMaxInsoleHeightMm =
+			typeof maxInsoleHeightMm === 'number'
+				? maxInsoleHeightMm
+				: (maxInsoleHeightMm as { left?: number; right?: number } | undefined)?.right ?? 10;
+		const rightSoleThicknessMm =
+			typeof soleThicknessMm === 'number'
+				? soleThicknessMm
+				: (soleThicknessMm as { left?: number; right?: number } | undefined)?.right ?? 2;
+		const generatedArchShiftWorld = (corrections?.apexMiddenvoet?.right ?? 0) * (rightMmToWorld || 1);
 		const euSizeToLengthMm = (eu: number) => (eu * 10) / 1.5;
 		const generatedInsole = useMemo(() => {
 			const shouldShow = showGeneratedInsole;
@@ -3930,22 +5036,31 @@ export const EnhancedSTLViewer = forwardRef<
 			if (!rightGeometry) return null;
 			const mmToWorld = rightMmToWorld || 1;
 			const thicknessWorld =
-				typeof soleThicknessMm === 'number' && Number.isFinite(soleThicknessMm)
-					? Math.max(0.1, soleThicknessMm) * mmToWorld
+				Number.isFinite(rightSoleThicknessMm)
+					? Math.max(0.1, rightSoleThicknessMm) * mmToWorld
 					: 2 * mmToWorld;
+			const rightShoeSizeVal =
+				typeof shoeSize === 'number'
+					? shoeSize
+					: (shoeSize as { left?: number; right?: number } | undefined)?.right ?? 40;
 			const lengthScale =
-				typeof shoeSize === 'number' && Number.isFinite(shoeSize) && shoeSize > 0
-					? euSizeToLengthMm(shoeSize) / euSizeToLengthMm(40)
+				Number.isFinite(rightShoeSizeVal) && rightShoeSizeVal > 0
+					? euSizeToLengthMm(rightShoeSizeVal) / euSizeToLengthMm(40)
 					: 1;
 			const totalHeightMm =
-				typeof maxInsoleHeightMm === 'number' &&
-					Number.isFinite(maxInsoleHeightMm) &&
-					maxInsoleHeightMm > 0
-					? maxInsoleHeightMm
+				Number.isFinite(rightMaxInsoleHeightMm) && rightMaxInsoleHeightMm > 0
+					? rightMaxInsoleHeightMm
 					: 10;
-			const heelEdgeBandWorld = Math.max(
-				0,
-				((heelEdgeThicknessMm?.right ?? 1) - 1) * mmToWorld,
+			if (process.env.NODE_ENV === 'development') {
+				console.log('[GeneratedInsole] totalHeightMm=', totalHeightMm,
+					'thicknessMm=', rightSoleThicknessMm,
+					'shoeSize=', rightShoeSizeVal,
+					'archShift=', (corrections?.apexMiddenvoet?.right ?? 0), 'mm');
+			}
+			const targetArchHeightWorld = Math.max(1.5 * mmToWorld, totalHeightMm * mmToWorld);
+			const rimHeightWorld = Math.max(
+				1.5 * mmToWorld,
+				Math.min(targetArchHeightWorld * 0.6, targetArchHeightWorld - thicknessWorld * 0.35)
 			);
 
 			// If we don't have landmarks yet, still provide a visible response to
@@ -3980,6 +5095,7 @@ export const EnhancedSTLViewer = forwardRef<
 				geom.applyMatrix4(m);
 
 				applyGeometryTotalHeight(geom, totalHeightMm, mmToWorld);
+				applyHeelEdgeThicknessBand(geom, heelEdgeThicknessMm?.right, mmToWorld, 'right');
 				geom.computeVertexNormals();
 				return geom;
 			}
@@ -3988,8 +5104,13 @@ export const EnhancedSTLViewer = forwardRef<
 				padScale: 1.02,
 				thickness: thicknessWorld,
 				lengthScale,
-				rimHeight: totalHeightMm * mmToWorld,
-				rimBandThickness: Math.max(thicknessWorld, thicknessWorld + heelEdgeBandWorld),
+				rimHeight: rimHeightWorld,
+				rimBandThickness: Math.max(
+					0.75 * mmToWorld,
+					Math.min(((heelEdgeThicknessMm?.right ?? 1) * mmToWorld), thicknessWorld * 6)
+				),
+				archCenterShift: generatedArchShiftWorld,
+				targetArchHeight: targetArchHeightWorld,
 				archBoost: 0.75,
 				heelCupDepth: 7 * mmToWorld,
 				toeTaper: 0.14,
@@ -3998,32 +5119,36 @@ export const EnhancedSTLViewer = forwardRef<
 				resV: 70,
 			});
 			if (!built) return built;
-			applyGeometryTotalHeight(built, totalHeightMm, mmToWorld);
+			applyHeelEdgeThicknessBand(built, heelEdgeThicknessMm?.right, mmToWorld, 'right');
 			return built;
-		}, [rightGeometry, localLandmarks, showGeneratedInsole, rightMmToWorld, shoeSize, soleThicknessMm, maxInsoleHeightMm, heelEdgeThicknessMm]);
+		}, [rightGeometry, localLandmarks, showGeneratedInsole, rightMmToWorld, shoeSize, rightSoleThicknessMm, rightMaxInsoleHeightMm, heelEdgeThicknessMm, generatedArchShiftWorld]);
 		const leftMeshRef = useRef<THREE.Group>(null);
 		const rightMeshRef = useRef<THREE.Group>(null);
 		const cameraRef = useRef<THREE.PerspectiveCamera>(null);
 		const controlsRef = useRef<OrbitControlsImpl | null>(null);
 		const cameraInitRef = useRef(false);
 		const prevPresetRef = useRef<string | undefined>(undefined);
-		const [probeState, setProbeState] = useState<{
-			point: [number, number, number];
-			heightMm: number;
-			side: 'left' | 'right';
-		} | null>(null);
 
 		const effectiveShowGeneratedInsole = showGeneratedInsole;
 		const effectiveHideScans = hideScans;
 		const effectiveShowModel = typeof showModel === 'boolean' ? showModel : true;
 		const effectiveViewPreset = analysisEnabled ? 'back' : viewPreset;
+		const useQuarterRegistration = baseInsoleType === 'driekwart';
 		const leftOverlayRegistration = useMemo(
-			() => computeOverlayRegistration(leftOverlayGeometry, leftGeometry),
-			[leftOverlayGeometry, leftGeometry]
+			() =>
+				computeOverlayRegistration(leftOverlayGeometry, leftGeometry, {
+					skipIcp: useQuarterRegistration,
+					snapHeelEdge: useQuarterRegistration,
+				}),
+			[leftOverlayGeometry, leftGeometry, useQuarterRegistration]
 		);
 		const rightOverlayRegistration = useMemo(
-			() => computeOverlayRegistration(rightOverlayGeometry, rightGeometry),
-			[rightOverlayGeometry, rightGeometry]
+			() =>
+				computeOverlayRegistration(rightOverlayGeometry, rightGeometry, {
+					skipIcp: useQuarterRegistration,
+					snapHeelEdge: useQuarterRegistration,
+				}),
+			[rightOverlayGeometry, rightGeometry, useQuarterRegistration]
 		);
 		const leftTrimlineProfile = useMemo(
 			() =>
@@ -4050,26 +5175,6 @@ export const EnhancedSTLViewer = forwardRef<
 			(leftOverlayRegistration.valid || rightOverlayRegistration.valid);
 
 		useEffect(() => {
-			if (process.env.NODE_ENV !== 'development') return;
-			if (leftOverlayRegistration.valid) {
-				console.log('OverlayRegistrationLeft', {
-					rmseMm: Number(leftOverlayRegistration.rmseMm.toFixed(2)),
-					trimlineLenMm: leftTrimlineProfile
-						? Number((leftTrimlineProfile.lengthWorld / Math.max(1e-6, MM_TO_WORLD)).toFixed(1))
-						: null,
-				});
-			}
-			if (rightOverlayRegistration.valid) {
-				console.log('OverlayRegistrationRight', {
-					rmseMm: Number(rightOverlayRegistration.rmseMm.toFixed(2)),
-					trimlineLenMm: rightTrimlineProfile
-						? Number((rightTrimlineProfile.lengthWorld / Math.max(1e-6, MM_TO_WORLD)).toFixed(1))
-						: null,
-				});
-			}
-		}, [leftOverlayRegistration, rightOverlayRegistration, leftTrimlineProfile, rightTrimlineProfile]);
-
-		useEffect(() => {
 			if (!leftOverlayUrl) setLeftOverlayGeometry(null);
 			if (!rightOverlayUrl) setRightOverlayGeometry(null);
 		}, [leftOverlayUrl, rightOverlayUrl]);
@@ -4078,15 +5183,7 @@ export const EnhancedSTLViewer = forwardRef<
 			const cam = cameraRef.current;
 			const ctrl = controlsRef.current;
 			if (!cam) return;
-			// Camera debug info - only in development
-			if (process.env.NODE_ENV === 'development') {
-				const payload = {
-					position: cam.position.toArray(),
-					target: ctrl?.target?.toArray ? ctrl.target.toArray() : [0, 0, 0],
-					up: cam.up.toArray(),
-				};
-				console.log('CameraView', payload);
-			}
+			void ctrl;
 		};
 
 		const handleMatch = () => {
@@ -4373,7 +5470,7 @@ export const EnhancedSTLViewer = forwardRef<
 
 		useEffect(() => {
 			if (!landmarkPoints || !rightMeshRef.current) {
-				Promise.resolve().then(() => setLocalLandmarks(null));
+				setLocalLandmarks((prev) => (prev === null ? prev : null));
 				return;
 			}
 			rightMeshRef.current.updateWorldMatrix(true, false);
@@ -4410,7 +5507,19 @@ export const EnhancedSTLViewer = forwardRef<
 					number,
 				],
 			};
-			Promise.resolve().then(() => setLocalLandmarks(next));
+			setLocalLandmarks((prev) => {
+				if (
+					prev &&
+					prev.meta1[0] === next.meta1[0] && prev.meta1[1] === next.meta1[1] && prev.meta1[2] === next.meta1[2] &&
+					prev.meta5[0] === next.meta5[0] && prev.meta5[1] === next.meta5[1] && prev.meta5[2] === next.meta5[2] &&
+					prev.navicular[0] === next.navicular[0] && prev.navicular[1] === next.navicular[1] && prev.navicular[2] === next.navicular[2] &&
+					prev.calcaneus[0] === next.calcaneus[0] && prev.calcaneus[1] === next.calcaneus[1] && prev.calcaneus[2] === next.calcaneus[2] &&
+					prev.heel[0] === next.heel[0] && prev.heel[1] === next.heel[1] && prev.heel[2] === next.heel[2]
+				) {
+					return prev;
+				}
+				return next;
+			});
 		}, [landmarkPoints, rightGeometry]);
 
 		useEffect(() => {
@@ -4418,24 +5527,6 @@ export const EnhancedSTLViewer = forwardRef<
 				generatedInsole?.dispose?.();
 			};
 		}, [generatedInsole]);
-
-		// Log camera + target whenever view is applied so you can copy values
-		useEffect(() => {
-			// Camera view logging - only in development
-			if (
-				process.env.NODE_ENV === 'development' &&
-				cameraRef.current &&
-				controlsRef.current
-			) {
-				const cam = cameraRef.current;
-				const ctrl = controlsRef.current;
-				console.log('CameraView', {
-					position: cam.position.toArray(),
-					target: ctrl.target.toArray(),
-					up: cam.up.toArray(),
-				});
-			}
-		});
 
 		useEffect(() => {
 			if (!cameraRef.current || !controlsRef.current) return;
@@ -4564,33 +5655,43 @@ export const EnhancedSTLViewer = forwardRef<
 			const size = hasBox ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(200, 200, 200);
 			const span = Math.max(size.x, size.y, size.z);
 			const dist = Math.max(180, span * 1.9);
+			// Named views use a closer camera distance for better detail
+			const closeDist = dist * 0.605;
 
 			switch (effectiveViewPreset) {
 				case 'top':
-					cam.position.set(center.x, center.y + dist, center.z + 0.001);
+					cam.position.set(center.x, center.y + closeDist, center.z + 0.001);
 					cam.up.set(0, 0, 1);
 					break;
 				case 'bottom':
-					cam.position.set(center.x, center.y - dist, center.z - 0.001);
+					cam.position.set(center.x, center.y - closeDist, center.z - 0.001);
 					cam.up.set(0, 0, 1);
 					break;
 				case 'front':
-					cam.position.set(center.x, center.y - dist, center.z + dist * 0.35);
+					// Front of insole = toe end = -Z direction
+					cam.position.set(center.x, center.y + closeDist * 0.15, center.z - closeDist);
 					cam.up.set(0, 1, 0);
 					break;
 				case 'back':
-					cam.position.set(center.x, center.y + dist, center.z + dist * 0.35);
+					// Back of insole = heel end = +Z direction
+					cam.position.set(center.x, center.y + closeDist * 0.15, center.z + closeDist);
 					cam.up.set(0, 1, 0);
 					break;
 				case 'left':
-					cam.position.set(center.x - dist, center.y, center.z + dist * 0.25);
+					cam.position.set(center.x - closeDist, center.y + closeDist * 0.1, center.z);
 					cam.up.set(0, 1, 0);
 					break;
 				case 'right':
-					cam.position.set(center.x + dist, center.y, center.z + dist * 0.25);
+					cam.position.set(center.x + closeDist, center.y + closeDist * 0.1, center.z);
 					cam.up.set(0, 1, 0);
 					break;
 				case 'iso':
+					// Oogpunt: edge-on cross-section from the front/toe end,
+					// camera nearly level with the insole so you can see the
+					// height profile (arch, heel cup) like a side cutaway.
+					cam.position.set(center.x, center.y + closeDist * 0.04, center.z - closeDist * 0.7);
+					cam.up.set(0, 1, 0);
+					break;
 				default:
 					cam.position.set(center.x + dist * 0.8, center.y - dist * 0.8, center.z + dist * 0.9);
 					cam.up.set(0, 1, 0);
@@ -4640,7 +5741,10 @@ export const EnhancedSTLViewer = forwardRef<
 
 		return (
 			<div className={`w-full h-full bg-gray-900 relative ${analysisEnabled ? 'cursor-crosshair' : ''}`}>
+				<DevPerformanceOverlay />
 				<Canvas
+					frameloop="demand"
+					performance={{ min: 0.6, debounce: 150 }}
 					onPointerMissed={() => {
 						if (pointPickMode) return;
 						onDeselectSide?.();
@@ -4664,7 +5768,7 @@ export const EnhancedSTLViewer = forwardRef<
 								<STLMesh
 									url={leftUrl}
 									meshRole={pointPickMode ? 'scan' : 'insole'}
-									flipLongAxis={pointPickMode}
+									flipLongAxis={pointPickMode ? false : shouldFlipBaseLongAxis}
 									targetForefootWidthMm={targetForefootWidthMm?.left ?? undefined}
 									targetTrimlineProfile={!pointPickMode ? leftTrimlineProfile : null}
 									trimlineOffsetMm={trimlineOffsetMm}
@@ -4673,10 +5777,7 @@ export const EnhancedSTLViewer = forwardRef<
 									color={leftOverlayUrl || rightOverlayUrl ? '#cfe9ff' : '#d7dadd'}
 									position={[-30, 0, 0]}
 									interactive={!disableInteraction}
-									onGeometryReady={(geom, meta) => {
-										setLeftGeometry(geom);
-										setLeftMmToWorld(meta?.mmToWorld || 1);
-									}}
+									onGeometryReady={handleLeftGeometryReady}
 									onPickPoint={(pt) => onPickPoint?.([pt.x, pt.y, pt.z])}
 									pointPickMode={pointPickMode}
 									showZones={showZones}
@@ -4691,7 +5792,6 @@ export const EnhancedSTLViewer = forwardRef<
 											heightMm: payload.heightMm,
 											side: payload.side,
 										};
-										setProbeState(next);
 										onProbe?.(next);
 									}}
 									selected={disableInteraction ? false : selectedSide === 'left'}
@@ -4707,6 +5807,7 @@ export const EnhancedSTLViewer = forwardRef<
 									textPlacementEnabled={textPlacementEnabled}
 									textPlacementText={textPlacementText}
 									bottomTextOverlay={bottomTextOverlay}
+									onBottomTextLoadingChange={onBottomTextLoadingChange}
 									onTextPlace={onTextPlace}
 									elementPlacementMode={elementPlacementMode?.side === 'left' ? elementPlacementMode : null}
 									onElementPlace={onElementPlace}
@@ -4726,7 +5827,7 @@ export const EnhancedSTLViewer = forwardRef<
 								<STLMesh
 									url={rightUrl}
 									meshRole={pointPickMode ? 'scan' : 'insole'}
-									flipLongAxis={pointPickMode}
+									flipLongAxis={pointPickMode ? false : shouldFlipBaseLongAxis}
 									targetForefootWidthMm={targetForefootWidthMm?.right ?? undefined}
 									targetTrimlineProfile={!pointPickMode ? rightTrimlineProfile : null}
 									trimlineOffsetMm={trimlineOffsetMm}
@@ -4735,19 +5836,7 @@ export const EnhancedSTLViewer = forwardRef<
 									color={leftOverlayUrl || rightOverlayUrl ? '#cfe9ff' : '#d7dadd'}
 									position={[30, 0, 0]}
 									interactive={!disableInteraction}
-									onGeometryReady={(geom, meta) => {
-										setRightGeometry(geom);
-										setRightMmToWorld(meta?.mmToWorld || 1);
-										if (onRightBBox) {
-											const posAttr = geom.getAttribute(
-												'position'
-											) as THREE.BufferAttribute;
-											const box = new THREE.Box3().setFromBufferAttribute(
-												posAttr
-											);
-											onRightBBox(box);
-										}
-									}}
+									onGeometryReady={handleRightGeometryReady}
 									onPickPoint={(pt) => onPickPoint?.([pt.x, pt.y, pt.z])}
 									pointPickMode={pointPickMode}
 									showZones={showZones}
@@ -4762,7 +5851,6 @@ export const EnhancedSTLViewer = forwardRef<
 											heightMm: payload.heightMm,
 											side: payload.side,
 										};
-										setProbeState(next);
 										onProbe?.(next);
 									}}
 									selected={disableInteraction ? false : selectedSide === 'right'}
@@ -4778,6 +5866,7 @@ export const EnhancedSTLViewer = forwardRef<
 									textPlacementEnabled={textPlacementEnabled}
 									textPlacementText={textPlacementText}
 									bottomTextOverlay={bottomTextOverlay}
+									onBottomTextLoadingChange={onBottomTextLoadingChange}
 									onTextPlace={onTextPlace}
 									elementPlacementMode={elementPlacementMode?.side === 'right' ? elementPlacementMode : null}
 									onElementPlace={onElementPlace}

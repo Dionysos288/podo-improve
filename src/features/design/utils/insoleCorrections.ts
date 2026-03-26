@@ -87,8 +87,8 @@ function getMaxForAxis(bbox: THREE.Box3, axis: string): number {
  * Insoles often arrive with an arbitrary axis direction (length can run min->max or max->min).
  * Many corrections are defined in heel-to-toe terms, so we infer which end is the heel.
  *
- * Heuristic: depending on scan orientation and trimming, the "narrow end" rule can flip.
- * In this project, we treat the heel end as the end with the larger width span.
+ * Heuristic: the heel is the narrower end of the insole, while the forefoot
+ * (ball of foot / metatarsal area) is the wider end.
  */
 function createHeelToToeMapper(params: {
 	positions: THREE.BufferAttribute;
@@ -139,10 +139,10 @@ function createHeelToToeMapper(params: {
 		maxEndCount > 10 ? Math.max(0, maxEndMaxWidth - maxEndMinWidth) : Number.POSITIVE_INFINITY;
 
 	// If heuristic fails (e.g. degenerate geometry), default to heel at min.
-	// NOTE: We intentionally choose the wider end as heel (see comment above).
+	// The heel is the narrower end; the forefoot (ball area) is wider.
 	const heelAtMin =
 		Number.isFinite(minEndWidthSpan) && Number.isFinite(maxEndWidthSpan)
-			? minEndWidthSpan >= maxEndWidthSpan
+			? minEndWidthSpan <= maxEndWidthSpan
 			: true;
 
 	return {
@@ -198,7 +198,7 @@ export function applyKuipHoogte(
 			const heightAdjust = amount * adjustedFactor * lengthWeight;
 			
 			const currentHeight = getAxisValue(positions, i, heightAxis);
-			setAxisValue(positions, i, heightAxis, currentHeight + heightAdjust);
+			setAxisValue(positions, i, heightAxis, currentHeight - heightAdjust);
 		}
 	}
 	
@@ -334,6 +334,8 @@ export function applyMedialeBoogCorrectie(
 	if (amount === 0) return;
 	
 	const positions = geometry.attributes.position as THREE.BufferAttribute;
+	geometry.computeVertexNormals();
+	const normals = geometry.attributes.normal as THREE.BufferAttribute | undefined;
 	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
 	
 	const minWidth = getMinForAxis(bbox, widthAxis);
@@ -344,198 +346,148 @@ export function applyMedialeBoogCorrectie(
 		bbox,
 		lengthSpan,
 	});
+	const normalAxisIndex = heightAxis === 'x' ? 0 : heightAxis === 'y' ? 1 : 2;
 	
 	for (let i = 0; i < positions.count; i++) {
 		const lengthVal = getAxisValue(positions, i, lengthAxis);
 		const widthVal = getAxisValue(positions, i, widthAxis);
+		const heightVal = getAxisValue(positions, i, heightAxis);
 		
 		const relativeLength = heelToToe.getT(lengthVal);
 		const relativeWidth = (widthVal - minWidth) / widthSpan;
 		
-		// Arch zone: broader midfoot span for better support continuity
-		const lengthInArch = relativeLength > 0.14 && relativeLength < 0.7;
-		
-		if (lengthInArch) {
-			// Medial side depends on foot side
-			// For left foot: medial is the right side (higher relativeWidth)
-			// For right foot: medial is the left side (lower relativeWidth)
-			const medialSide = isLeftFoot ? relativeWidth > 0.5 : relativeWidth < 0.5;
-			
-			if (medialSide) {
-				// Calculate arch influence based on position.
-				// Slightly wider and more anterior footprint to better support the navicular and medial column.
-				const lengthWeight = 1 - Math.abs(relativeLength - 0.44) / 0.28;
-				const widthWeight = isLeftFoot 
-					? smoothstep(0.42, 0.86, relativeWidth)
-					: smoothstep(0.58, 0.14, relativeWidth);
-				
-				const archWeight = Math.max(0, lengthWeight) * widthWeight;
-				
-				if (archWeight > 0.01) {
-					const heightAdjust = amount * archWeight;
-					const currentHeight = getAxisValue(positions, i, heightAxis);
-					setAxisValue(positions, i, heightAxis, currentHeight + heightAdjust);
-				}
-			}
-		}
+		const medialCoord = isLeftFoot ? relativeWidth : 1 - relativeWidth;
+		const lengthEnvelope =
+			smoothstep(0.14, 0.24, relativeLength) *
+			(1 - smoothstep(0.6, 0.76, relativeLength));
+		if (lengthEnvelope <= 0.001) continue;
+
+		const innerSlope = smoothstep(0.42, 0.68, medialCoord);
+		const edgeLift = smoothstep(0.68, 0.98, medialCoord);
+		const widthWeight = Math.min(1, 0.45 * innerSlope + 0.55 * edgeLift);
+		if (widthWeight <= 0.001) continue;
+
+		const upNormal = normals
+			? Math.abs(
+				normalAxisIndex === 0
+					? normals.getX(i)
+					: normalAxisIndex === 1
+						? normals.getY(i)
+						: normals.getZ(i)
+			)
+			: 1;
+		const topSurfaceWeight = normals
+			? smoothstep(0.28, 0.86, upNormal)
+			: 1;
+		if (topSurfaceWeight <= 0.001) continue;
+
+		const sideFaceGuard = normals ? smoothstep(0.1, 0.45, upNormal) : 1;
+		const archWeight = lengthEnvelope * widthWeight * topSurfaceWeight * sideFaceGuard;
+		if (archWeight <= 0.001) continue;
+
+		setAxisValue(positions, i, heightAxis, heightVal + amount * archWeight);
 	}
 	
 	positions.needsUpdate = true;
 }
 
 /**
- * GLADSTRIJKEN (Smoothing)
- * Smooths out bumps and height variations across the entire insole surface
- * Works by finding local average heights and using bilinear interpolation
- * to create perfectly smooth transitions without visible bands
- * Higher values = more smoothing (reduces bumps more aggressively)
+ * GLADSTRIJKEN (Smoothing / Surface cleanup)
+ *
+ * Smooths out local surface inconsistencies (bumps, dips, holes, seams)
+ * WITHOUT changing the overall height profile of the insole.
+ *
+ * Uses iterative Laplacian smoothing: each vertex moves toward the average
+ * of its topological neighbours. This eliminates local noise while the
+ * global shape (arch, heel cup, etc.) is preserved.
+ *
+ * Steps:
+ * 1. Build an adjacency map from the index/face buffer
+ * 2. Detect outlier vertices (local height differs from neighbour average
+ *    by more than a threshold) — these are "holes" or spikes
+ * 3. Run N Laplacian smoothing iterations, blending each vertex toward
+ *    its neighbour-average position.  The blend factor and iteration count
+ *    are governed by the intensity slider (0-10).
+ *
+ * intensity  0 → no-op
+ * intensity  1 → gentle polish (1 pass, low blend)
+ * intensity 10 → aggressive fill + smooth (8 passes, high blend)
  */
 export function applyGladstrijken(
 	geometry: THREE.BufferGeometry,
 	intensity: number // 0-10 scale
 ): void {
 	if (intensity === 0) return;
-	
+
 	const positions = geometry.attributes.position as THREE.BufferAttribute;
-	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
-	
-	const minLength = getMinForAxis(bbox, lengthAxis);
-	const minWidth = getMinForAxis(bbox, widthAxis);
-	
-	// Create a grid to compute local average heights
-	// Use fixed resolution for consistent results
-	const gridResolution = 20;
-	const cellSizeLength = lengthSpan / (gridResolution - 1);
-	const cellSizeWidth = widthSpan / (gridResolution - 1);
-	
-	// Build grid of average heights
-	const heightGrid: { sum: number; count: number }[][] = [];
-	for (let i = 0; i < gridResolution; i++) {
-		heightGrid[i] = [];
-		for (let j = 0; j < gridResolution; j++) {
-			heightGrid[i][j] = { sum: 0, count: 0 };
+	const count = positions.count;
+	if (count < 4) return;
+
+	// ── 1. Build adjacency (vertex → set of neighbour vertex indices) ──
+	const adjacency: Set<number>[] = new Array(count);
+	for (let i = 0; i < count; i++) adjacency[i] = new Set();
+
+	const index = geometry.index;
+	if (index) {
+		// Indexed geometry — walk triangles
+		const arr = index.array;
+		for (let t = 0; t < arr.length; t += 3) {
+			const a = arr[t]!, b = arr[t + 1]!, c = arr[t + 2]!;
+			adjacency[a].add(b); adjacency[a].add(c);
+			adjacency[b].add(a); adjacency[b].add(c);
+			adjacency[c].add(a); adjacency[c].add(b);
+		}
+	} else {
+		// Non-indexed: every 3 consecutive vertices form a triangle
+		for (let t = 0; t < count; t += 3) {
+			const a = t, b = t + 1, c = t + 2;
+			if (c >= count) break;
+			adjacency[a].add(b); adjacency[a].add(c);
+			adjacency[b].add(a); adjacency[b].add(c);
+			adjacency[c].add(a); adjacency[c].add(b);
 		}
 	}
-	
-	// First pass: accumulate heights into grid cells
-	for (let i = 0; i < positions.count; i++) {
-		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const widthVal = getAxisValue(positions, i, widthAxis);
-		const heightVal = getAxisValue(positions, i, heightAxis);
-		
-		const gridX = Math.min(gridResolution - 1, Math.max(0, Math.round((lengthVal - minLength) / cellSizeLength)));
-		const gridY = Math.min(gridResolution - 1, Math.max(0, Math.round((widthVal - minWidth) / cellSizeWidth)));
-		
-		heightGrid[gridX][gridY].sum += heightVal;
-		heightGrid[gridX][gridY].count++;
-	}
-	
-	// Compute average heights per cell (fill empty cells with neighbors)
-	const avgHeights: number[][] = [];
-	for (let i = 0; i < gridResolution; i++) {
-		avgHeights[i] = [];
-		for (let j = 0; j < gridResolution; j++) {
-			const cell = heightGrid[i][j];
-			if (cell.count > 0) {
-				avgHeights[i][j] = cell.sum / cell.count;
-			} else {
-				// Find nearest non-empty cell
-				let found = false;
-				for (let r = 1; r < gridResolution && !found; r++) {
-					for (let di = -r; di <= r && !found; di++) {
-						for (let dj = -r; dj <= r && !found; dj++) {
-							const ni = i + di;
-							const nj = j + dj;
-							if (ni >= 0 && ni < gridResolution && nj >= 0 && nj < gridResolution) {
-								const neighbor = heightGrid[ni][nj];
-								if (neighbor.count > 0) {
-									avgHeights[i][j] = neighbor.sum / neighbor.count;
-									found = true;
-								}
-							}
-						}
-					}
-				}
-				if (!found) avgHeights[i][j] = 0;
+
+	// ── 2. Iterative Laplacian smoothing ──
+	// intensity 1 → 1 pass / 0.15 blend
+	// intensity 10 → 8 passes / 0.55 blend
+	const passes = Math.max(1, Math.round(intensity * 0.8));
+	const blendFactor = 0.10 + (intensity / 10) * 0.45; // 0.10 … 0.55
+
+	// Work on a flat copy so we read old positions while writing new ones
+	const px = new Float32Array(count);
+	const py = new Float32Array(count);
+	const pz = new Float32Array(count);
+
+	for (let pass = 0; pass < passes; pass++) {
+		// Snapshot current positions
+		for (let i = 0; i < count; i++) {
+			px[i] = positions.getX(i);
+			py[i] = positions.getY(i);
+			pz[i] = positions.getZ(i);
+		}
+
+		for (let i = 0; i < count; i++) {
+			const nbrs = adjacency[i];
+			if (!nbrs || nbrs.size === 0) continue;
+
+			// Compute neighbour centroid
+			let sx = 0, sy = 0, sz = 0;
+			for (const n of nbrs) {
+				sx += px[n]; sy += py[n]; sz += pz[n];
 			}
+			const inv = 1 / nbrs.size;
+			sx *= inv; sy *= inv; sz *= inv;
+
+			// Blend toward centroid
+			positions.setX(i, px[i] + (sx - px[i]) * blendFactor);
+			positions.setY(i, py[i] + (sy - py[i]) * blendFactor);
+			positions.setZ(i, pz[i] + (sz - pz[i]) * blendFactor);
 		}
 	}
-	
-	// Apply multiple smoothing passes to the grid itself
-	const smoothPasses = Math.ceil(intensity / 2);
-	let smoothedHeights = avgHeights;
-	
-	for (let pass = 0; pass < smoothPasses; pass++) {
-		const newSmoothed: number[][] = [];
-		for (let i = 0; i < gridResolution; i++) {
-			newSmoothed[i] = [];
-			for (let j = 0; j < gridResolution; j++) {
-				let sum = smoothedHeights[i][j];
-				let count = 1;
-				
-				// Average with neighbors (gaussian-like weighting)
-				for (let di = -1; di <= 1; di++) {
-					for (let dj = -1; dj <= 1; dj++) {
-						if (di === 0 && dj === 0) continue;
-						const ni = i + di;
-						const nj = j + dj;
-						if (ni >= 0 && ni < gridResolution && nj >= 0 && nj < gridResolution) {
-							// Corner neighbors get less weight
-							const weight = (di !== 0 && dj !== 0) ? 0.5 : 1.0;
-							sum += smoothedHeights[ni][nj] * weight;
-							count += weight;
-						}
-					}
-				}
-				newSmoothed[i][j] = sum / count;
-			}
-		}
-		smoothedHeights = newSmoothed;
-	}
-	
-	// Normalize intensity to blend factor (0.1 to 0.9)
-	const blendFactor = 0.1 + (intensity / 10) * 0.8;
-	
-	// Second pass: use BILINEAR INTERPOLATION for smooth transitions
-	for (let i = 0; i < positions.count; i++) {
-		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const widthVal = getAxisValue(positions, i, widthAxis);
-		const currentHeight = getAxisValue(positions, i, heightAxis);
-		
-		// Get continuous grid coordinates
-		const gx = (lengthVal - minLength) / cellSizeLength;
-		const gy = (widthVal - minWidth) / cellSizeWidth;
-		
-		// Clamp to grid bounds
-		const gxClamped = Math.max(0, Math.min(gridResolution - 1.001, gx));
-		const gyClamped = Math.max(0, Math.min(gridResolution - 1.001, gy));
-		
-		// Get integer and fractional parts for bilinear interpolation
-		const x0 = Math.floor(gxClamped);
-		const y0 = Math.floor(gyClamped);
-		const x1 = Math.min(x0 + 1, gridResolution - 1);
-		const y1 = Math.min(y0 + 1, gridResolution - 1);
-		const fx = gxClamped - x0;
-		const fy = gyClamped - y0;
-		
-		// Bilinear interpolation between 4 grid points
-		const h00 = smoothedHeights[x0][y0];
-		const h10 = smoothedHeights[x1][y0];
-		const h01 = smoothedHeights[x0][y1];
-		const h11 = smoothedHeights[x1][y1];
-		
-		const targetHeight = 
-			h00 * (1 - fx) * (1 - fy) +
-			h10 * fx * (1 - fy) +
-			h01 * (1 - fx) * fy +
-			h11 * fx * fy;
-		
-		// Blend current height toward target (smoothed interpolated average)
-		const newHeight = currentHeight + (targetHeight - currentHeight) * blendFactor;
-		setAxisValue(positions, i, heightAxis, newHeight);
-	}
-	
+
 	positions.needsUpdate = true;
+	geometry.computeVertexNormals();
 }
 
 function applyFrontalTilt(

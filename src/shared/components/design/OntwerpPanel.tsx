@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, type ReactNode } from 'react';
 import {
 	CollapsibleSection,
 	StyledNumberField,
@@ -22,19 +22,6 @@ const LENGTH_OPTIONS = [
 	{ value: 'lang', label: 'Lang' },
 	{ value: 'kort', label: 'Kort' },
 	{ value: 'midden', label: 'Midden' },
-];
-
-// Height options for Mediaal/Lateraal vlak
-const FLANGE_HEIGHT_OPTIONS = [
-	{ value: 'laag', label: 'Laag' },
-	{ value: 'midden', label: 'Midden' },
-	{ value: 'hoog', label: 'Hoog' },
-];
-
-// Side options for Hielbeencorrectie
-const HEEL_CLIP_SIDE_OPTIONS = [
-	{ value: 'mediaal', label: 'Mediaal' },
-	{ value: 'lateraal', label: 'Lateraal' },
 ];
 
 export interface OntwerpCorrections {
@@ -115,24 +102,27 @@ interface OntwerpPanelProps {
 	corrections?: OntwerpCorrections;
 	onCorrectionsChange?: (corrections: OntwerpCorrections) => void;
 	onApplyToGeometry?: (corrections: OntwerpCorrections, side: 'left' | 'right' | 'both') => void;
-	showZones?: boolean;
-	onShowZonesChange?: (show: boolean) => void;
 	activeCorrections?: CorrectionKey[];
 	soleWidthValueMm?: { left: number; right: number };
-	currentInsoleWidthMm?: { left: number | null; right: number | null };
 	onSoleWidthChange?: (side: 'left' | 'right', value: number) => void;
+	/** Whether the "tekst toevoegen" tool is active */
+	tekstEnabled?: boolean;
+	/** Called when the user toggles the tekst switch */
+	onTekstToggle?: (enabled: boolean) => void;
+	/** Inline editor shown under the tekst switch when active */
+	tekstEditorContent?: ReactNode;
 }
 
 export function OntwerpPanel({
 	corrections: externalCorrections,
 	onCorrectionsChange,
 	onApplyToGeometry,
-	showZones = false,
-	onShowZonesChange,
 	activeCorrections,
 	soleWidthValueMm,
-	currentInsoleWidthMm,
 	onSoleWidthChange,
+	tekstEnabled = false,
+	onTekstToggle,
+	tekstEditorContent,
 }: OntwerpPanelProps) {
 	const [internalCorrections, setInternalCorrections] = useState<OntwerpCorrections>(createDefaultOntwerpCorrections());
 	const corrections = externalCorrections ?? internalCorrections;
@@ -160,40 +150,22 @@ export function OntwerpPanel({
 
 	return (
 		<div className="space-y-3">
-			{/* Zone visualization toggle */}
+			{/* ── Tekst toevoegen ── */}
 			<div className="rounded-lg bg-[rgba(255,255,255,0.04)] px-3 py-2">
 				<div className="flex items-center justify-between">
-					<span className="text-sm text-ui-text">Zones weergeven</span>
+					<span className="text-sm text-ui-text">Tekst toevoegen</span>
 					<StyledSwitch
-						checked={showZones}
-						onChange={(checked) => onShowZonesChange?.(checked)}
+						checked={tekstEnabled}
+						onChange={(checked) => onTekstToggle?.(checked)}
 					/>
 				</div>
-				{showZones && (
-					<div className="mt-2 grid grid-cols-2 gap-1 text-xs">
-						<div className="flex items-center gap-1.5">
-							<span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: '#ef4444' }} />
-							<span className="text-ui-muted">Hiel</span>
-						</div>
-						<div className="flex items-center gap-1.5">
-							<span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: '#22c55e' }} />
-							<span className="text-ui-muted">Middenvoet</span>
-						</div>
-						<div className="flex items-center gap-1.5">
-							<span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: '#3b82f6' }} />
-							<span className="text-ui-muted">Voorvoet</span>
-						</div>
-						<div className="flex items-center gap-1.5">
-							<span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: '#f59e0b' }} />
-							<span className="text-ui-muted">Boog</span>
-						</div>
-					</div>
-				)}
+				{tekstEnabled && tekstEditorContent ? (
+					<div className="mt-3">{tekstEditorContent}</div>
+				) : null}
 			</div>
 
-			{/* Kuip hoogte - Dual number input */}
-			{isActive('kuipHoogte') && (
-				<CollapsibleSection title="Kuip hoogte" defaultOpen={false}>
+			{/* ── 1. Kuip hoogte ── */}
+			<CollapsibleSection title="Kuip hoogte" defaultOpen={false}>
 					<DualNumberInput
 						label="Kuip hoogte"
 						leftValue={corrections.kuipHoogte.left}
@@ -213,12 +185,10 @@ export function OntwerpPanel({
 						step={0.5}
 						unit="mm"
 					/>
-				</CollapsibleSection>
-			)}
+			</CollapsibleSection>
 
-			{/* Voorvoet uitvlakken - Single switch */}
-			{isActive('voorvoetUitvlakken') && (
-				<CollapsibleSection title="Voorvoet uitvlakken" defaultOpen={false}>
+			{/* ── 2. Voorvoet uitvlakken ── */}
+			<CollapsibleSection title="Voorvoet uitvlakken" defaultOpen={false}>
 					<div className="flex items-center justify-between">
 						<span className="text-sm text-ui-text">Voorvoet uitvlakken</span>
 						<StyledSwitch
@@ -230,12 +200,10 @@ export function OntwerpPanel({
 							}
 						/>
 					</div>
-				</CollapsibleSection>
-			)}
+			</CollapsibleSection>
 
-			{/* Hiel heffing - Dual select for length + Dual number for value */}
-			{isActive('hielHeffing') && (
-				<CollapsibleSection title="Hiel heffing" defaultOpen={false}>
+			{/* ── 3. Hiel heffing ── */}
+			<CollapsibleSection title="Hiel heffing" defaultOpen={false}>
 				<DualSelectInput
 					label="Lengte"
 					options={LENGTH_OPTIONS}
@@ -283,12 +251,10 @@ export function OntwerpPanel({
 					step={0.5}
 					unit="mm"
 				/>
-				</CollapsibleSection>
-			)}
+			</CollapsibleSection>
 
-			{/* Mediale boog correctie - Dual number input */}
-			{isActive('medialeBoogCorrectie') && (
-				<CollapsibleSection title="Mediale boog correctie" defaultOpen={false}>
+			{/* ── 4. Mediale boog correctie ── */}
+			<CollapsibleSection title="Mediale boog correctie" defaultOpen={false}>
 				<DualNumberInput
 					label="Mediale boog correctie"
 					leftValue={corrections.medialeBoogCorrectie.left}
@@ -308,12 +274,10 @@ export function OntwerpPanel({
 					step={0.5}
 					unit="mm"
 				/>
-				</CollapsibleSection>
-			)}
+			</CollapsibleSection>
 
-			{/* Gladstrijken - Single number input for both feet */}
-			{isActive('gladstrijken') && (
-				<CollapsibleSection title="Gladstrijken" defaultOpen={false}>
+			{/* ── 5. Gladstrijken ── */}
+			<CollapsibleSection title="Gladstrijken" defaultOpen={false}>
 					<StyledNumberField
 						label="Gladstrijken"
 						value={corrections.gladstrijken}
@@ -322,12 +286,10 @@ export function OntwerpPanel({
 						max={10}
 						step={1}
 					/>
-				</CollapsibleSection>
-			)}
+			</CollapsibleSection>
 
-			{/* Pronatie - Dual select for regio + Dual number for correctie */}
-			{isActive('pronatie') && (
-				<CollapsibleSection title="Pronatie" defaultOpen={false}>
+			{/* ── 6. Pronatie ── */}
+			<CollapsibleSection title="Pronatie" defaultOpen={false}>
 				<DualSelectInput
 					label="Regio"
 					options={REGION_OPTIONS}
@@ -375,12 +337,10 @@ export function OntwerpPanel({
 					step={0.5}
 					unit="°"
 				/>
-				</CollapsibleSection>
-			)}
+			</CollapsibleSection>
 
-			{/* Supinatie - Dual select for regio + Dual number for correctie */}
-			{isActive('supinatie') && (
-				<CollapsibleSection title="Supinatie" defaultOpen={false}>
+			{/* ── 7. Supinatie ── */}
+			<CollapsibleSection title="Supinatie" defaultOpen={false}>
 				<DualSelectInput
 					label="Regio"
 					options={REGION_OPTIONS}
@@ -428,253 +388,17 @@ export function OntwerpPanel({
 					step={0.5}
 					unit="°"
 				/>
-				</CollapsibleSection>
-			)}
+			</CollapsibleSection>
 
-			{/* Mediaal vlak - Dual select for height + Dual number for amount */}
-			{isActive('mediaalVlak') && (
-				<CollapsibleSection title="Mediaal vlak" defaultOpen={false}>
-				<DualSelectInput
-					label="Hoogte"
-					options={FLANGE_HEIGHT_OPTIONS}
-					leftValue={corrections.mediaalVlak.hoogte.left}
-					rightValue={corrections.mediaalVlak.hoogte.right}
-					onLeftChange={(val) =>
-						updateCorrections({
-							mediaalVlak: {
-								...corrections.mediaalVlak,
-								hoogte: { ...corrections.mediaalVlak.hoogte, left: val },
-							},
-						})
-					}
-					onRightChange={(val) =>
-						updateCorrections({
-							mediaalVlak: {
-								...corrections.mediaalVlak,
-								hoogte: { ...corrections.mediaalVlak.hoogte, right: val },
-							},
-						})
-					}
-				/>
-				<DualNumberInput
-					label="Waarde"
-					leftValue={corrections.mediaalVlak.waarde.left}
-					rightValue={corrections.mediaalVlak.waarde.right}
-					onLeftChange={(val) =>
-						updateCorrections({
-							mediaalVlak: {
-								...corrections.mediaalVlak,
-								waarde: { ...corrections.mediaalVlak.waarde, left: val },
-							},
-						})
-					}
-					onRightChange={(val) =>
-						updateCorrections({
-							mediaalVlak: {
-								...corrections.mediaalVlak,
-								waarde: { ...corrections.mediaalVlak.waarde, right: val },
-							},
-						})
-					}
-					min={0}
-					max={15}
-					step={0.5}
-					unit="mm"
-				/>
-				</CollapsibleSection>
-			)}
-
-			{/* Lateraal vlak - Dual select for height + Dual number for amount */}
-			{isActive('lateraalVlak') && (
-				<CollapsibleSection title="Lateraal vlak" defaultOpen={false}>
-				<DualSelectInput
-					label="Hoogte"
-					options={FLANGE_HEIGHT_OPTIONS}
-					leftValue={corrections.lateraalVlak.hoogte.left}
-					rightValue={corrections.lateraalVlak.hoogte.right}
-					onLeftChange={(val) =>
-						updateCorrections({
-							lateraalVlak: {
-								...corrections.lateraalVlak,
-								hoogte: { ...corrections.lateraalVlak.hoogte, left: val },
-							},
-						})
-					}
-					onRightChange={(val) =>
-						updateCorrections({
-							lateraalVlak: {
-								...corrections.lateraalVlak,
-								hoogte: { ...corrections.lateraalVlak.hoogte, right: val },
-							},
-						})
-					}
-				/>
-				<DualNumberInput
-					label="Waarde"
-					leftValue={corrections.lateraalVlak.waarde.left}
-					rightValue={corrections.lateraalVlak.waarde.right}
-					onLeftChange={(val) =>
-						updateCorrections({
-							lateraalVlak: {
-								...corrections.lateraalVlak,
-								waarde: { ...corrections.lateraalVlak.waarde, left: val },
-							},
-						})
-					}
-					onRightChange={(val) =>
-						updateCorrections({
-							lateraalVlak: {
-								...corrections.lateraalVlak,
-								waarde: { ...corrections.lateraalVlak.waarde, right: val },
-							},
-						})
-					}
-					min={0}
-					max={15}
-					step={0.5}
-					unit="mm"
-				/>
-				</CollapsibleSection>
-			)}
-
-			{/* Verplaats apex middenvoet - Dual number input */}
-			{isActive('apexMiddenvoet') && (
-				<CollapsibleSection title="Verplaats apex middenvoet" defaultOpen={false}>
-				<DualNumberInput
-					label="Verschuiving"
-					leftValue={corrections.apexMiddenvoet.left}
-					rightValue={corrections.apexMiddenvoet.right}
-					onLeftChange={(val) =>
-						updateCorrections({
-							apexMiddenvoet: { ...corrections.apexMiddenvoet, left: val },
-						})
-					}
-					onRightChange={(val) =>
-						updateCorrections({
-							apexMiddenvoet: { ...corrections.apexMiddenvoet, right: val },
-						})
-					}
-					min={-15}
-					max={15}
-					step={0.5}
-					unit="mm"
-				/>
-				</CollapsibleSection>
-			)}
-
-			{/* Verplaats apex hiel - Dual number input */}
-			{isActive('apexHiel') && (
-				<CollapsibleSection title="Verplaats apex hiel" defaultOpen={false}>
-				<DualNumberInput
-					label="Verschuiving"
-					leftValue={corrections.apexHiel.left}
-					rightValue={corrections.apexHiel.right}
-					onLeftChange={(val) =>
-						updateCorrections({
-							apexHiel: { ...corrections.apexHiel, left: val },
-						})
-					}
-					onRightChange={(val) =>
-						updateCorrections({
-							apexHiel: { ...corrections.apexHiel, right: val },
-						})
-					}
-					min={-10}
-					max={10}
-					step={0.5}
-					unit="mm"
-				/>
-				</CollapsibleSection>
-			)}
-
-			{/* Hielbeencorrectie - Dual select for side + Dual number for amount */}
-			{isActive('hielbeenCorrectie') && (
-				<CollapsibleSection title="Hielbeencorrectie" defaultOpen={false}>
-				<DualSelectInput
-					label="Zijde"
-					options={HEEL_CLIP_SIDE_OPTIONS}
-					leftValue={corrections.hielbeenCorrectie.zijde.left}
-					rightValue={corrections.hielbeenCorrectie.zijde.right}
-					onLeftChange={(val) =>
-						updateCorrections({
-							hielbeenCorrectie: {
-								...corrections.hielbeenCorrectie,
-								zijde: { ...corrections.hielbeenCorrectie.zijde, left: val },
-							},
-						})
-					}
-					onRightChange={(val) =>
-						updateCorrections({
-							hielbeenCorrectie: {
-								...corrections.hielbeenCorrectie,
-								zijde: { ...corrections.hielbeenCorrectie.zijde, right: val },
-							},
-						})
-					}
-				/>
-				<DualNumberInput
-					label="Correctie"
-					leftValue={corrections.hielbeenCorrectie.waarde.left}
-					rightValue={corrections.hielbeenCorrectie.waarde.right}
-					onLeftChange={(val) =>
-						updateCorrections({
-							hielbeenCorrectie: {
-								...corrections.hielbeenCorrectie,
-								waarde: { ...corrections.hielbeenCorrectie.waarde, left: val },
-							},
-						})
-					}
-					onRightChange={(val) =>
-						updateCorrections({
-							hielbeenCorrectie: {
-								...corrections.hielbeenCorrectie,
-								waarde: { ...corrections.hielbeenCorrectie.waarde, right: val },
-							},
-						})
-					}
-					min={0}
-					max={10}
-					step={0.5}
-					unit="mm"
-				/>
-				</CollapsibleSection>
-			)}
-
-			{/* Hielbreedte correctie - Dual number input */}
-			{isActive('hielbreedteCorrectie') && (
-				<CollapsibleSection title="Hielbreedte correctie" defaultOpen={false}>
-				<DualNumberInput
-					label="Verbreding"
-					leftValue={corrections.hielbreedteCorrectie.left}
-					rightValue={corrections.hielbreedteCorrectie.right}
-					onLeftChange={(val) =>
-						updateCorrections({
-							hielbreedteCorrectie: { ...corrections.hielbreedteCorrectie, left: val },
-						})
-					}
-					onRightChange={(val) =>
-						updateCorrections({
-							hielbreedteCorrectie: { ...corrections.hielbreedteCorrectie, right: val },
-						})
-					}
-					min={0}
-					max={10}
-					step={0.5}
-					unit="mm"
-				/>
-				</CollapsibleSection>
-			)}
-
-			{/* Zoolbreedte - Dual number input */}
-			{isActive('zoolbreedte') && (
-				<CollapsibleSection title="Zoolbreedte" defaultOpen={false}>
+			{/* ── 8. Zoolbreedte ── */}
+			<CollapsibleSection title="Zoolbreedte" defaultOpen={false}>
 				<div className="space-y-2">
 					<span className="text-sm text-ui-muted">Totale breedte</span>
 					<div className="flex items-center gap-4">
 						<div className="flex-1">
 							<span className="mb-1 block text-xs text-ui-muted">Links</span>
 							<StyledNumberField
-								value={soleWidthValueMm?.left ?? currentInsoleWidthMm?.left ?? 0}
+								value={soleWidthValueMm?.left ?? 0}
 								onChange={(val) => {
 									if (onSoleWidthChange) {
 										onSoleWidthChange('left', val);
@@ -687,16 +411,14 @@ export function OntwerpPanel({
 								min={40}
 								max={160}
 								step={0.5}
+								commitDelayMs={120}
 								unit="mm"
 							/>
-							<div className="mt-1 text-[11px] text-ui-muted">
-								Huidig: {(currentInsoleWidthMm?.left ?? soleWidthValueMm?.left ?? 0).toFixed(1)} mm
-							</div>
 						</div>
 						<div className="flex-1">
 							<span className="mb-1 block text-xs text-ui-muted">Rechts</span>
 							<StyledNumberField
-								value={soleWidthValueMm?.right ?? currentInsoleWidthMm?.right ?? 0}
+								value={soleWidthValueMm?.right ?? 0}
 								onChange={(val) => {
 									if (onSoleWidthChange) {
 										onSoleWidthChange('right', val);
@@ -709,19 +431,13 @@ export function OntwerpPanel({
 								min={40}
 								max={160}
 								step={0.5}
+								commitDelayMs={120}
 								unit="mm"
 							/>
-							<div className="mt-1 text-[11px] text-ui-muted">
-								Huidig: {(currentInsoleWidthMm?.right ?? soleWidthValueMm?.right ?? 0).toFixed(1)} mm
-							</div>
 						</div>
 					</div>
-					<p className="text-xs text-ui-muted">
-						Past de totale zoolbreedte dynamisch aan op basis van de actuele steunzoolbreedte.
-					</p>
 				</div>
-				</CollapsibleSection>
-			)}
+			</CollapsibleSection>
 		</div>
 	);
 }

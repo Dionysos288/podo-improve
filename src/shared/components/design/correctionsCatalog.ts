@@ -9,6 +9,7 @@ export type CorrectionKey =
 	| 'gladstrijken'
 	| 'pronatie'
 	| 'supinatie'
+	// Legacy keys kept for data-compat (not shown in UI)
 	| 'mediaalVlak'
 	| 'lateraalVlak'
 	| 'apexMiddenvoet'
@@ -24,28 +25,23 @@ export type CorrectionOption = {
 	category: CorrectionCategory;
 };
 
+/**
+ * Fixed correction list shown in the Ontwerp panel, in display order.
+ * The "Correctie toevoegen" picker is gone — all corrections are always visible.
+ */
 export const CORRECTION_OPTIONS: CorrectionOption[] = [
+	{ key: 'kuipHoogte', label: 'Kuip hoogte', category: 'Hiel' },
 	{ key: 'voorvoetUitvlakken', label: 'Voorvoet uitvlakken', category: 'Voorvoet' },
+	{ key: 'hielHeffing', label: 'Hiel heffing', category: 'Hiel' },
+	{ key: 'medialeBoogCorrectie', label: 'Mediale boog correctie', category: 'Middenvoet' },
+	{ key: 'gladstrijken', label: 'Gladstrijken', category: 'Overige' },
 	{ key: 'pronatie', label: 'Pronatie', category: 'Voorvoet' },
 	{ key: 'supinatie', label: 'Supinatie', category: 'Voorvoet' },
-
-	{ key: 'medialeBoogCorrectie', label: 'Mediale boog correctie', category: 'Middenvoet' },
-	{ key: 'mediaalVlak', label: 'Mediaal vlak', category: 'Middenvoet' },
-	{ key: 'lateraalVlak', label: 'Lateraal vlak', category: 'Middenvoet' },
-	{ key: 'apexMiddenvoet', label: 'Verplaats apex middenvoet', category: 'Middenvoet' },
-
-	{ key: 'hielHeffing', label: 'Hiel heffing', category: 'Hiel' },
-	{ key: 'kuipHoogte', label: 'Kuip hoogte', category: 'Hiel' },
-	{ key: 'apexHiel', label: 'Verplaats apex hiel', category: 'Hiel' },
-	{ key: 'hielbeenCorrectie', label: 'Hielbeencorrectie', category: 'Hiel' },
-	{ key: 'hielbreedteCorrectie', label: 'Hielbreedte correctie', category: 'Hiel' },
-
-	{ key: 'gladstrijken', label: 'Gladstrijken', category: 'Overige' },
 	{ key: 'zoolbreedte', label: 'Zoolbreedte', category: 'Overige' },
 	{ key: 'tekst', label: 'Tekst toevoegen', category: 'Overige' },
 ];
 
-// Default behavior: all geometry corrections enabled, text tool disabled.
+// All geometry corrections are always active; tekst starts disabled.
 export const DEFAULT_ACTIVE_CORRECTIONS: CorrectionKey[] = CORRECTION_OPTIONS
 	.map((o) => o.key)
 	.filter((k) => k !== 'tekst');

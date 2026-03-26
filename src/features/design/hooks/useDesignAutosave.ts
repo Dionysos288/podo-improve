@@ -17,6 +17,68 @@ interface DesignSnapshot {
 
 const AUTOSAVE_DEBOUNCE_MS = 2000;
 
+type PersistedDesignRefs = {
+	parameters: unknown;
+	selectedTemplate: unknown;
+	selectedBaseSTL: unknown;
+	gridEdits: unknown;
+	zoneAdjustments: unknown;
+	threePointLandmarks: unknown;
+	derivedLandmarks: unknown;
+	completeLandmarks: unknown;
+	landmarks: unknown;
+	footGeometry: unknown;
+	plantarData: unknown;
+	insoleConfig: unknown;
+	scanValidation: unknown;
+	insoleAttributes: unknown;
+	matchTransform: unknown;
+};
+
+function getPersistedDesignRefs(): PersistedDesignRefs {
+	const state = useDesignStore.getState();
+	return {
+		parameters: state.parameters,
+		selectedTemplate: state.selectedTemplate,
+		selectedBaseSTL: state.selectedBaseSTL,
+		gridEdits: state.gridEdits,
+		zoneAdjustments: state.zoneAdjustments,
+		threePointLandmarks: state.threePointLandmarks,
+		derivedLandmarks: state.derivedLandmarks,
+		completeLandmarks: state.completeLandmarks,
+		landmarks: state.landmarks,
+		footGeometry: state.footGeometry,
+		plantarData: state.plantarData,
+		insoleConfig: state.insoleConfig,
+		scanValidation: state.scanValidation,
+		insoleAttributes: state.insoleAttributes,
+		matchTransform: state.matchTransform,
+	};
+}
+
+function persistedDesignRefsChanged(
+	previous: PersistedDesignRefs,
+	next: PersistedDesignRefs,
+) {
+	return (
+		previous.parameters !== next.parameters ||
+		previous.selectedTemplate !== next.selectedTemplate ||
+		previous.selectedBaseSTL !== next.selectedBaseSTL ||
+		previous.gridEdits !== next.gridEdits ||
+		previous.zoneAdjustments !== next.zoneAdjustments ||
+		previous.threePointLandmarks !== next.threePointLandmarks ||
+		previous.derivedLandmarks !== next.derivedLandmarks ||
+		previous.completeLandmarks !== next.completeLandmarks ||
+		previous.landmarks !== next.landmarks ||
+		previous.footGeometry !== next.footGeometry ||
+		previous.plantarData !== next.plantarData ||
+		previous.insoleConfig !== next.insoleConfig ||
+		previous.scanValidation !== next.scanValidation ||
+		previous.insoleAttributes !== next.insoleAttributes ||
+		previous.matchTransform !== next.matchTransform
+	);
+}
+
 function migrateLoadedElement(raw: Record<string, unknown>) {
 	if (raw.libraryKey !== 'sd-2-5') return raw;
 	if (raw.side !== 'left' && raw.side !== 'right') return raw;
@@ -100,6 +162,8 @@ export function useDesignAutosave(
 	const isSavingRef = useRef(false);
 	const designIdRef = useRef(designId);
 	const isCreatingRef = useRef(false);
+	const persistedDesignRefsRef = useRef<PersistedDesignRefs>(getPersistedDesignRefs());
+	const placedElementsRef = useRef(useElementsStore.getState().placedElements);
 
 	// Keep ref in sync
 	useEffect(() => {
@@ -251,10 +315,20 @@ export function useDesignAutosave(
 	 */
 	useEffect(() => {
 		const unsubDesign = useDesignStore.subscribe(() => {
+			const nextRefs = getPersistedDesignRefs();
+			if (!persistedDesignRefsChanged(persistedDesignRefsRef.current, nextRefs)) {
+				return;
+			}
+			persistedDesignRefsRef.current = nextRefs;
 			debouncedSave();
 		});
 
 		const unsubElements = useElementsStore.subscribe(() => {
+			const nextPlacedElements = useElementsStore.getState().placedElements;
+			if (placedElementsRef.current === nextPlacedElements) {
+				return;
+			}
+			placedElementsRef.current = nextPlacedElements;
 			debouncedSave();
 		});
 

@@ -75,13 +75,28 @@ export function computeFootGeometryFrom3Points(
 	let groundNormal = new THREE.Vector3().crossVectors(v1, v2).normalize();
 
 	// Ensure ground normal points "up" (away from plantar surface)
-	// The cross product of (heel→M1) × (heel→M5) should point upward for a right foot
-	// We verify by checking that the normal has a positive component along the expected "up" direction
-	// For a foot placed sole-down, the up direction is generally +Z or +Y depending on scan orientation
-	// Heuristic: pick whichever direction has the larger magnitude
 	if (groundNormal.length() < 1e-6) {
 		// Degenerate case: landmarks are collinear, fall back to Z-up
 		groundNormal.set(0, 0, 1);
+	}
+
+	// Use the mesh centroid to verify ground normal direction.
+	// The centroid of a foot scan is above the ground plane (dorsal side),
+	// so dot(centroid - heel, groundNormal) should be positive.
+	const posAttrForCentroid = footMesh.getAttribute('position');
+	if (posAttrForCentroid && posAttrForCentroid.count > 0) {
+		const centroid = new THREE.Vector3();
+		for (let i = 0; i < posAttrForCentroid.count; i++) {
+			centroid.x += posAttrForCentroid.getX(i);
+			centroid.y += posAttrForCentroid.getY(i);
+			centroid.z += posAttrForCentroid.getZ(i);
+		}
+		centroid.divideScalar(posAttrForCentroid.count);
+		const centroidRel = centroid.clone().sub(pHeel);
+		if (centroidRel.dot(groundNormal) < 0) {
+			// Ground normal is pointing toward plantar side — flip it
+			groundNormal.negate();
+		}
 	}
 
 	// 3. Lateral axis: perpendicular to footAxis within the ground plane
@@ -643,6 +658,8 @@ export interface BasicInsoleOptions extends InsoleGenerationOptions {
 	rimHeight?: number;
 	/** Width of the raised rim band measured inward from the outer edge (world units). */
 	rimBandThickness?: number;
+	/** Shift the medial arch center forward/backward along the foot length (world units). */
+	archCenterShift?: number;
 	/**
 	 * Optional override to scale the insole planform to a target foot length.
 	 * Uses the landmark-derived frame length as the reference.
@@ -677,6 +694,7 @@ export function buildBasicInsole(
 	const resV = options?.resV ?? 70;
 	const targetFootLength = options?.targetFootLength;
 	const targetArchHeight = options?.targetArchHeight;
+	const archCenterShift = options?.archCenterShift ?? 0;
 	const lengthScale = options?.lengthScale;
 	const rimHeight = options?.rimHeight ?? 0;
 	const rimBandThickness = Math.max(0, options?.rimBandThickness ?? thickness);
@@ -718,7 +736,7 @@ export function buildBasicInsole(
 	const navLocalRaw = mapToFrame(toVec(points.navicular), frame);
 	const heelLocalRaw = mapToFrame(toVec(points.calcaneus), frame);
 	const navLocal = {
-		u: navLocalRaw.u * planScale,
+		u: navLocalRaw.u * planScale + archCenterShift,
 		v: navLocalRaw.v * planScale,
 	};
 	const heelLocal = {

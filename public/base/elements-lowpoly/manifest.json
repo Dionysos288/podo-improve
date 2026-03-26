@@ -1,0 +1,96 @@
+{
+  "generatedAt": "2026-03-23T19:39:03.680Z",
+  "options": {
+    "inputDir": "public\\base\\elements",
+    "outputDir": "public\\base\\elements-lowpoly",
+    "ratio": 0.05,
+    "minTriangles": 2500,
+    "maxTriangles": 12000
+  },
+  "summary": [
+    {
+      "file": "diep - ovaal.stl",
+      "sourceTriangles": 420944,
+      "targetTriangles": 12000,
+      "simplifiedTriangles": 5838,
+      "reduction": 72.1041452552244
+    },
+    {
+      "file": "diep-rond.stl",
+      "sourceTriangles": 155680,
+      "targetTriangles": 7784,
+      "simplifiedTriangles": 3568,
+      "reduction": 43.63228699551569
+    },
+    {
+      "file": "HAI Vlak 2.stl",
+      "sourceTriangles": 206996,
+      "targetTriangles": 10350,
+      "simplifiedTriangles": 4974,
+      "reduction": 41.61560112585444
+    },
+    {
+      "file": "peloitte 2.stl",
+      "sourceTriangles": 262672,
+      "targetTriangles": 12000,
+      "simplifiedTriangles": 5758,
+      "reduction": 45.61861757554706
+    },
+    {
+      "file": "RCTB 3 R.stl",
+      "sourceTriangles": 389620,
+      "targetTriangles": 12000,
+      "simplifiedTriangles": 5030,
+      "reduction": 77.45924453280318
+    },
+    {
+      "file": "sa recgt 1-5.stl",
+      "sourceTriangles": 327080,
+      "targetTriangles": 12000,
+      "simplifiedTriangles": 5612,
+      "reduction": 58.28225231646472
+    },
+    {
+      "file": "sa Recht 1.stl",
+      "sourceTriangles": 134448,
+      "targetTriangles": 6722,
+      "simplifiedTriangles": 2400,
+      "reduction": 56.02
+    },
+    {
+      "file": "sc bol.stl",
+      "sourceTriangles": 263176,
+      "targetTriangles": 12000,
+      "simplifiedTriangles": 5912,
+      "reduction": 44.51556156968877
+    },
+    {
+      "file": "sd 1-5.stl",
+      "sourceTriangles": 119600,
+      "targetTriangles": 5980,
+      "simplifiedTriangles": 3142,
+      "reduction": 38.0649267982177
+    },
+    {
+      "file": "SD 2-5.stl",
+      "sourceTriangles": 102200,
+      "targetTriangles": 5110,
+      "simplifiedTriangles": 1874,
+      "reduction": 54.53575240128068
+    },
+    {
+      "file": "SD1.stl",
+      "sourceTriangles": 62924,
+      "targetTriangles": 3146,
+      "simplifiedTriangles": 1252,
+      "reduction": 50.25878594249201
+    },
+    {
+      "file": "SPSA Vlak.stl",
+      "sourceTriangles": 216132,
+      "targetTriangles": 10807,
+      "simplifiedTriangles": 4120,
+      "reduction": 52.459223300970876
+    }
+  ]
+}

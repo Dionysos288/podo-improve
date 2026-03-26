@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Collapsible } from '@base-ui/react/collapsible';
 import { Switch } from '@base-ui/react/switch';
 import { Slider } from '@base-ui/react/slider';
@@ -33,6 +33,61 @@ export interface CorrectionConfig {
 	defaultValue?: number | string | boolean;
 	defaultLeftValue?: number | string;
 	defaultRightValue?: number | string;
+}
+
+function useBufferedNumber(
+	value: number,
+	onChange: (value: number) => void,
+	commitDelayMs = 0,
+) {
+	const [draftValue, setDraftValue] = useState(value);
+	const frameRef = useRef<number | null>(null);
+	const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const pendingValueRef = useRef(value);
+	const onChangeRef = useRef(onChange);
+
+	useEffect(() => {
+		onChangeRef.current = onChange;
+	}, [onChange]);
+
+	useEffect(() => {
+		setDraftValue(value);
+		pendingValueRef.current = value;
+	}, [value]);
+
+	useEffect(() => {
+		return () => {
+			if (frameRef.current != null) {
+				cancelAnimationFrame(frameRef.current);
+			}
+			if (timeoutRef.current != null) {
+				clearTimeout(timeoutRef.current);
+			}
+		};
+	}, []);
+
+	const updateValue = useCallback((nextValue: number) => {
+		pendingValueRef.current = nextValue;
+		setDraftValue(nextValue);
+		if (timeoutRef.current != null) {
+			clearTimeout(timeoutRef.current);
+			timeoutRef.current = null;
+		}
+		if (commitDelayMs > 0) {
+			timeoutRef.current = setTimeout(() => {
+				timeoutRef.current = null;
+				onChangeRef.current(pendingValueRef.current);
+			}, commitDelayMs);
+			return;
+		}
+		if (frameRef.current != null) return;
+		frameRef.current = requestAnimationFrame(() => {
+			frameRef.current = null;
+			onChangeRef.current(pendingValueRef.current);
+		});
+	}, [commitDelayMs]);
+
+	return { draftValue, updateValue };
 }
 
 // Styled wrapper for collapsible sections
@@ -102,6 +157,7 @@ interface StyledNumberFieldProps {
 	unit?: string;
 	label?: string;
 	className?: string;
+	commitDelayMs?: number;
 }
 
 export function StyledNumberField({
@@ -113,11 +169,14 @@ export function StyledNumberField({
 	unit = 'mm',
 	label,
 	className,
+	commitDelayMs = 0,
 }: StyledNumberFieldProps) {
+	const { draftValue, updateValue } = useBufferedNumber(value, onChange, commitDelayMs);
+
 	return (
 		<NumberField.Root
-			value={value}
-			onValueChange={(val) => onChange(val ?? 0)}
+			value={draftValue}
+			onValueChange={(val) => updateValue(val ?? 0)}
 			min={min}
 			max={max}
 			step={step}
@@ -162,17 +221,19 @@ export function StyledSlider({
 	label,
 	className,
 }: StyledSliderProps) {
+	const { draftValue, updateValue } = useRafBufferedNumber(value, onChange);
+
 	return (
 		<div className={cn('space-y-1', className)}>
 			{label && (
 				<div className="flex justify-between text-xs text-ui-muted">
 					<span>{label}</span>
-					<span>{value}</span>
+					<span>{draftValue}</span>
 				</div>
 			)}
 			<Slider.Root
-				value={value}
-				onValueChange={(val) => onChange(val)}
+				value={draftValue}
+				onValueChange={(val) => updateValue(val)}
 				min={min}
 				max={max}
 				step={step}
@@ -210,14 +271,14 @@ export function StyledSwitch({
 				checked={checked}
 				onCheckedChange={onChange}
 				className={cn(
-					'relative h-6 w-11 cursor-pointer rounded-full transition-colors',
+					'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full p-0.5 transition-colors',
 					checked ? 'bg-ui-accent' : 'bg-[rgba(255,255,255,0.2)]'
 				)}
 			>
 				<Switch.Thumb
 					className={cn(
 						'block h-5 w-5 rounded-full bg-white shadow-md transition-transform',
-						checked ? 'translate-x-[22px]' : 'translate-x-0.5'
+						checked ? 'translate-x-5' : 'translate-x-0'
 					)}
 				/>
 			</Switch.Root>

@@ -9,6 +9,7 @@
 		"lint": "eslint",
 		"test": "vitest run",
 		"test:watch": "vitest",
+		"elements:simplify": "node scripts/simplify-element-stls.mjs",
 		"db:generate": "prisma generate",
 		"db:push": "prisma db push",
 		"db:migrate": "prisma migrate dev",

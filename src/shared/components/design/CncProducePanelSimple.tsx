@@ -3,7 +3,7 @@
 import { useState, useCallback } from 'react';
 import { Card, CardContent } from '@/src/shared/components/ui/card';
 import { Button } from '@/src/shared/components/ui/button';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Loader2 } from 'lucide-react';
 import { cn } from '@/src/shared/lib/cn';
 import {
 	SLOT_COUNT,
@@ -25,7 +25,7 @@ interface CncProducePanelProps {
 	fixture: FixtureLayout;
 	onFixtureChange: (fixture: FixtureLayout) => void;
 	patientName: string;
-	onExportNc: () => void;
+	onExportNc: () => void | Promise<void>;
 	onBack: () => void;
 }
 
@@ -37,6 +37,11 @@ export function CncProducePanel({
 	onExportNc,
 	onBack,
 }: CncProducePanelProps) {
+	const [isExporting, setIsExporting] = useState(false);
+	const waitForPaint = useCallback(
+		() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+		[]
+	);
 	const modeLabel =
 		MILLING_MODE_OPTIONS.find((o) => o.value === millingMode)?.label ??
 		millingMode;
@@ -87,6 +92,17 @@ export function CncProducePanel({
 	const filledSlots = new Set(fixture.assignments.map((a) => a.slotIndex));
 	const filledCount = filledSlots.size;
 
+	const handleExport = useCallback(async () => {
+		if (filledCount === 0 || isExporting) return;
+		setIsExporting(true);
+		try {
+			await waitForPaint();
+			await onExportNc();
+		} finally {
+			setIsExporting(false);
+		}
+	}, [filledCount, isExporting, onExportNc, waitForPaint]);
+
 	return (
 		<Card>
 			<CardContent className="space-y-4">
@@ -95,6 +111,7 @@ export function CncProducePanel({
 					<button
 						type="button"
 						onClick={onBack}
+						disabled={isExporting}
 						className="flex items-center gap-1 text-sm text-ui-muted hover:text-ui-text transition"
 					>
 						<ArrowLeft size={16} />
@@ -131,9 +148,11 @@ export function CncProducePanel({
 								<button
 									key={i}
 									type="button"
+									disabled={isExporting}
 									onClick={() => toggleSlotPair(i)}
 									className={cn(
 										'relative flex flex-col items-center justify-center rounded-xl border-2 py-3 transition-all min-h-[80px]',
+										isExporting && 'cursor-wait opacity-60',
 										isEmpty
 											? 'border-dashed border-ui-border bg-[rgba(255,255,255,0.02)] hover:border-ui-accent/40 hover:bg-ui-accent/5 cursor-pointer'
 											: 'border-solid border-ui-accent/60 bg-ui-accent/10 hover:border-red-400 hover:bg-red-400/10 cursor-pointer'
@@ -190,16 +209,29 @@ export function CncProducePanel({
 				{/* ── Export button ── */}
 				<Button
 					className="w-full bg-ui-accent text-slate-900 hover:opacity-90"
-					onClick={onExportNc}
-					disabled={filledCount === 0}
+					onClick={handleExport}
+					disabled={filledCount === 0 || isExporting}
 					title={
 						filledCount === 0
 							? 'Wijs minstens één slot toe om te exporteren'
 							: undefined
 					}
 				>
-					Exporteren
+					{isExporting ? (
+						<span className="inline-flex items-center gap-2">
+							<Loader2 className="h-4 w-4 animate-spin" />
+							NC bestand genereren...
+						</span>
+					) : (
+						'Exporteren'
+					)}
 				</Button>
+
+				{isExporting && (
+					<p className="text-xs text-ui-muted text-center">
+						Even wachten — de freesbanen worden opgebouwd.
+					</p>
+				)}
 
 				{filledCount === 0 && (
 					<p className="text-xs text-ui-muted text-center">

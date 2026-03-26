@@ -12,8 +12,10 @@ import {
  * Clicking selects the element for editing in the inspector.
  */
 export function PlacedElementsList({ side }: { side: 'left' | 'right' }) {
-	const { placedElements, selectedElementId, selectElement, removeElement } =
-		useElementsStore();
+	const placedElements = useElementsStore((state) => state.placedElements);
+	const selectedElementId = useElementsStore((state) => state.selectedElementId);
+	const selectElement = useElementsStore((state) => state.selectElement);
+	const removeElement = useElementsStore((state) => state.removeElement);
 
 	const elements = placedElements.filter((el) => el.side === side);
 

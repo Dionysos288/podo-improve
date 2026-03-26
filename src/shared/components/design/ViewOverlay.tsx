@@ -14,7 +14,6 @@ import {
 	Box,
 	Layers,
 	Thermometer,
-	Activity,
 	ChevronDown,
 } from 'lucide-react';
 import { useState } from 'react';
@@ -26,7 +25,6 @@ export type ViewSettings = {
 	showRight: boolean;
 	transparent: boolean;
 	heatmap: boolean;
-	deviationMap: boolean;
 	showInsoles: boolean;
 	showModel: boolean;
 };
@@ -37,6 +35,8 @@ interface ViewOverlayProps {
 	viewSettings: ViewSettings;
 	onToggle: (key: keyof ViewSettings) => void;
 	onView?: (preset: string) => void;
+	activeView?: 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom' | 'iso' | null;
+	activeControlMode?: 'rotate' | 'pan';
 	analysisHeightMm?: number | null;
 	analysisSide?: 'left' | 'right' | null;
 	className?: string;
@@ -51,7 +51,6 @@ const toggleItems: Array<{
 	{ key: 'showRight', label: 'Rechts', icon: Footprints },
 	{ key: 'transparent', label: 'Transparant', icon: Layers },
 	{ key: 'heatmap', label: 'Hoogtemap', icon: Thermometer },
-	{ key: 'deviationMap', label: 'Scan artefacten', icon: Activity },
 	{ key: 'showInsoles', label: 'Steunzool', icon: Footprints },
 	{ key: 'showModel', label: '3D model', icon: Box },
 ];
@@ -61,17 +60,24 @@ function CamBtn({
 	icon: Icon,
 	label,
 	onClick,
+	active,
 }: {
 	icon: React.ComponentType<{ size?: number; className?: string }>;
 	label: string;
 	onClick: () => void;
+	active?: boolean;
 }) {
 	return (
 		<button
 			type="button"
 			onClick={onClick}
 			title={label}
-			className="flex flex-col items-center justify-center gap-0.5 rounded-lg bg-white/[0.05] p-2 text-[10px] leading-none text-(--ui-muted) transition hover:bg-white/[0.12] hover:text-(--ui-text) active:scale-95"
+			className={cn(
+				'flex flex-col items-center justify-center gap-0.5 rounded-lg p-2 text-[10px] leading-none transition active:scale-95',
+				active
+					? 'bg-(--ui-accent)/20 text-(--ui-accent) ring-1 ring-(--ui-accent)'
+					: 'bg-white/[0.05] text-(--ui-muted) hover:bg-white/[0.12] hover:text-(--ui-text)'
+			)}
 		>
 			<Icon size={15} />
 			<span>{label}</span>
@@ -130,6 +136,8 @@ export function ViewOverlay({
 	viewSettings,
 	onToggle,
 	onView,
+	activeView,
+	activeControlMode,
 	analysisHeightMm,
 	analysisSide,
 	className,
@@ -183,15 +191,15 @@ export function ViewOverlay({
 
 					{cameraOpen && (
 						<div className="grid grid-cols-3 gap-1 pb-1">
-							<CamBtn icon={RotateCcw} label="Draai" onClick={() => onView?.('rotate')} />
-							<CamBtn icon={Hand} label="Voor" onClick={() => onView?.('front')} />
-							<CamBtn icon={Move} label="Pan" onClick={() => onView?.('pan')} />
-							<CamBtn icon={ArrowLeft} label="Links" onClick={() => onView?.('left')} />
-							<CamBtn icon={ArrowUp} label="Boven" onClick={() => onView?.('top')} />
-							<CamBtn icon={ArrowRight} label="Rechts" onClick={() => onView?.('right')} />
-							<CamBtn icon={ArrowDown} label="Achter" onClick={() => onView?.('back')} />
-							<CamBtn icon={ArrowDown} label="Onder" onClick={() => onView?.('bottom')} />
-							<CamBtn icon={Eye} label="Oogpunt" onClick={() => onView?.('iso')} />
+							<CamBtn icon={RotateCcw} label="Draai" onClick={() => onView?.('rotate')} active={activeControlMode === 'rotate' && !activeView} />
+							<CamBtn icon={Hand} label="Voor" onClick={() => onView?.('front')} active={activeView === 'front'} />
+							<CamBtn icon={Move} label="Pan" onClick={() => onView?.('pan')} active={activeControlMode === 'pan' && !activeView} />
+							<CamBtn icon={ArrowLeft} label="Links" onClick={() => onView?.('left')} active={activeView === 'left'} />
+							<CamBtn icon={ArrowUp} label="Boven" onClick={() => onView?.('top')} active={activeView === 'top'} />
+							<CamBtn icon={ArrowRight} label="Rechts" onClick={() => onView?.('right')} active={activeView === 'right'} />
+							<CamBtn icon={ArrowDown} label="Achter" onClick={() => onView?.('back')} active={activeView === 'back'} />
+							<CamBtn icon={ArrowDown} label="Onder" onClick={() => onView?.('bottom')} active={activeView === 'bottom'} />
+							<CamBtn icon={Eye} label="Oogpunt" onClick={() => onView?.('iso')} active={activeView === 'iso'} />
 						</div>
 					)}
 

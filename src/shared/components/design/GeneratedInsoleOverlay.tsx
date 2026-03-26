@@ -35,8 +35,7 @@ export function GeneratedInsoleOverlay({
 					<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">
 						Actie
 					</div>
-					<div className="mt-1 text-sm font-semibold">Gegenereerde zool</div>
-					<div className="text-xs text-(--ui-muted)">
+					<div className="mt-1 text-xs text-(--ui-muted)">
 						Geselecteerd: {selectedSide === 'left' ? 'Links' : 'Rechts'}
 					</div>
 				</div>

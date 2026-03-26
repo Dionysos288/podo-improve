@@ -6,6 +6,7 @@
 import { create } from 'zustand';
 import type { PlacedElement, ElementProfile, ElementFloorMode } from './types';
 import { getElementByKey, ANCHOR_POSITIONS } from './catalog';
+import { getDefaultPlacementForSide, mirrorPlacedElementToSide } from './placement';
 
 interface ElementsState {
 	/** All placed elements (both sides) */
@@ -44,14 +45,10 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 		if (!item) throw new Error(`Unknown element key: ${libraryKey}`);
 
 		const anchor = item.defaultPosition ?? ANCHOR_POSITIONS[item.anchor] ?? { u: 0.5, v: 0.5 };
-
-		// Mirror V position for the left foot so right-side defaults can be authored once.
-		const v = side === 'right' ? anchor.v : 1 - anchor.v;
-		const rotationRad = item.defaultRotationRad
-			? side === 'left'
-				? item.defaultRotationRad
-				: -item.defaultRotationRad
-			: 0;
+		const defaults = getDefaultPlacementForSide({
+			defaultPosition: anchor,
+			defaultRotationRad: item.defaultRotationRad,
+		}, side);
 
 		const newElement: PlacedElement = {
 			id: genId(),
@@ -63,9 +60,9 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 			trimOffsetMm: 0,
 			floorMode: 'sole',
 			split: false,
-			positionU: anchor.u,
-			positionV: v,
-			rotationRad,
+			positionU: defaults.positionU,
+			positionV: defaults.positionV,
+			rotationRad: defaults.rotationRad,
 			scaleU: item.defaultScale?.[0] ?? 1,
 			scaleV: item.defaultScale?.[1] ?? 1,
 		};
@@ -79,11 +76,20 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 	},
 
 	updateElement: (id, updates) =>
-		set((state) => ({
-			placedElements: state.placedElements.map((el) =>
-				el.id === id ? { ...el, ...updates } : el
-			),
-		})),
+		set((state) => {
+			let didChange = false;
+			const placedElements = state.placedElements.map((el) => {
+				if (el.id !== id) return el;
+				for (const [key, value] of Object.entries(updates) as Array<[keyof PlacedElement, PlacedElement[keyof PlacedElement]]>) {
+					if (el[key] !== value) {
+						didChange = true;
+						break;
+					}
+				}
+				return didChange ? { ...el, ...updates } : el;
+			});
+			return didChange ? { placedElements } : state;
+		}),
 
 	removeElement: (id) =>
 		set((state) => ({
@@ -95,17 +101,15 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 	duplicateElement: (id, mirrorSide = false) => {
 		const source = get().placedElements.find((el) => el.id === id);
 		if (!source) return;
+		const targetSide = mirrorSide
+			? source.side === 'left'
+				? 'right'
+				: 'left'
+			: source.side;
 
 		const dup: PlacedElement = {
-			...source,
+			...(mirrorSide ? mirrorPlacedElementToSide(source, targetSide) : structuredClone(source)),
 			id: genId(),
-			side: mirrorSide
-				? source.side === 'left'
-					? 'right'
-					: 'left'
-				: source.side,
-			// Mirror V position when copying to other side
-			positionV: mirrorSide ? 1 - source.positionV : source.positionV,
 		};
 
 		set((state) => ({
@@ -114,7 +118,10 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 		}));
 	},
 
-	selectElement: (id) => set({ selectedElementId: id }),
+	selectElement: (id) =>
+		set((state) =>
+			state.selectedElementId === id ? state : { selectedElementId: id }
+		),
 
 	getElementsForSide: (side) =>
 		get().placedElements.filter((el) => el.side === side),

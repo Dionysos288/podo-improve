@@ -10,6 +10,9 @@
  */
 import type { ElementLibraryItem } from './types';
 
+const BASE_ELEMENT_STL_PREFIX = '/base/elements/';
+const LOWPOLY_ELEMENT_STL_PREFIX = '/base/elements-lowpoly/';
+
 /* ── shape outline helpers ────────────────────── */
 
 /** Soft crescent / bar used by the SD 2-5 metatarsal element */
@@ -527,6 +530,27 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 ];
 
 export default ELEMENTS_CATALOG;
+
+function getElementLowpolyStlUrl(item: ElementLibraryItem): string | undefined {
+	if (!item.stlUrl) return undefined;
+	if (!item.stlUrl.startsWith(BASE_ELEMENT_STL_PREFIX)) return undefined;
+	return `${LOWPOLY_ELEMENT_STL_PREFIX}${item.stlUrl.slice(BASE_ELEMENT_STL_PREFIX.length)}`;
+}
+
+export function getElementPreferredStlUrl(item: ElementLibraryItem): string | undefined {
+	if (item.stlInteractiveUrl) return item.stlInteractiveUrl;
+	if (!item.stlUrl) return undefined;
+	return item.stlUrl;
+}
+
+export function getElementStlLoadUrls(item: ElementLibraryItem): string[] {
+	const urls: string[] = [];
+	const preferredUrl = getElementPreferredStlUrl(item);
+	if (preferredUrl) urls.push(preferredUrl);
+	const lowpolyUrl = getElementLowpolyStlUrl(item);
+	if (lowpolyUrl && lowpolyUrl !== preferredUrl) urls.push(lowpolyUrl);
+	return urls;
+}
 
 /** Pre-filtered catalogs for each tab */
 export const ELEMENTEN_ITEMS = ELEMENTS_CATALOG.filter(

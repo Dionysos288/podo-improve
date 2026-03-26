@@ -95,6 +95,8 @@ interface CncFixtureViewProps {
 	className?: string;
 	leftStlUrl?: string;
 	rightStlUrl?: string;
+	leftGeometry?: THREE.BufferGeometry | null;
+	rightGeometry?: THREE.BufferGeometry | null;
 	baseInsoleType?: BaseInsoleType;
 }
 
@@ -236,6 +238,102 @@ function InsoleSTL({
 	);
 }
 
+function InsoleGeometry({
+	geometry,
+	side,
+	blockW,
+	blockH,
+	horizontal,
+}: {
+	geometry: THREE.BufferGeometry;
+	side: 'left' | 'right';
+	blockW: number;
+	blockH: number;
+	horizontal: boolean;
+}) {
+	const fittedGeometry = useMemo(() => {
+		const g = geometry.clone();
+		g.computeBoundingBox();
+		const bb = g.boundingBox;
+		const pos = g.getAttribute('position') as THREE.BufferAttribute | undefined;
+		if (!bb || !pos) return g;
+
+		const size = bb.getSize(new THREE.Vector3());
+		const minLen = bb.min.x;
+		const maxLen = bb.max.x;
+		const lenSpan = maxLen - minLen;
+		const centerW = bb.min.y + size.y / 2;
+		const minH = bb.min.z;
+
+		const slice = lenSpan * 0.1;
+		let minEndW = 0, maxEndW = 0, minC = 0, maxC = 0;
+		for (let i = 0; i < pos.count; i++) {
+			const lv = pos.getX(i);
+			const wv = pos.getY(i);
+			if (lv <= minLen + slice) { minEndW += Math.abs(wv - centerW); minC++; }
+			if (lv >= maxLen - slice) { maxEndW += Math.abs(wv - centerW); maxC++; }
+		}
+		const heelAtMin = minC > 0 && maxC > 0 ? (minEndW / minC) >= (maxEndW / maxC) : true;
+
+		const halfSpace = horizontal ? (blockH / 2 - 6) : (blockW / 2 - 6);
+		const lenSpace = horizontal ? (blockW - 16) : (blockH - 16);
+		const fitScale = Math.min(halfSpace / Math.max(size.y, 1e-6), lenSpace / Math.max(lenSpan, 1e-6));
+
+		const newPos = new Float32Array(pos.count * 3);
+		for (let i = 0; i < pos.count; i++) {
+			const lv = pos.getX(i);
+			const wv = pos.getY(i);
+			const hv = pos.getZ(i);
+
+			const canonLen = heelAtMin ? (lv - minLen) : (maxLen - lv);
+			const canonW = wv - centerW;
+			const canonH = hv - minH;
+
+			if (horizontal) {
+				newPos[i * 3 + 0] = (canonLen - lenSpan / 2) * fitScale;
+				newPos[i * 3 + 1] = canonH * fitScale;
+				newPos[i * 3 + 2] = canonW * fitScale;
+			} else {
+				newPos[i * 3 + 0] = canonW * fitScale;
+				newPos[i * 3 + 1] = canonH * fitScale;
+				newPos[i * 3 + 2] = (canonLen - lenSpan / 2) * fitScale;
+			}
+		}
+
+		const newGeom = new THREE.BufferGeometry();
+		newGeom.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
+		if (g.index) newGeom.setIndex(g.index.clone());
+		newGeom.computeVertexNormals();
+		newGeom.computeBoundingBox();
+		return newGeom;
+	}, [geometry, blockW, blockH, horizontal]);
+
+	let xOff: number;
+	let zOff: number;
+	if (horizontal) {
+		xOff = 0;
+		zOff = side === 'left' ? -blockH / 4 : blockH / 4;
+	} else {
+		xOff = side === 'left' ? -blockW / 4 : blockW / 4;
+		zOff = 0;
+	}
+
+	return (
+		<mesh
+			geometry={fittedGeometry}
+			position={[xOff, 2, zOff]}
+			renderOrder={1}
+		>
+			<meshStandardMaterial
+				color={INSOLE_COLOR}
+				roughness={0.3}
+				metalness={0.02}
+				side={THREE.DoubleSide}
+			/>
+		</mesh>
+	);
+}
+
 // ────────────────────────────────────────
 // EVA Block — single 3D block with optional insoles
 // ────────────────────────────────────────
@@ -246,6 +344,8 @@ function EvaBlock({
 	parts,
 	leftStlUrl,
 	rightStlUrl,
+	leftGeometry,
+	rightGeometry,
 	baseInsoleType = 'man',
 }: {
 	position: [number, number, number];
@@ -254,6 +354,8 @@ function EvaBlock({
 	parts: SlotAssignment[];
 	leftStlUrl?: string;
 	rightStlUrl?: string;
+	leftGeometry?: THREE.BufferGeometry | null;
+	rightGeometry?: THREE.BufferGeometry | null;
 	baseInsoleType?: BaseInsoleType;
 }) {
 	const { w, h, horizontal } = slotDesc;
@@ -433,13 +535,19 @@ function EvaBlock({
 				</Text>
 			)}
 
-			{/* STL Insoles */}
-			{hasLeft && leftStlUrl && (
+			{/* Insoles */}
+			{hasLeft && leftGeometry && (
+				<InsoleGeometry geometry={leftGeometry} side="left" blockW={w} blockH={h} horizontal={horizontal} />
+			)}
+			{hasRight && rightGeometry && (
+				<InsoleGeometry geometry={rightGeometry} side="right" blockW={w} blockH={h} horizontal={horizontal} />
+			)}
+			{hasLeft && !leftGeometry && leftStlUrl && (
 				<Suspense fallback={null}>
 					<InsoleSTL url={leftStlUrl} side="left" blockW={w} blockH={h} horizontal={horizontal} baseInsoleType={baseInsoleType} />
 				</Suspense>
 			)}
-			{hasRight && rightStlUrl && (
+			{hasRight && !rightGeometry && rightStlUrl && (
 				<Suspense fallback={null}>
 					<InsoleSTL url={rightStlUrl} side="right" blockW={w} blockH={h} horizontal={horizontal} baseInsoleType={baseInsoleType} />
 				</Suspense>
@@ -480,6 +588,8 @@ export function CncFixtureView({
 	className,
 	leftStlUrl,
 	rightStlUrl,
+	leftGeometry,
+	rightGeometry,
 	baseInsoleType = 'man',
 }: CncFixtureViewProps) {
 	return (
@@ -523,6 +633,8 @@ export function CncFixtureView({
 								parts={parts}
 								leftStlUrl={leftStlUrl}
 								rightStlUrl={rightStlUrl}
+								leftGeometry={leftGeometry}
+								rightGeometry={rightGeometry}
 								baseInsoleType={baseInsoleType}
 							/>
 						);

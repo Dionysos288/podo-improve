@@ -457,6 +457,7 @@ interface InteractiveTrimlineProps {
 	side: 'left' | 'right';
 	mmToWorld: number;
 	active: boolean;
+	mode?: 'regional' | 'freeform';
 }
 
 const HANDLE_RADIUS = 0.45;
@@ -487,6 +488,7 @@ export function InteractiveTrimline({
 	profile,
 	mmToWorld,
 	active,
+	mode: _mode = 'regional',
 }: InteractiveTrimlineProps) {
 	const { camera, gl } = useThree();
 	const groupRef = useRef<THREE.Group>(null);
@@ -551,7 +553,7 @@ export function InteractiveTrimline({
 	}, [contour, adjKey, profileKey]);
 
 	// ── Selection / hover state ──
-	const [hoveredIdx, setHoveredIdx] = useState<number>(-1);
+	const hoveredIdxRef = useRef<number>(-1);
 	const selectedSet = useRef<Set<number>>(new Set());
 	const [selectedVersion, setSelectedVersion] = useState(0); // bump to trigger color re-render
 	const [isDragging, setIsDragging] = useState(false);
@@ -651,6 +653,7 @@ export function InteractiveTrimline({
 		const offsets = offsetsRef.current;
 		const mm = mmToWorld;
 		const sel = selectedSet.current;
+		const hoveredIdx = hoveredIdxRef.current;
 
 		for (let i = 0; i < bins; i++) {
 			const ri = i * 3;
@@ -718,7 +721,7 @@ export function InteractiveTrimline({
 
 		inst.instanceMatrix.needsUpdate = true;
 		if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
-	}, [contour, mmToWorld, hoveredIdx, hiddenHandleSet, getSharedEndpointPosition, _mat4, _color]);
+	}, [contour, mmToWorld, hiddenHandleSet, getSharedEndpointPosition, _mat4, _color]);
 
 	// Update every frame only when needed
 	useFrame(() => {
@@ -728,10 +731,10 @@ export function InteractiveTrimline({
 		}
 	});
 
-	// Also update when hoveredIdx or selection changes
+	// Also update when selection changes
 	useEffect(() => {
 		needsInstanceUpdate.current = true;
-	}, [hoveredIdx, selectedVersion]);
+	}, [selectedVersion]);
 
 	// ── Stable refs ──
 	const cameraRef = useRef(camera);
@@ -744,8 +747,9 @@ export function InteractiveTrimline({
 	onPendingProfileRef.current = onPendingProfileChange;
 	const contourRef = useRef(contour);
 	contourRef.current = contour;
+	const pendingEmitRafRef = useRef<number | null>(null);
 
-	const emitPending = useCallback(() => {
+	const flushPending = useCallback(() => {
 		const adj = handleOffsetsToAdjustments(
 			offsetsRef.current,
 			tValuesRef.current,
@@ -758,6 +762,14 @@ export function InteractiveTrimline({
 			);
 		}
 	}, [adjustments]);
+
+	const schedulePendingEmit = useCallback(() => {
+		if (pendingEmitRafRef.current != null) return;
+		pendingEmitRafRef.current = requestAnimationFrame(() => {
+			pendingEmitRafRef.current = null;
+			flushPending();
+		});
+	}, [flushPending]);
 
 	// ── Pointer move (handle dragging OR box selection) ──
 	const onPointerMove = useCallback((e: PointerEvent) => {
@@ -807,9 +819,9 @@ export function InteractiveTrimline({
 			offsetsRef.current, startOff, indices, deltaMm, bins, SMOOTH_RADIUS,
 		);
 
-		emitPending();
+		schedulePendingEmit();
 		needsInstanceUpdate.current = true;
-	}, [gl, emitPending]);
+	}, [gl, schedulePendingEmit]);
 
 	const onPointerUp = useCallback(() => {
 		if (boxSelecting.current) {
@@ -853,10 +865,15 @@ export function InteractiveTrimline({
 			dragging.current = false;
 			setIsDragging(false);
 			gl.domElement.style.cursor = 'auto';
+			if (pendingEmitRafRef.current != null) {
+				cancelAnimationFrame(pendingEmitRafRef.current);
+				pendingEmitRafRef.current = null;
+			}
+			flushPending();
 			// Re-render outline with final positions
 			setSelectedVersion((v) => v + 1);
 		}
-	}, [gl, hiddenHandleSet]);
+	}, [gl, hiddenHandleSet, flushPending]);
 
 	// ── Attach / detach native listeners ──
 	useEffect(() => {
@@ -915,14 +932,23 @@ export function InteractiveTrimline({
 				offsetsRef.current, snapshot, indices, step, bins, SMOOTH_RADIUS,
 			);
 
-			emitPending();
+			schedulePendingEmit();
 			needsInstanceUpdate.current = true;
 			setSelectedVersion((v) => v + 1);
 		};
 
 		window.addEventListener('keydown', onKeyDown);
 		return () => window.removeEventListener('keydown', onKeyDown);
-	}, [active, emitPending, hiddenHandleSet]);
+	}, [active, schedulePendingEmit, hiddenHandleSet]);
+
+	useEffect(() => {
+		return () => {
+			if (pendingEmitRafRef.current != null) {
+				cancelAnimationFrame(pendingEmitRafRef.current);
+				pendingEmitRafRef.current = null;
+			}
+		};
+	}, []);
 
 	// ── Nothing to render ──
 	if (!active || !contour || handleCount === 0) return null;
@@ -1020,14 +1046,18 @@ export function InteractiveTrimline({
 				onPointerMove={(e) => {
 					if (dragging.current) return;
 					const idx = e.instanceId;
-					if (idx != null && !hiddenHandleSet.has(idx) && idx !== hoveredIdx) {
-						setHoveredIdx(idx);
+					if (idx != null && !hiddenHandleSet.has(idx) && idx !== hoveredIdxRef.current) {
+						hoveredIdxRef.current = idx;
+						needsInstanceUpdate.current = true;
 						gl.domElement.style.cursor = 'grab';
 					}
 				}}
 				onPointerLeave={() => {
 					if (!dragging.current) {
-						setHoveredIdx(-1);
+						if (hoveredIdxRef.current !== -1) {
+							hoveredIdxRef.current = -1;
+							needsInstanceUpdate.current = true;
+						}
 						gl.domElement.style.cursor = 'auto';
 					}
 				}}

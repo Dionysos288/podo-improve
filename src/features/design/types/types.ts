@@ -47,6 +47,7 @@ export type DesignParameters = {
 		sizeLabel: 'EU' | 'US' | 'UK';
 		baseInsoleType?: BaseInsoleType;
 		shoeSize: { left: number; right: number };
+		seededShoeSize?: { left: number; right: number };
 		soleThicknessMm: { left: number; right: number };
 		maxInsoleHeightMm: { left: number; right: number };
 	};

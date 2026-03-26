@@ -1,5 +1,5 @@
 /**
- * Extract 2D boundary contour AND 3D heightfield from an STL file.
+ * Extract 2D boundary contour AND 3D heightfield from an STL file or geometry.
  *
  * Uses the same auto-orientation algorithm as CncFixtureView's InsoleSTL component
  * to ensure the NC toolpath matches the visual representation exactly.
@@ -28,6 +28,118 @@ export interface StlExtractionResult {
 	heightfield: HeightfieldData;
 }
 
+const HEIGHTFIELD_YIELD_EVERY_ROWS = 8;
+const EXPORT_PAIR_SPACING_MM = 15;
+
+const EMPTY_RESULT: StlExtractionResult = {
+	contour: [],
+	heightfield: { cols: 0, rows: 0, cellSizeMm: 1, zValues: [], originOffsetMm: { x: 0, y: 0 } },
+};
+
+function yieldToBrowser(): Promise<void> {
+	return new Promise((resolve) => {
+		if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+			window.requestAnimationFrame(() => resolve());
+			return;
+		}
+		setTimeout(resolve, 0);
+	});
+}
+
+/**
+ * Extract contour + heightfield directly from a THREE.BufferGeometry.
+ * Use this when you already have the insole geometry (e.g. from the 3D viewer)
+ * instead of fetching an STL file.
+ *
+ * The geometry does NOT need to be pre-oriented — auto-orientation is applied.
+ * No baseInsoleType shape morphing is applied (assumed already done by the viewer).
+ */
+export function extractContourFromGeometry(
+	geometry: THREE.BufferGeometry,
+	side: 'left' | 'right',
+	blockW = BLOCK_W,
+	blockH = BLOCK_H,
+): StlExtractionResult {
+	const geom = geometry.clone();
+	geom.computeBoundingBox();
+	const bb = geom.boundingBox;
+	const pos = geom.getAttribute('position') as THREE.BufferAttribute | undefined;
+	if (!bb || !pos || pos.count === 0) return EMPTY_RESULT;
+
+	return extractFromPreparedGeometry(geom, bb, pos, side, blockW, blockH);
+}
+
+export async function extractContourFromGeometryAsync(
+	geometry: THREE.BufferGeometry,
+	side: 'left' | 'right',
+	blockW = BLOCK_W,
+	blockH = BLOCK_H,
+): Promise<StlExtractionResult> {
+	const geom = geometry.clone();
+	geom.computeBoundingBox();
+	const bb = geom.boundingBox;
+	const pos = geom.getAttribute('position') as THREE.BufferAttribute | undefined;
+	if (!bb || !pos || pos.count === 0) return EMPTY_RESULT;
+
+	return extractFromPreparedGeometryAsync(geom, bb, pos, side, blockW, blockH);
+}
+
+/**
+ * Extract contour + heightfield from already-exported viewer geometry in true mm scale.
+ * This preserves the real insole size and places left/right using the same pair spacing
+ * as `getExportPairGeometryMm()` in the viewer instead of shrinking into the fixture block.
+ */
+export async function extractContourFromExportGeometryAsync(
+	geometry: THREE.BufferGeometry,
+	side: 'left' | 'right',
+	pairSpacingMm = EXPORT_PAIR_SPACING_MM,
+): Promise<StlExtractionResult> {
+	const geom = geometry.clone();
+	geom.computeBoundingBox();
+	const bb = geom.boundingBox;
+	const pos = geom.getAttribute('position') as THREE.BufferAttribute | undefined;
+	if (!bb || !pos || pos.count === 0) return EMPTY_RESULT;
+
+	const shiftY = side === 'left'
+		? -(bb.max.y + pairSpacingMm * 0.5)
+		: -(bb.min.y - pairSpacingMm * 0.5);
+
+	const newPos = new Float32Array(pos.count * 3);
+	const points2D: [number, number][] = [];
+	for (let i = 0; i < pos.count; i++) {
+		const exportX = pos.getX(i);
+		const exportY = pos.getY(i) + shiftY;
+		const exportZ = pos.getZ(i);
+
+		const ncX = exportY;
+		const ncY = -exportX;
+		const ncZ = exportZ - bb.max.z;
+
+		newPos[i * 3 + 0] = ncX;
+		newPos[i * 3 + 1] = ncZ;
+		newPos[i * 3 + 2] = ncY;
+		points2D.push([ncX, ncY]);
+	}
+
+	const remappedGeom = new THREE.BufferGeometry();
+	remappedGeom.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
+	if (geom.index) remappedGeom.setIndex(geom.index.clone());
+	remappedGeom.computeVertexNormals();
+	remappedGeom.computeBoundingBox();
+
+	const mesh = new THREE.Mesh(
+		remappedGeom,
+		new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }),
+	);
+
+	const contour = radialBoundary(points2D, 180);
+	await yieldToBrowser();
+	const heightfield = await extractHeightfieldAsync(mesh, contour, 0, 0, BLOCK_DEPTH);
+	remappedGeom.dispose();
+
+	return { contour, heightfield };
+}
+
 /**
  * Fetch an STL file, auto-orient it, and return both the 2D boundary contour
  * AND a 3D heightfield in block-local NC coordinates.
@@ -39,16 +151,11 @@ export async function extractStlContour(
 	blockH = BLOCK_H,
 	baseInsoleType: BaseInsoleType = 'man',
 ): Promise<StlExtractionResult> {
-	const empty: StlExtractionResult = {
-		contour: [],
-		heightfield: { cols: 0, rows: 0, cellSizeMm: 1, zValues: [], originOffsetMm: { x: 0, y: 0 } },
-	};
-
 	// ── 1. Fetch and parse STL ──
 	const response = await fetch(stlUrl);
 	if (!response.ok) {
 		console.warn(`[extractStlContour] Failed to fetch ${stlUrl}: ${response.status}`);
-		return empty;
+		return EMPTY_RESULT;
 	}
 	const buffer = await response.arrayBuffer();
 	const loader = new STLLoader();
@@ -58,9 +165,28 @@ export async function extractStlContour(
 	geometry.computeBoundingBox();
 	const bb = geometry.boundingBox;
 	const pos = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
-	if (!bb || !pos || pos.count === 0) return empty;
+	if (!bb || !pos || pos.count === 0) return EMPTY_RESULT;
 
-	// ── 2. Auto-orient — identical logic to InsoleSTL in CncFixtureView ──
+	return extractFromPreparedGeometryAsync(geometry, bb, pos, side, blockW, blockH);
+}
+
+// ──────────────────────────────────────────────
+// Internal: shared extraction pipeline
+// ──────────────────────────────────────────────
+
+/**
+ * Core extraction pipeline used by both extractStlContour and extractContourFromGeometry.
+ * Auto-orients the geometry, remaps to NC coordinates, extracts contour + heightfield.
+ */
+function extractFromPreparedGeometry(
+	geometry: THREE.BufferGeometry,
+	bb: THREE.Box3,
+	pos: THREE.BufferAttribute,
+	side: 'left' | 'right',
+	blockW: number,
+	blockH: number,
+): StlExtractionResult {
+	// ── Auto-orient — identical logic to InsoleSTL in CncFixtureView ──
 	const size = bb.getSize(new THREE.Vector3());
 	type Axis = 'x' | 'y' | 'z';
 	const axes: Axis[] = ['x', 'y', 'z'];
@@ -103,7 +229,7 @@ export async function extractStlContour(
 	const rawWidth = sizes[widthAxis];
 	const fitScale = Math.min(halfSpace / rawWidth, lenSpace / lenSpan);
 
-	// ── 3. Build remapped geometry for raycasting ──
+	// ── Build remapped geometry for raycasting ──
 	// Remap: X = width, Y = height (up), Z = length
 	const halfCenterX = side === 'left' ? blockW / 4 : (3 * blockW) / 4;
 	const lengthCenter = blockH / 2;
@@ -146,13 +272,103 @@ export async function extractStlContour(
 		new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }),
 	);
 
-	// ── 4. Extract outer boundary contour ──
+	// ── Extract outer boundary contour ──
 	const contour = radialBoundary(points2D, 120);
 
-	// ── 5. Extract heightfield via raycasting ──
+	// ── Extract heightfield via raycasting ──
 	const heightfield = extractHeightfield(mesh, contour, blockW, blockH, BLOCK_DEPTH);
 
 	// Dispose
+	remappedGeom.dispose();
+
+	return { contour, heightfield };
+}
+
+async function extractFromPreparedGeometryAsync(
+	geometry: THREE.BufferGeometry,
+	bb: THREE.Box3,
+	pos: THREE.BufferAttribute,
+	side: 'left' | 'right',
+	blockW: number,
+	blockH: number,
+): Promise<StlExtractionResult> {
+	const size = bb.getSize(new THREE.Vector3());
+	type Axis = 'x' | 'y' | 'z';
+	const axes: Axis[] = ['x', 'y', 'z'];
+	const sizes: Record<Axis, number> = { x: size.x, y: size.y, z: size.z };
+	axes.sort((a, b) => sizes[a] - sizes[b]);
+
+	const heightAxis = axes[0];
+	const widthAxis = axes[1];
+	const lengthAxis = axes[2];
+
+	const getVal = (i: number, axis: Axis): number =>
+		axis === 'x' ? pos.getX(i) : axis === 'y' ? pos.getY(i) : pos.getZ(i);
+
+	const minLen = bb.min[lengthAxis];
+	const maxLen = bb.max[lengthAxis];
+	const lenSpan = maxLen - minLen;
+	const minH = bb.min[heightAxis];
+	const maxH = bb.max[heightAxis];
+	const hSpan = maxH - minH;
+	const centerW = bb.min[widthAxis] + sizes[widthAxis] / 2;
+
+	const slicePct = lenSpan * 0.1;
+	let minEndW = 0, maxEndW = 0, minC = 0, maxC = 0;
+	for (let i = 0; i < pos.count; i++) {
+		const lv = getVal(i, lengthAxis);
+		const wv = getVal(i, widthAxis);
+		if (lv <= minLen + slicePct) { minEndW += Math.abs(wv - centerW); minC++; }
+		if (lv >= maxLen - slicePct) { maxEndW += Math.abs(wv - centerW); maxC++; }
+	}
+	const heelAtMin = minC > 0 && maxC > 0
+		? (minEndW / minC) >= (maxEndW / maxC)
+		: true;
+
+	const halfSpace = blockW / 2 - 6;
+	const lenSpace = blockH - 16;
+	const rawWidth = sizes[widthAxis];
+	const fitScale = Math.min(halfSpace / rawWidth, lenSpace / lenSpan);
+
+	const halfCenterX = side === 'left' ? blockW / 4 : (3 * blockW) / 4;
+	const lengthCenter = blockH / 2;
+
+	const newPos = new Float32Array(pos.count * 3);
+	const points2D: [number, number][] = [];
+
+	for (let i = 0; i < pos.count; i++) {
+		const lv = getVal(i, lengthAxis);
+		const wv = getVal(i, widthAxis);
+		const hv = getVal(i, heightAxis);
+
+		const canonLen = heelAtMin ? (lv - minLen) : (maxLen - lv);
+		const canonW = wv - centerW;
+		const canonH = hv - minH;
+
+		const ncX = canonW * fitScale + halfCenterX;
+		const ncY = (canonLen - lenSpan / 2) * fitScale + lengthCenter;
+		const ncZ = (canonH - hSpan) * fitScale;
+
+		newPos[i * 3 + 0] = ncX;
+		newPos[i * 3 + 1] = ncZ;
+		newPos[i * 3 + 2] = ncY;
+		points2D.push([ncX, ncY]);
+	}
+
+	const remappedGeom = new THREE.BufferGeometry();
+	remappedGeom.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
+	if (geometry.index) remappedGeom.setIndex(geometry.index.clone());
+	remappedGeom.computeVertexNormals();
+	remappedGeom.computeBoundingBox();
+
+	const mesh = new THREE.Mesh(
+		remappedGeom,
+		new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }),
+	);
+
+	const contour = radialBoundary(points2D, 120);
+	await yieldToBrowser();
+	const heightfield = await extractHeightfieldAsync(mesh, contour, blockW, blockH, BLOCK_DEPTH);
 	remappedGeom.dispose();
 
 	return { contour, heightfield };
@@ -235,6 +451,76 @@ function extractHeightfield(
 				zValues[row * cols + col] = z;
 			} else {
 				// Inside contour but no hit — use max depth as fallback
+				zValues[row * cols + col] = -maxDepthMm;
+			}
+		}
+	}
+
+	return {
+		cols,
+		rows,
+		cellSizeMm: cellSize,
+		zValues,
+		originOffsetMm: { x: minX, y: minY },
+	};
+}
+
+async function extractHeightfieldAsync(
+	mesh: THREE.Mesh,
+	contour: [number, number][],
+	_blockW: number,
+	_blockH: number,
+	maxDepthMm: number,
+): Promise<HeightfieldData> {
+	if (contour.length === 0) {
+		return { cols: 0, rows: 0, cellSizeMm: 1, zValues: [], originOffsetMm: { x: 0, y: 0 } };
+	}
+
+	let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+	for (const [cx, cy] of contour) {
+		if (cx < minX) minX = cx;
+		if (cx > maxX) maxX = cx;
+		if (cy < minY) minY = cy;
+		if (cy > maxY) maxY = cy;
+	}
+
+	const margin = 1;
+	minX -= margin;
+	maxX += margin;
+	minY -= margin;
+	maxY += margin;
+
+	const cellSize = 1.0;
+	const cols = Math.ceil((maxX - minX) / cellSize) + 1;
+	const rows = Math.ceil((maxY - minY) / cellSize) + 1;
+
+	const zValues = new Float32Array(rows * cols);
+	zValues.fill(0);
+
+	const raycaster = new THREE.Raycaster();
+	const rayOrigin = new THREE.Vector3();
+	const rayDir = new THREE.Vector3(0, -1, 0);
+
+	for (let row = 0; row < rows; row++) {
+		if (row > 0 && row % HEIGHTFIELD_YIELD_EVERY_ROWS === 0) {
+			await yieldToBrowser();
+		}
+		const ncY = minY + row * cellSize;
+		for (let col = 0; col < cols; col++) {
+			const ncX = minX + col * cellSize;
+			if (!pointInContour(ncX, ncY, contour)) {
+				zValues[row * cols + col] = 0;
+				continue;
+			}
+
+			rayOrigin.set(ncX, 50, ncY);
+			raycaster.set(rayOrigin, rayDir);
+			const hits = raycaster.intersectObject(mesh, false);
+			if (hits.length > 0) {
+				const hitZ = hits[0].point.y;
+				const z = Math.max(hitZ, -maxDepthMm);
+				zValues[row * cols + col] = z;
+			} else {
 				zValues[row * cols + col] = -maxDepthMm;
 			}
 		}

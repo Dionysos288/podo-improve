@@ -448,7 +448,7 @@ export function InteractiveBoxGrid({
 		if (savedOffsets && savedOffsets.offsets.some(v => Math.abs(v) > 0.001)) {
 			// Defer to next tick so the parent geometry ref is ready
 			setTimeout(() => {
-				onDeformRef.current?.(pointsRef.current.map(p => ({ ...p })));
+				onDeformRef.current?.(pointsRef.current);
 			}, 0);
 		}
 	}, [insoleGeometry, mmToWorld, savedOffsets]);
@@ -479,8 +479,7 @@ export function InteractiveBoxGrid({
 		if (deformTimerRef.current) clearTimeout(deformTimerRef.current);
 		deformTimerRef.current = setTimeout(() => {
 			deformTimerRef.current = null;
-			// Snapshot a copy so the parent gets an immutable array
-			onDeformRef.current?.(pointsRef.current.map(p => ({ ...p })));
+			onDeformRef.current?.(pointsRef.current);
 			// Auto-persist grid offsets to parent so "Opslaan" always has latest data
 			onSaveRef.current?.(getSaveDataRef.current());
 		}, 120);
@@ -490,7 +489,7 @@ export function InteractiveBoxGrid({
 		if (previewRafRef.current != null) return;
 		previewRafRef.current = requestAnimationFrame(() => {
 			previewRafRef.current = null;
-			onDeformRef.current?.(pointsRef.current.map(p => ({ ...p })));
+			onDeformRef.current?.(pointsRef.current);
 		});
 	}, []);
 
@@ -865,7 +864,7 @@ export function InteractiveBoxGrid({
 			needsInstanceUpdate.current = true;
 
 			// Send deformation to parent directly (synchronous, no rAF delay)
-			onDeformRef.current?.(pts.map(p => ({ ...p })));
+			onDeformRef.current?.(pts);
 			// Persist offsets to parent state for autosave
 			onSaveRef.current?.(getSaveDataRef.current());
 		};

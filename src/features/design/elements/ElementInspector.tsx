@@ -35,7 +35,7 @@ type Props = {
  *   └──────────────────────────────┘
  */
 export function ElementInspector({ element, standalone, onClose, editMode: _editMode = null }: Props) {
-	const { updateElement } = useElementsStore();
+	const updateElement = useElementsStore((state) => state.updateElement);
 
 	const item = getElementByKey(element.libraryKey);
 	const color = item ? ELEMENT_COLORS[item.color] : '#999';

@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useRef, useState, useCallback, useMemo, useEffect } from 'react';
+import { useRef, useState, useCallback, useMemo, useEffect, useTransition } from 'react';
 import * as THREE from 'three';
 import { Card, CardContent } from '@/src/shared/components/ui/card';
 import { Button } from '@/src/shared/components/ui/button';
@@ -27,7 +27,6 @@ import {
 	type OntwerpCorrections,
 } from '@/src/shared/components/design/OntwerpPanel';
 import { BaseModal } from '@/src/shared/components/ui/modal';
-import { AddCorrectionModal } from '@/src/shared/components/design/AddCorrectionModal';
 import {
 	DEFAULT_ACTIVE_CORRECTIONS,
 	type CorrectionKey,
@@ -57,6 +56,7 @@ import type {
 	CompleteLandmarkSet,
 	AutoLandmarkResult,
 	FootGeometry,
+	PlantarData,
 } from '@/src/features/design/types/types';
 import { LANDMARK_CONFIDENCE_THRESHOLD } from '@/src/features/design/types/types';
 import { STLLoader } from 'three-stdlib';
@@ -76,6 +76,9 @@ import {
 	ElementInspector,
 	ElementActionsPanel,
 	PlacedElementsList,
+	mirrorBoxGridOffsetsAcrossWidth,
+	mirrorPlacedElementToSide,
+	mirrorTrimlineHandleProfileAcrossWidth,
 } from '@/src/features/design/elements';
 import {
 	type MillingMode,
@@ -90,6 +93,7 @@ import {
 	generateNcFile,
 	downloadNcFile,
 	extractStlContour,
+	extractContourFromExportGeometryAsync,
 	DEFAULT_CNC_POST_SETTINGS,
 } from '@/src/features/milling';
 import { EvaPreparationPanel } from '@/src/shared/components/design/EvaPreparationPanel';
@@ -123,6 +127,30 @@ function cloneBoxGridOffsets(
 		rows: source.rows,
 		offsets: [...source.offsets],
 	};
+}
+
+function mirrorSideValues<T>(
+	value: T,
+	from: 'left' | 'right',
+	to: 'left' | 'right',
+): T {
+	if (Array.isArray(value)) {
+		return value.map((entry) => mirrorSideValues(entry, from, to)) as T;
+	}
+	if (!value || typeof value !== 'object') {
+		return value;
+	}
+	const record = value as Record<string, unknown>;
+	if ('left' in record && 'right' in record) {
+		const next = { ...record };
+		next[to] = structuredClone(record[from]);
+		return next as T;
+	}
+	const next: Record<string, unknown> = {};
+	for (const [key, entry] of Object.entries(record)) {
+		next[key] = mirrorSideValues(entry, from, to);
+	}
+	return next as T;
 }
 
 // Dynamic imports for heavy 3D components - reduces initial bundle by ~200-500KB
@@ -234,6 +262,155 @@ const distance3 = (a: [number, number, number], b: [number, number, number]) =>
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 const roundStep = (value: number, step: number) =>
 	Math.round(value / step) * step;
+const normalizeScanArchHeightMm = (archMm: number) =>
+	roundStep(clamp(archMm, 3, 30), 0.5);
+const deriveTargetInsoleHeightMm = (archMm: number, cupMm: number) =>
+	roundStep(clamp(Math.max(archMm, cupMm + 4), 6, 30), 0.5);
+
+/**
+ * Compensation factor for the steunzolen hoogte.
+ *
+ * The generated insole builder uses Gaussian shaping, rim blending, and
+ * thickness offsets that internally reduce the mesh peak to ~60-70% of the
+ * requested arch height.  We compensate by boosting the seeded value:
+ *   1.45× ≈ inverse of the ~69% internal dampening
+ *   + 15% overshoot so the insole slightly exceeds the scan arch (the foot
+ *     compresses onto the insole under body weight).
+ *
+ * Net factor: 1.45 × 1.15 ≈ 1.67
+ */
+const ARCH_HEIGHT_COMPENSATION = 1.45 * 1.15; // ≈ 1.67
+const compensateArchHeight = (rawMm: number) =>
+	roundStep(clamp(rawMm * ARCH_HEIGHT_COMPENSATION, 3, 30), 0.5);
+
+/**
+ * Robust arch height derivation from plantar heightmap.
+ *
+ * Uses an overall-percentile baseline instead of zone-specific baselines,
+ * which fails when the heightmap is sparse (common with surface-scan meshes
+ * that have gaps under the arch).
+ *
+ * Approach:
+ * 1. Collect ALL valid heightmap cells
+ * 2. Ground-contact baseline = 10th percentile of all W values
+ *    (the majority of the plantar surface is heel/forefoot contact area)
+ * 3. Arch peak = 95th percentile of W values in the midfoot zone
+ * 4. Relief = arch peak − baseline
+ */
+const deriveArchPeakHeightMmFromPlantarData = (
+	plantarData: PlantarData | null | undefined,
+	worldToMm = 1
+) => {
+	if (!plantarData) return null;
+	const [cols, rows] = plantarData.gridSize;
+	const [minU, maxU] = plantarData.bounds;
+	if (cols <= 0 || rows <= 0) return null;
+	const lengthSpan = Math.max(1e-6, maxU - minU);
+
+	const allW: number[] = [];
+	const archW: number[] = [];
+
+	for (let row = 0; row < rows; row++) {
+		for (let col = 0; col < cols; col++) {
+			const idx = row * cols + col;
+			const w = plantarData.heightmap[idx];
+			if (!Number.isFinite(w)) continue;
+			allW.push(w);
+			const u = minU + (col + 0.5) * plantarData.cellSize;
+			const tLen = (u - minU) / lengthSpan;
+			if (tLen >= 0.15 && tLen <= 0.75) archW.push(w);
+		}
+	}
+
+	if (allW.length < 10 || archW.length < 3) return null;
+
+	allW.sort((a, b) => a - b);
+	archW.sort((a, b) => a - b);
+
+	const baseline = allW[Math.floor(allW.length * 0.10)]!;
+	const archPeak = archW[Math.floor(archW.length * 0.95)]!;
+	const relief = archPeak - baseline;
+
+	if (relief <= 0) return null;
+	return normalizeScanArchHeightMm(relief * worldToMm);
+};
+
+/**
+ * Robust arch profile derivation: returns both arch height AND apex position.
+ *
+ * Same overall-percentile baseline approach as deriveArchPeakHeightMmFromPlantarData,
+ * but also tracks the fore/aft position (tLen) of the peak for apex correction.
+ */
+const deriveArchPeakProfileFromPlantarData = (
+	plantarData: PlantarData | null | undefined,
+	worldToMm = 1,
+	label = ''
+) => {
+	if (!plantarData) return null;
+	const [cols, rows] = plantarData.gridSize;
+	const [minU, maxU, minV] = plantarData.bounds;
+	if (cols <= 0 || rows <= 0) return null;
+	const lengthSpan = Math.max(1e-6, maxU - minU);
+
+	// Collect all valid cells with positions
+	const allW: number[] = [];
+	const archCells: Array<{ w: number; tLen: number; v: number }> = [];
+
+	for (let row = 0; row < rows; row++) {
+		for (let col = 0; col < cols; col++) {
+			const idx = row * cols + col;
+			const w = plantarData.heightmap[idx];
+			if (!Number.isFinite(w)) continue;
+			allW.push(w);
+			const u = minU + (col + 0.5) * plantarData.cellSize;
+			const v = minV + (row + 0.5) * plantarData.cellSize;
+			const tLen = (u - minU) / lengthSpan;
+			// Wide midfoot zone — no lateral filter
+			if (tLen >= 0.15 && tLen <= 0.75) {
+				archCells.push({ w, tLen, v });
+			}
+		}
+	}
+
+	if (allW.length < 10 || archCells.length < 3) return null;
+
+	// Ground-contact baseline: 10th percentile of ALL valid W values
+	allW.sort((a, b) => a - b);
+	const baseline = allW[Math.floor(allW.length * 0.10)]!;
+
+	// Find peak relief in arch zone
+	let peakRelief = -Infinity;
+	let peakT = 0.42;
+	let peakV = 0;
+
+	for (const cell of archCells) {
+		const relief = cell.w - baseline;
+		if (relief > peakRelief) {
+			peakRelief = relief;
+			peakT = cell.tLen;
+			peakV = cell.v;
+		}
+	}
+
+	// Debug logging
+	if (process.env.NODE_ENV === 'development' && label) {
+		const archReliefs = archCells.map(c => c.w - baseline).sort((a, b) => a - b);
+		console.log(`[ArchProfile ${label}] grid=${cols}x${rows}, valid=${allW.length}/${cols * rows}, lengthSpan=${(lengthSpan * worldToMm).toFixed(1)}mm`,
+			`\n  W range: ${(allW[0]! * worldToMm).toFixed(1)} .. ${(allW[allW.length - 1]! * worldToMm).toFixed(1)}mm`,
+			`\n  baseline(p10)=${(baseline * worldToMm).toFixed(1)}mm`,
+			`\n  archZoneCells=${archCells.length}, relief range: ${(archReliefs[0]! * worldToMm).toFixed(1)} .. ${(archReliefs[archReliefs.length - 1]! * worldToMm).toFixed(1)}mm`,
+			`\n  peakRelief=${(peakRelief * worldToMm).toFixed(1)}mm at tLen=${peakT.toFixed(3)}, v=${peakV.toFixed(2)}`,
+			`\n  groundNormal=${plantarData.groundNormal.map(n => n.toFixed(3)).join(',')}`
+		);
+	}
+
+	if (!Number.isFinite(peakRelief) || peakRelief <= 0) return null;
+	return {
+		archHeightMm: normalizeScanArchHeightMm(peakRelief * worldToMm),
+		apexShiftMm: roundStep(clamp((peakT - 0.42) * lengthSpan * worldToMm, -20, 20), 0.5),
+		peakT,
+	};
+};
 
 const estimateEuShoeSizeFromGeometry = (
 	geometry: THREE.BufferGeometry,
@@ -349,8 +526,9 @@ const deriveSeedFromFootGeometry = (
 	const cupMm = clamp(finalArch * 0.55, 2, 12);
 
 	// Rim / max insole height: the edge rim that wraps around the foot.
-	// Should be cup height + margin for good containment.
-	const rimHeightMm = clamp(cupMm + 4, 6, 18);
+	// Base this on the arch-driven support target so the generated steunzool
+	// does not end up lower than the scan-derived arch profile.
+	const rimHeightMm = deriveTargetInsoleHeightMm(finalArch, cupMm);
 
 	// Sole thickness: thicker for larger feet
 	const soleThicknessMm = footLengthMm > 270 ? 3 : 2.5;
@@ -359,17 +537,19 @@ const deriveSeedFromFootGeometry = (
 	const shoeSizeEu = estimateEuShoeSizeFromFootLengthMm(footLengthMm) ?? 40;
 	const standardWidthMm = getBaseInsoleWidthMmForEuSize(shoeSizeEu, baseInsoleType);
 
-	console.log(
-		`[Seed] archHeight=${rawArchMm.toFixed(1)}mm → archSupport=${finalArch.toFixed(1)}mm, ` +
-		`cup=${cupMm.toFixed(1)}mm, rim=${rimHeightMm.toFixed(1)}mm, ` +
-		`shoeSize=${shoeSizeEu.toFixed(1)}, footLen=${footLengthMm.toFixed(0)}mm, ` +
-		`scanWidth=${forefootWidthMm.toFixed(0)}mm, targetWidth=${standardWidthMm.toFixed(1)}mm`
-	);
+	if (process.env.NODE_ENV === 'development') {
+		console.log(
+			`[Seed] archHeight=${rawArchMm.toFixed(1)}mm → archSupport=${finalArch.toFixed(1)}mm, ` +
+			`cup=${cupMm.toFixed(1)}mm, rim=${rimHeightMm.toFixed(1)}mm, ` +
+			`shoeSize=${shoeSizeEu.toFixed(1)}, footLen=${footLengthMm.toFixed(0)}mm, ` +
+			`scanWidth=${forefootWidthMm.toFixed(0)}mm, targetWidth=${standardWidthMm.toFixed(1)}mm`
+		);
+	}
 
 	return {
 		archMm: roundStep(Number.isFinite(finalArch) ? finalArch : 8, 0.5),
 		cupMm: roundStep(cupMm, 0.5),
-		rimHeightMm: roundStep(rimHeightMm, 0.5),
+		rimHeightMm: normalizeScanArchHeightMm(rawArchMm),
 		soleThicknessMm: roundStep(soleThicknessMm, 0.5),
 		shoeSizeEu: roundStep(shoeSizeEu, 0.5),
 		pronationMm: 0,
@@ -533,8 +713,10 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const [selectedRightScanId, setSelectedRightScanId] = useState<string | null>(
 		null
 	);
-	const { selectedTemplate, setSelectedTemplate, parameters, setParameters } =
-		useDesignStore();
+	const selectedTemplate = useDesignStore((state) => state.selectedTemplate);
+	const setSelectedTemplate = useDesignStore((state) => state.setSelectedTemplate);
+	const parameters = useDesignStore((state) => state.parameters);
+	const setParameters = useDesignStore((state) => state.setParameters);
 	const [activeDesignStep, setActiveDesignStep] = useState<number>(1);
 	const [leftPanelTab, setLeftPanelTab] = useState<'view' | 'analysis'>('view');
 	const [viewerViewPreset, setViewerViewPreset] = useState<
@@ -543,7 +725,16 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const [viewerControlMode, setViewerControlMode] = useState<'rotate' | 'pan'>(
 		'rotate'
 	);
+	const [namedViewActive, setNamedViewActive] = useState<
+		'front' | 'back' | 'left' | 'right' | 'top' | 'bottom' | 'iso' | null
+	>(null);
 	const [analysisProbe, setAnalysisProbe] = useState<{
+		heightMm: number;
+		side: 'left' | 'right';
+		point: [number, number, number];
+	} | null>(null);
+	const analysisProbeRafRef = useRef<number | null>(null);
+	const pendingAnalysisProbeRef = useRef<{
 		heightMm: number;
 		side: 'left' | 'right';
 		point: [number, number, number];
@@ -554,7 +745,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const [leftPointSelections, setLeftPointSelections] = useState<PickSelections>({});
 	const [scansActive, setScansActive] = useState(false);
 	const [showOverlays, setShowOverlays] = useState(false);
-	const [targetForefootWidthMm, setTargetForefootWidthMm] = useState<{
+	const [soleWidthOverrideRatio, setSoleWidthOverrideRatio] = useState<{
 		left: number | null;
 		right: number | null;
 	}>({ left: null, right: null });
@@ -565,6 +756,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const [planWorldToMm, setPlanWorldToMm] = useState(1);
 	const rightFittingRef = useRef<{
 		archHeight: number;
+		scanArchHeightMm: number;
+		archApexShiftMm: number;
 		cupHeight: number;
 		shoeSize: number;
 		pronation: number;
@@ -596,12 +789,13 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const [crosshair, setCrosshair] = useState<{ x: number; y: number } | null>(
 		null
 	);
+	const crosshairRafRef = useRef<number | null>(null);
+	const pendingCrosshairRef = useRef<{ x: number; y: number } | null>(null);
 	const [viewSettings, setViewSettings] = useState({
 		showLeft: true,
 		showRight: true,
 		transparent: false,
 		heatmap: false,
-		deviationMap: false,
 		clampDebug: false,
 		showInsoles: true,
 		showModel: true,
@@ -612,6 +806,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			sizeLabel: 'EU' as const,
 			baseInsoleType: DEFAULT_BASE_INSOLE_TYPE,
 			shoeSize: { left: 40, right: 40 },
+			seededShoeSize: { left: 40, right: 40 },
 			soleThicknessMm: { left: 2, right: 2 },
 			maxInsoleHeightMm: { left: 0, right: 0 },
 		}),
@@ -645,6 +840,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				? general.baseInsoleType
 				: defaultGeneral.baseInsoleType,
 			shoeSize: normalizeLR(general.shoeSize, defaultGeneral.shoeSize),
+			seededShoeSize: normalizeLR(general.seededShoeSize, defaultGeneral.seededShoeSize),
 			soleThicknessMm: normalizeLR(
 				general.soleThicknessMm,
 				defaultGeneral.soleThicknessMm
@@ -683,50 +879,130 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		]
 	);
 
+	const normalizeSoleWidthMm = useCallback((widthMm: number, fallbackWidthMm: number) => {
+		if (!Number.isFinite(widthMm)) return Number(fallbackWidthMm.toFixed(1));
+		return Number(Math.max(40, Math.min(160, widthMm)).toFixed(1));
+	}, []);
+
+	const getSoleWidthRatio = useCallback((targetWidthMm: number, baseWidthMm: number) => {
+		const safeBaseWidthMm = Math.max(1e-6, baseWidthMm);
+		return Number(Math.max(0.75, Math.min(1.5, targetWidthMm / safeBaseWidthMm)).toFixed(4));
+	}, []);
+
 	const resolvedTargetForefootWidthMm = useMemo(
 		() => ({
-			left: targetForefootWidthMm.left ?? effectiveTargetForefootWidthMm.left,
-			right: targetForefootWidthMm.right ?? effectiveTargetForefootWidthMm.right,
+			left: Number((effectiveTargetForefootWidthMm.left * (soleWidthOverrideRatio.left ?? 1)).toFixed(1)),
+			right: Number((effectiveTargetForefootWidthMm.right * (soleWidthOverrideRatio.right ?? 1)).toFixed(1)),
 		}),
 		[
-			targetForefootWidthMm.left,
-			targetForefootWidthMm.right,
 			effectiveTargetForefootWidthMm.left,
 			effectiveTargetForefootWidthMm.right,
+			soleWidthOverrideRatio.left,
+			soleWidthOverrideRatio.right,
 		]
 	);
 
-	useEffect(() => {
-		setTargetForefootWidthMm({
-			left: effectiveTargetForefootWidthMm.left,
-			right: effectiveTargetForefootWidthMm.right,
-		});
-	}, [
-		effectiveTargetForefootWidthMm.left,
-		effectiveTargetForefootWidthMm.right,
-		generalNormalized.baseInsoleType,
-		generalNormalized.shoeSize.left,
-		generalNormalized.shoeSize.right,
-	]);
-
 	const handleSoleWidthChange = useCallback(
 		(side: 'left' | 'right', nextWidthMm: number) => {
-			const normalized = Number.isFinite(nextWidthMm)
-				? Number(Math.max(40, Math.min(160, nextWidthMm)).toFixed(1))
-				: side === 'left'
-					? resolvedTargetForefootWidthMm.left
-					: resolvedTargetForefootWidthMm.right;
-			setCorrections((prev) => ({
-				...prev,
-				zoolbreedte: { left: 0, right: 0 },
-			}));
-			setTargetForefootWidthMm((prev) => ({
-				...prev,
-				[side]: normalized,
-			}));
+			const baseWidthMm = side === 'left'
+				? effectiveTargetForefootWidthMm.left
+				: effectiveTargetForefootWidthMm.right;
+			const fallbackWidthMm = side === 'left'
+				? resolvedTargetForefootWidthMm.left
+				: resolvedTargetForefootWidthMm.right;
+			const normalized = normalizeSoleWidthMm(nextWidthMm, fallbackWidthMm);
+			setCorrections((prev) => {
+				if (prev.zoolbreedte.left === 0 && prev.zoolbreedte.right === 0) {
+					return prev;
+				}
+				return {
+					...prev,
+					zoolbreedte: { left: 0, right: 0 },
+				};
+			});
+			const nextRatio = getSoleWidthRatio(normalized, baseWidthMm);
+			setSoleWidthOverrideRatio((prev) => {
+				if (prev[side] === nextRatio) return prev;
+				return {
+					...prev,
+					[side]: nextRatio,
+				};
+			});
 		},
-		[resolvedTargetForefootWidthMm.left, resolvedTargetForefootWidthMm.right]
+		[
+			effectiveTargetForefootWidthMm.left,
+			effectiveTargetForefootWidthMm.right,
+			getSoleWidthRatio,
+			normalizeSoleWidthMm,
+			resolvedTargetForefootWidthMm.left,
+			resolvedTargetForefootWidthMm.right,
+		]
 	);
+
+	const handleAnalysisProbe = useCallback((payload: {
+		heightMm: number;
+		side: 'left' | 'right';
+		point: [number, number, number];
+	}) => {
+		pendingAnalysisProbeRef.current = payload;
+		if (analysisProbeRafRef.current != null) return;
+		analysisProbeRafRef.current = requestAnimationFrame(() => {
+			analysisProbeRafRef.current = null;
+			const next = pendingAnalysisProbeRef.current;
+			if (!next) return;
+			setAnalysisProbe((prev) => {
+				if (
+					prev &&
+					prev.side === next.side &&
+					prev.heightMm === next.heightMm &&
+					prev.point[0] === next.point[0] &&
+					prev.point[1] === next.point[1] &&
+					prev.point[2] === next.point[2]
+				) {
+					return prev;
+				}
+				return next;
+			});
+		});
+	}, []);
+
+	const handlePointPickMouseMove = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+		const rect = event.currentTarget.getBoundingClientRect();
+		pendingCrosshairRef.current = {
+			x: event.clientX - rect.left,
+			y: event.clientY - rect.top,
+		};
+		if (crosshairRafRef.current != null) return;
+		crosshairRafRef.current = requestAnimationFrame(() => {
+			crosshairRafRef.current = null;
+			const next = pendingCrosshairRef.current;
+			setCrosshair((prev) => {
+				if (!next) return null;
+				if (prev && prev.x === next.x && prev.y === next.y) return prev;
+				return next;
+			});
+		});
+	}, []);
+
+	const handlePointPickMouseLeave = useCallback(() => {
+		pendingCrosshairRef.current = null;
+		if (crosshairRafRef.current != null) {
+			cancelAnimationFrame(crosshairRafRef.current);
+			crosshairRafRef.current = null;
+		}
+		setCrosshair((prev) => (prev === null ? prev : null));
+	}, []);
+
+	useEffect(() => {
+		return () => {
+			if (analysisProbeRafRef.current != null) {
+				cancelAnimationFrame(analysisProbeRafRef.current);
+			}
+			if (crosshairRafRef.current != null) {
+				cancelAnimationFrame(crosshairRafRef.current);
+			}
+		};
+	}, []);
 
 	const updateGeneral = useCallback(
 		(updates: Partial<typeof generalNormalized>) => {
@@ -854,14 +1130,33 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const [cncState, setCncState] = useState<CncProductionState>(createDefaultCncState);
 	const [showMillingModeSelector, setShowMillingModeSelector] = useState(false);
 	const [cncPlanningActive, setCncPlanningActive] = useState(false);
+	const [cncPreviewGeometry, setCncPreviewGeometry] = useState<{
+		left: THREE.BufferGeometry | null;
+		right: THREE.BufferGeometry | null;
+	}>({ left: null, right: null });
 
 	const isEvaMethod = productionMethod === 'Frezen: EVA';
 
+	const captureCncPreviewGeometry = useCallback(() => {
+		const left = viewerRef.current?.getExportInsoleGeometryMm('left') ?? null;
+		const right = viewerRef.current?.getExportInsoleGeometryMm('right') ?? null;
+		setCncPreviewGeometry({ left, right });
+		return { left, right };
+	}, []);
+
+	useEffect(() => {
+		return () => {
+			cncPreviewGeometry.left?.dispose();
+			cncPreviewGeometry.right?.dispose();
+		};
+	}, [cncPreviewGeometry]);
+
 	const handleSelectMillingMode = useCallback((mode: MillingMode) => {
+		captureCncPreviewGeometry();
 		setCncState((prev) => ({ ...prev, millingMode: mode }));
 		setShowMillingModeSelector(false);
 		setCncPlanningActive(true);
-	}, []);
+	}, [captureCncPreviewGeometry]);
 
 	const handleExportNcFile = useCallback(async () => {
 		if (!cncState.millingMode) return;
@@ -869,29 +1164,57 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			? `${project.patient.firstName}_${project.patient.lastName}`
 			: 'patient';
 
-		// Extract real contours + 3D heightfields from STL files
-		const [leftResult, rightResult] = await Promise.all([
-			extractStlContour(
+		// Prefer actual designed insole geometry from the 3D viewer.
+		// This includes all patient corrections, elements, and modifications.
+		// Falls back to base template STL if viewer geometry is not available.
+		const freshLeftGeom = viewerRef.current?.getExportInsoleGeometryMm('left') ?? null;
+		const freshRightGeom = viewerRef.current?.getExportInsoleGeometryMm('right') ?? null;
+		const leftGeom = freshLeftGeom ?? cncPreviewGeometry.left;
+		const rightGeom = freshRightGeom ?? cncPreviewGeometry.right;
+
+		let leftResult, rightResult;
+
+		if (leftGeom) {
+			leftResult = await extractContourFromExportGeometryAsync(leftGeom, 'left');
+			freshLeftGeom?.dispose();
+		} else {
+			leftResult = await extractStlContour(
 				selectedBaseInsoleAssets.leftUrl,
 				'left',
 				undefined,
 				undefined,
 				generalNormalized.baseInsoleType
-			),
-			extractStlContour(
+			);
+		}
+
+		if (rightGeom) {
+			rightResult = await extractContourFromExportGeometryAsync(rightGeom, 'right');
+			freshRightGeom?.dispose();
+		} else {
+			rightResult = await extractStlContour(
 				selectedBaseInsoleAssets.rightUrl,
 				'right',
 				undefined,
 				undefined,
 				generalNormalized.baseInsoleType
-			),
-		]);
+			);
+		}
 
 		const ncContent = generateNcFile({
 			millingMode: cncState.millingMode,
 			fixture: cncState.fixture,
-			toolSettings: cncState.toolSettings,
-			postSettings: cncState.postSettings,
+			toolSettings: {
+				...cncState.toolSettings,
+				spindleSpeedRpm: 24000,
+				feedRateXYMmMin: 2400,
+				feedRateZMmMin: 2400,
+				safeZMm: Math.max(cncState.toolSettings.safeZMm, 60),
+			},
+			postSettings: {
+				...cncState.postSettings,
+				embedOffsets: false,
+			},
+			compatibilityMode: true,
 			patientName: name,
 			projectId,
 			contours: {
@@ -905,22 +1228,18 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		});
 		const filename = `${name}_${cncState.millingMode}_${new Date().getFullYear()}_top.nc`;
 		downloadNcFile(ncContent, filename);
-	}, [cncState, generalNormalized.baseInsoleType, projectId, project?.patient, selectedBaseInsoleAssets.leftUrl, selectedBaseInsoleAssets.rightUrl]);
+	}, [cncPreviewGeometry.left, cncPreviewGeometry.right, cncState, generalNormalized.baseInsoleType, projectId, project?.patient, selectedBaseInsoleAssets.leftUrl, selectedBaseInsoleAssets.rightUrl]);
 
 	const [selectedBaseSTL, setSelectedBaseSTL] = useState<string | null>(null);
 	const [corrections, setCorrections] = useState<OntwerpCorrections>(createDefaultOntwerpCorrections);
-	const [showZones, setShowZones] = useState(false);
-	const [addCorrectionOpen, setAddCorrectionOpen] = useState(false);
-	const addCorrectionAnchorRef = useRef<HTMLDivElement | null>(null);
+	const [, startCorrectionsTransition] = useTransition();
 	const [elementsModalOpen, setElementsModalOpen] = useState(false);
 	const [elementsModalSide, setElementsModalSide] = useState<'left' | 'right'>('left');
-	const {
-		placedElements,
-		addElement: addPlacedElement,
-		selectedElementId,
-		selectElement: selectPlacedElement,
-		updateElement: updatePlacedElement,
-	} = useElementsStore();
+	const placedElements = useElementsStore((state) => state.placedElements);
+	const addPlacedElement = useElementsStore((state) => state.addElement);
+	const selectedElementId = useElementsStore((state) => state.selectedElementId);
+	const selectPlacedElement = useElementsStore((state) => state.selectElement);
+	const updatePlacedElement = useElementsStore((state) => state.updateElement);
 	const selectedPlacedElement = useMemo(
 		() => placedElements.find((el) => el.id === selectedElementId) ?? null,
 		[placedElements, selectedElementId]
@@ -933,6 +1252,13 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	});
 	const [pendingElementTrimlineHandleProfile, setPendingElementTrimlineHandleProfile] = useState<TrimlineHandleProfile | null>(null);
 	const [pendingElementBoxOffsets, setPendingElementBoxOffsets] = useState<BoxGridSavedOffsets | null>(null);
+	const pendingElementTrimlineAdjRef = useRef<TrimlineAdjustments>({
+		...DEFAULT_TRIMLINE_ADJUSTMENTS,
+	});
+	const pendingElementTrimlineHandleProfileRef = useRef<TrimlineHandleProfile | null>(null);
+	const pendingElementBoxOffsetsRef = useRef<BoxGridSavedOffsets | null>(null);
+	const elementTrimlinePanelSyncRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const [, forceElementTrimlinePanelSync] = useState(0);
 	const elementBoxSnapshotRef = useRef<BoxGridSavedOffsets | null>(null);
 	const leftPlacedElements = useMemo(
 		() => placedElements.filter((el) => el.side === 'left'),
@@ -942,36 +1268,89 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		() => placedElements.filter((el) => el.side === 'right'),
 		[placedElements]
 	);
+	const leftPlacedElementCount = leftPlacedElements.length;
+	const rightPlacedElementCount = rightPlacedElements.length;
+	const viewerHeelEdgeThicknessMm = useMemo(
+		() => ({
+			left: step3Left.heelEdgeThicknessMm,
+			right: step3Right.heelEdgeThicknessMm,
+		}),
+		[step3Left.heelEdgeThicknessMm, step3Right.heelEdgeThicknessMm]
+	);
+	const viewerSelectedElementTrimlineEdit = useMemo(() => {
+		if (!elementTrimlineEditId || !selectedPlacedElement || selectedPlacedElement.id !== elementTrimlineEditId) {
+			return null;
+		}
+		return {
+			elementId: elementTrimlineEditId,
+			side: selectedPlacedElement.side,
+			adjustments: pendingElementTrimlineAdj,
+			profile: pendingElementTrimlineHandleProfile,
+		};
+	}, [elementTrimlineEditId, selectedPlacedElement, pendingElementTrimlineAdj, pendingElementTrimlineHandleProfile]);
+	const viewerSelectedElementBoxEdit = useMemo(() => {
+		if (
+			!selectedPlacedElement ||
+			elementEditMode !== 'box' ||
+			elementBoxEditId !== selectedPlacedElement.id
+		) {
+			return null;
+		}
+		return {
+			elementId: selectedPlacedElement.id,
+			side: selectedPlacedElement.side,
+			savedOffsets: pendingElementBoxOffsets,
+		};
+	}, [selectedPlacedElement, elementEditMode, elementBoxEditId, pendingElementBoxOffsets]);
+	const viewerElementPlacementMode = useMemo(() => {
+		if (!selectedPlacedElement || elementEditMode !== 'move') return null;
+		return {
+			elementId: selectedPlacedElement.id,
+			side: selectedPlacedElement.side,
+		};
+	}, [selectedPlacedElement, elementEditMode]);
 	const [activeCorrections, setActiveCorrections] = useState<CorrectionKey[]>(
 		DEFAULT_ACTIVE_CORRECTIONS
 	);
+	const handleCorrectionsChange = useCallback((nextCorrections: OntwerpCorrections) => {
+		startCorrectionsTransition(() => {
+			setCorrections(nextCorrections);
+		});
+	}, [startCorrectionsTransition]);
 
 	const handleElementEditModeChange = useCallback((mode: ElementEditMode) => {
 		if (mode === 'trimline' && selectedPlacedElement) {
+			const initialAdj = normalizeElementTrimlineAdjustments(selectedPlacedElement.trimlineAdjustments);
+			const initialProfile = selectedPlacedElement.trimlineHandleProfile
+				? {
+					...selectedPlacedElement.trimlineHandleProfile,
+					tValues: [...selectedPlacedElement.trimlineHandleProfile.tValues],
+					rightOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.rightOffsetsMm],
+					leftOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.leftOffsetsMm],
+				}
+				: null;
 			setElementTrimlineEditId(selectedPlacedElement.id);
-			setPendingElementTrimlineAdj(normalizeElementTrimlineAdjustments(selectedPlacedElement.trimlineAdjustments));
-			setPendingElementTrimlineHandleProfile(
-				selectedPlacedElement.trimlineHandleProfile
-					? {
-						...selectedPlacedElement.trimlineHandleProfile,
-						tValues: [...selectedPlacedElement.trimlineHandleProfile.tValues],
-						rightOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.rightOffsetsMm],
-						leftOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.leftOffsetsMm],
-					}
-					: null
-			);
+			pendingElementTrimlineAdjRef.current = initialAdj;
+			pendingElementTrimlineHandleProfileRef.current = initialProfile;
+			setPendingElementTrimlineAdj(initialAdj);
+			setPendingElementTrimlineHandleProfile(initialProfile);
 		} else if (elementTrimlineEditId && mode !== 'trimline') {
 			setElementTrimlineEditId(null);
-			setPendingElementTrimlineAdj(normalizeElementTrimlineAdjustments());
+			const resetAdj = normalizeElementTrimlineAdjustments();
+			pendingElementTrimlineAdjRef.current = resetAdj;
+			pendingElementTrimlineHandleProfileRef.current = null;
+			setPendingElementTrimlineAdj(resetAdj);
 			setPendingElementTrimlineHandleProfile(null);
 		}
 		if (mode === 'box' && selectedPlacedElement) {
 			const initialOffsets = cloneBoxGridOffsets(selectedPlacedElement.boxGridOffsets);
 			setElementBoxEditId(selectedPlacedElement.id);
+			pendingElementBoxOffsetsRef.current = initialOffsets;
 			setPendingElementBoxOffsets(initialOffsets);
 			elementBoxSnapshotRef.current = cloneBoxGridOffsets(initialOffsets);
 		} else if (elementBoxEditId && mode !== 'box') {
 			setElementBoxEditId(null);
+			pendingElementBoxOffsetsRef.current = null;
 			setPendingElementBoxOffsets(null);
 			elementBoxSnapshotRef.current = null;
 		}
@@ -1006,7 +1385,11 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			setElementEditMode(null);
 			setElementTrimlineEditId(null);
 			setElementBoxEditId(null);
-			setPendingElementTrimlineAdj(normalizeElementTrimlineAdjustments());
+			const resetAdj = normalizeElementTrimlineAdjustments();
+			pendingElementTrimlineAdjRef.current = resetAdj;
+			pendingElementTrimlineHandleProfileRef.current = null;
+			pendingElementBoxOffsetsRef.current = null;
+			setPendingElementTrimlineAdj(resetAdj);
 			setPendingElementTrimlineHandleProfile(null);
 			setPendingElementBoxOffsets(null);
 			elementBoxSnapshotRef.current = null;
@@ -1048,10 +1431,16 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		const measure = () => {
 			const leftDims = viewerRef.current?.getInsoleDimensionsMm('left') ?? null;
 			const rightDims = viewerRef.current?.getInsoleDimensionsMm('right') ?? null;
-			setCurrentInsoleWidthMm({
-				left: leftDims?.widthMm != null ? Number(leftDims.widthMm.toFixed(1)) : null,
-				right: rightDims?.widthMm != null ? Number(rightDims.widthMm.toFixed(1)) : null,
-			});
+			const nextLeft = leftDims?.widthMm != null ? Number(leftDims.widthMm.toFixed(1)) : null;
+			const nextRight = rightDims?.widthMm != null ? Number(rightDims.widthMm.toFixed(1)) : null;
+			setCurrentInsoleWidthMm((prev) => (
+				prev.left === nextLeft && prev.right === nextRight
+					? prev
+					: {
+						left: nextLeft,
+						right: nextRight,
+					}
+			));
 		};
 		frame1 = requestAnimationFrame(() => {
 			frame2 = requestAnimationFrame(measure);
@@ -1082,6 +1471,13 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const [draftBottomText, setDraftBottomText] = useState<
 		{ text: string; sizeMm: number }
 	>({ text: '', sizeMm: 10 });
+	const [debouncedDraftBottomText, setDebouncedDraftBottomText] = useState<
+		{ text: string; sizeMm: number }
+	>({ text: '', sizeMm: 10 });
+	const [bottomTextLoadingBySide, setBottomTextLoadingBySide] = useState<{
+		left: boolean;
+		right: boolean;
+	}>({ left: false, right: false });
 
 	const [selectedInsoleSide, setSelectedInsoleSide] = useState<'left' | 'right' | null>(null);
 	const [boxEnabled, setBoxEnabled] = useState<{ left: boolean; right: boolean }>({
@@ -1089,6 +1485,10 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		right: false,
 	});
 	const [boxGridPoints, setBoxGridPoints] = useState<{
+		left: BoxGridSavedOffsets | null;
+		right: BoxGridSavedOffsets | null;
+	}>({ left: null, right: null });
+	const pendingBoxGridDraftRef = useRef<{
 		left: BoxGridSavedOffsets | null;
 		right: BoxGridSavedOffsets | null;
 	}>({ left: null, right: null });
@@ -1126,33 +1526,97 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		left: TrimlineHandleProfile | null;
 		right: TrimlineHandleProfile | null;
 	}>({ left: null, right: null });
+	const pendingTrimlineAdjRef = useRef<{
+		left: TrimlineAdjustments;
+		right: TrimlineAdjustments;
+	}>({
+		left: { ...DEFAULT_TRIMLINE_ADJUSTMENTS },
+		right: { ...DEFAULT_TRIMLINE_ADJUSTMENTS },
+	});
+	const pendingTrimlineHandleProfilesRef = useRef<{
+		left: TrimlineHandleProfile | null;
+		right: TrimlineHandleProfile | null;
+	}>({ left: null, right: null });
+	const trimlinePanelSyncRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const [, forceTrimlinePanelSync] = useState(0);
+
+	const scheduleElementTrimlinePanelSync = useCallback(() => {
+		if (elementTrimlinePanelSyncRef.current) return;
+		elementTrimlinePanelSyncRef.current = setTimeout(() => {
+			elementTrimlinePanelSyncRef.current = null;
+			forceElementTrimlinePanelSync((value) => value + 1);
+		}, 90);
+	}, []);
+
+	const scheduleTrimlinePanelSync = useCallback(() => {
+		if (trimlinePanelSyncRef.current) return;
+		trimlinePanelSyncRef.current = setTimeout(() => {
+			trimlinePanelSyncRef.current = null;
+			forceTrimlinePanelSync((value) => value + 1);
+		}, 90);
+	}, []);
+	const primeBottomTextLoading = useCallback(() => {
+		setBottomTextLoadingBySide({
+			left: Boolean(selectedBaseInsoleAssets.leftUrl),
+			right: Boolean(selectedBaseInsoleAssets.rightUrl),
+		});
+	}, [selectedBaseInsoleAssets.leftUrl, selectedBaseInsoleAssets.rightUrl]);
+	const resetBottomTextLoading = useCallback(() => {
+		setBottomTextLoadingBySide({ left: false, right: false });
+	}, []);
+	const handleBottomTextLoadingChange = useCallback((payload: {
+		side: 'left' | 'right';
+		isLoading: boolean;
+	}) => {
+		setBottomTextLoadingBySide((prev) => (
+			prev[payload.side] === payload.isLoading
+				? prev
+				: { ...prev, [payload.side]: payload.isLoading }
+		));
+	}, []);
 	const toggleCorrection = useCallback((key: CorrectionKey) => {
 		setActiveCorrections((prev) => {
 			const has = prev.includes(key);
 			const next = has ? prev.filter((k) => k !== key) : [...prev, key];
 			if (!has && key === 'tekst') {
-				setLeftPanelTab('view');
-				setViewerViewPreset('bottom');
-				setAddCorrectionOpen(false);
-				setDraftBottomText(
+				const initialBottomText =
 					savedBottomText ?? {
 						text: 'PODO',
 						sizeMm: 10,
-					}
-				);
+					};
+				primeBottomTextLoading();
+				setLeftPanelTab('view');
+				setViewerViewPreset('bottom');
+				setDraftBottomText(initialBottomText);
+				setDebouncedDraftBottomText(initialBottomText);
 				setTextEditorOpen(true);
 			}
 			return next;
 		});
-	}, [savedBottomText]);
+	}, [primeBottomTextLoading, savedBottomText]);
+
+	useEffect(() => {
+		pendingTrimlineAdjRef.current = pendingTrimlineAdj;
+	}, [pendingTrimlineAdj]);
+
+	useEffect(() => {
+		pendingTrimlineHandleProfilesRef.current = pendingTrimlineHandleProfiles;
+	}, [pendingTrimlineHandleProfiles]);
+
+	useEffect(() => {
+		return () => {
+			if (trimlinePanelSyncRef.current) clearTimeout(trimlinePanelSyncRef.current);
+			if (elementTrimlinePanelSyncRef.current) clearTimeout(elementTrimlinePanelSyncRef.current);
+		};
+	}, []);
 
 	const bottomTextOverlay: BottomTextOverlay | undefined = useMemo(() => {
 		if (!activeCorrections.includes('tekst')) return undefined;
 		if (textEditorOpen) {
 			return {
 				enabled: true,
-				text: draftBottomText.text,
-				sizeMm: draftBottomText.sizeMm,
+				text: debouncedDraftBottomText.text,
+				sizeMm: debouncedDraftBottomText.sizeMm,
 				orientation: 'vertical',
 			};
 		}
@@ -1163,57 +1627,97 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			sizeMm: savedBottomText.sizeMm,
 			orientation: 'vertical',
 		};
-	}, [activeCorrections, textEditorOpen, draftBottomText, savedBottomText]);
+	}, [activeCorrections, textEditorOpen, debouncedDraftBottomText, savedBottomText]);
+
+	useEffect(() => {
+		const timer = setTimeout(() => {
+			setDebouncedDraftBottomText(draftBottomText);
+		}, 120);
+		return () => clearTimeout(timer);
+	}, [draftBottomText]);
+
+	useEffect(() => {
+		if (!activeCorrections.includes('tekst')) return;
+		setSavedBottomText((prev) => {
+			if (
+				prev &&
+				prev.text === debouncedDraftBottomText.text &&
+				prev.sizeMm === debouncedDraftBottomText.sizeMm
+			) {
+				return prev;
+			}
+			return {
+				text: debouncedDraftBottomText.text,
+				sizeMm: debouncedDraftBottomText.sizeMm,
+			};
+		});
+	}, [activeCorrections, debouncedDraftBottomText]);
+
+	useEffect(() => {
+		if (activeCorrections.includes('tekst')) return;
+		resetBottomTextLoading();
+	}, [activeCorrections, resetBottomTextLoading]);
+
+	const isBottomTextLoading = activeCorrections.includes('tekst') && (
+		bottomTextLoadingBySide.left || bottomTextLoadingBySide.right
+	);
 
 	const mirrorCorrectionsToOtherSide = useCallback(
 		(from: 'left' | 'right') => {
 			if (!corrections) return;
 			const to: 'left' | 'right' = from === 'left' ? 'right' : 'left';
-			setCorrections({
-				...corrections,
-				kuipHoogte: { ...corrections.kuipHoogte, [to]: corrections.kuipHoogte[from] },
-				hielHeffing: {
-					...corrections.hielHeffing,
-					length: {
-						...corrections.hielHeffing.length,
-						[to]: corrections.hielHeffing.length[from],
-					},
-					value: {
-						...corrections.hielHeffing.value,
-						[to]: corrections.hielHeffing.value[from],
-					},
-				},
-				medialeBoogCorrectie: {
-					...corrections.medialeBoogCorrectie,
-					[to]: corrections.medialeBoogCorrectie[from],
-				},
-				pronatie: {
-					...corrections.pronatie,
-					regio: {
-						...corrections.pronatie.regio,
-						[to]: corrections.pronatie.regio[from],
-					},
-					correctie: {
-						...corrections.pronatie.correctie,
-						[to]: corrections.pronatie.correctie[from],
-					},
-				},
-				supinatie: {
-					...corrections.supinatie,
-					regio: {
-						...corrections.supinatie.regio,
-						[to]: corrections.supinatie.regio[from],
-					},
-					correctie: {
-						...corrections.supinatie.correctie,
-						[to]: corrections.supinatie.correctie[from],
-					},
-				},
+			setCorrections((prev) => mirrorSideValues(prev, from, to));
+			setParameters({
+				...parameters,
+				general: mirrorSideValues(generalNormalized, from, to),
 			});
-
+			setSoleWidthOverrideRatio((prev) => mirrorSideValues(prev, from, to));
+			setTrimlineAdjustments((prev) => mirrorSideValues(prev, from, to));
+			setPendingTrimlineAdj((prev) => mirrorSideValues(prev, from, to));
+			pendingTrimlineAdjRef.current = mirrorSideValues(pendingTrimlineAdjRef.current, from, to);
+			setTrimlineHandleProfiles((prev) => ({
+				...prev,
+				[to]: mirrorTrimlineHandleProfileAcrossWidth(prev[from]),
+			}));
+			setPendingTrimlineHandleProfiles((prev) => ({
+				...prev,
+				[to]: mirrorTrimlineHandleProfileAcrossWidth(prev[from]),
+			}));
+			pendingTrimlineHandleProfilesRef.current = {
+				...pendingTrimlineHandleProfilesRef.current,
+				[to]: mirrorTrimlineHandleProfileAcrossWidth(pendingTrimlineHandleProfilesRef.current[from]),
+			};
+			setBoxGridPoints((prev) => ({
+				...prev,
+				[to]: mirrorBoxGridOffsetsAcrossWidth(prev[from]),
+			}));
+			pendingBoxGridDraftRef.current = {
+				...pendingBoxGridDraftRef.current,
+				[to]: mirrorBoxGridOffsetsAcrossWidth(pendingBoxGridDraftRef.current[from] ?? boxGridPoints[from]),
+			};
 			setBoxEnabled((prev) => ({ ...prev, [to]: prev[from] }));
+			if (from === 'left') {
+				setStep3Right(structuredClone(step3Left));
+			} else {
+				setStep3Left(structuredClone(step3Right));
+			}
+			useElementsStore.setState((state) => {
+				const mirrored = state.placedElements
+					.filter((element) => element.side === from)
+					.map((element, index) => ({
+						...mirrorPlacedElementToSide(element, to),
+						id: `${element.id}_mirror_${to}_${Date.now()}_${index}`,
+					}));
+				return {
+					placedElements: [
+						...state.placedElements.filter((element) => element.side !== to),
+						...mirrored,
+					],
+					selectedElementId: null,
+				};
+			});
 		},
-		[corrections]
+		[boxGridPoints, generalNormalized, parameters, setParameters, step3Left, step3Right]
 	);
 
 	const exitGridMode = useCallback(() => {
@@ -1221,14 +1725,24 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		setBoxEnabled((prev) => ({ ...prev, [selectedInsoleSide]: false }));
 	}, [selectedInsoleSide]);
 
-	/** "Opslaan" — keep the current boxGridPoints (already auto-saved by onBoxGridSave) and exit */
+	/** "Opslaan" — commit the current box-grid draft and exit */
 	const handleBoxGridSaveAndExit = useCallback(() => {
+		if (selectedInsoleSide) {
+			setBoxGridPoints((prev) => ({
+				...prev,
+				[selectedInsoleSide]: cloneBoxGridOffsets(pendingBoxGridDraftRef.current[selectedInsoleSide]),
+			}));
+		}
 		exitGridMode();
-	}, [exitGridMode]);
+	}, [exitGridMode, selectedInsoleSide]);
 
 	/** "Annuleren" — revert boxGridPoints to the snapshot taken when grid edit started, then exit */
 	const handleBoxGridCancelAndExit = useCallback(() => {
 		if (selectedInsoleSide) {
+			pendingBoxGridDraftRef.current = {
+				...pendingBoxGridDraftRef.current,
+				[selectedInsoleSide]: cloneBoxGridOffsets(boxGridSnapshotRef.current),
+			};
 			setBoxGridPoints((prev) => ({
 				...prev,
 				[selectedInsoleSide]: boxGridSnapshotRef.current,
@@ -1237,29 +1751,35 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		exitGridMode();
 	}, [selectedInsoleSide, exitGridMode]);
 
-	/** Called by InteractiveBoxGrid on every deformation — keeps boxGridPoints up to date */
+	/** Called by InteractiveBoxGrid during edit — stores the latest draft without forcing a React re-render */
 	const handleBoxGridSave = useCallback((side: 'left' | 'right', offsets: BoxGridSavedOffsets) => {
-		setBoxGridPoints((prev) => ({ ...prev, [side]: offsets }));
+		pendingBoxGridDraftRef.current = {
+			...pendingBoxGridDraftRef.current,
+			[side]: cloneBoxGridOffsets(offsets),
+		};
 	}, []);
 
 	const handleElementBoxGridSave = useCallback((offsets: BoxGridSavedOffsets) => {
-		setPendingElementBoxOffsets(cloneBoxGridOffsets(offsets));
+		pendingElementBoxOffsetsRef.current = cloneBoxGridOffsets(offsets);
 	}, []);
 
 	const handleElementBoxSaveAndExit = useCallback(() => {
 		if (selectedPlacedElement && elementBoxEditId === selectedPlacedElement.id) {
 			updatePlacedElement(selectedPlacedElement.id, {
-				boxGridOffsets: cloneBoxGridOffsets(pendingElementBoxOffsets),
+				boxGridOffsets: cloneBoxGridOffsets(pendingElementBoxOffsetsRef.current),
 			});
 		}
 		setElementBoxEditId(null);
+		pendingElementBoxOffsetsRef.current = null;
 		setPendingElementBoxOffsets(null);
 		elementBoxSnapshotRef.current = null;
 		setElementEditMode(null);
-	}, [selectedPlacedElement, elementBoxEditId, pendingElementBoxOffsets, updatePlacedElement]);
+	}, [selectedPlacedElement, elementBoxEditId, updatePlacedElement]);
 
 	const handleElementBoxCancelAndExit = useCallback(() => {
-		setPendingElementBoxOffsets(cloneBoxGridOffsets(elementBoxSnapshotRef.current));
+		const restored = cloneBoxGridOffsets(elementBoxSnapshotRef.current);
+		pendingElementBoxOffsetsRef.current = restored;
+		setPendingElementBoxOffsets(restored);
 		setElementBoxEditId(null);
 		elementBoxSnapshotRef.current = null;
 		setElementEditMode(null);
@@ -1270,6 +1790,10 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		// Snapshot current offsets so "Annuleren" can revert
 		setBoxGridPoints((prev) => {
 			boxGridSnapshotRef.current = prev[side];
+			pendingBoxGridDraftRef.current = {
+				...pendingBoxGridDraftRef.current,
+				[side]: cloneBoxGridOffsets(prev[side]),
+			};
 			return prev;
 		});
 		setBoxEnabled((prev) => {
@@ -1306,7 +1830,29 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			showOverlays,
 			hardnessProfiles,
 		});
-	});
+	}, [
+		productionMethod,
+		selectedPairId,
+		selectedLeftScanId,
+		selectedRightScanId,
+		selectedBaseSTL,
+		corrections,
+		activeCorrections,
+		savedBottomText,
+		step3Left,
+		step3Right,
+		printerSettings,
+		boxEnabled,
+		boxGridPoints,
+		trimlineAdjustments,
+		trimlineHandleProfiles,
+		activeDesignStep,
+		elementsModalSide,
+		workflowStep,
+		scansActive,
+		showOverlays,
+		hardnessProfiles,
+	]);
 
 	// ── Hydrate local state from saved design on mount ──
 	useEffect(() => {
@@ -1369,6 +1915,13 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			})),
 		[projectScans]
 	);
+	const scanById = useMemo(() => {
+		const map = new Map<string, (typeof scans)[number]>();
+		for (const scan of scans) {
+			map.set(scan.id, scan);
+		}
+		return map;
+	}, [scans]);
 
 	// Group scans into pairs by pairId
 	const scanPairs = useMemo(() => {
@@ -1400,10 +1953,10 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	}, [scanPairs, selectedPairId]);
 
 	const selectedLeftScan = selectedLeftScanId
-		? scans.find((s) => s.id === selectedLeftScanId)
+		? scanById.get(selectedLeftScanId) ?? null
 		: null;
 	const selectedRightScan = selectedRightScanId
-		? scans.find((s) => s.id === selectedRightScanId)
+		? scanById.get(selectedRightScanId) ?? null
 		: null;
 	const leftScan =
 		selectedLeftScan ??
@@ -1429,15 +1982,13 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 
 	const currentPointStep = POINT_SEQUENCE[pointStepIndex];
 
-	const {
-		setThreePointLandmarks,
-		setDerivedLandmarks,
-		setCompleteLandmarks,
-		setFootGeometry,
-		setPlantarData,
-		setIsGeneratingInsole,
-		clearLandmarkPipeline,
-	} = useDesignStore();
+	const setThreePointLandmarks = useDesignStore((state) => state.setThreePointLandmarks);
+	const setDerivedLandmarks = useDesignStore((state) => state.setDerivedLandmarks);
+	const setCompleteLandmarks = useDesignStore((state) => state.setCompleteLandmarks);
+	const setFootGeometry = useDesignStore((state) => state.setFootGeometry);
+	const setPlantarData = useDesignStore((state) => state.setPlantarData);
+	const setIsGeneratingInsole = useDesignStore((state) => state.setIsGeneratingInsole);
+	const clearLandmarkPipeline = useDesignStore((state) => state.clearLandmarkPipeline);
 
 	const startPointPicking = useCallback(() => {
 		setRightPointSelections({});
@@ -1445,7 +1996,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		setPointStepIndex(0);
 		setPointPickFoot('right');
 		setPlanWorldToMm(1);
-		setTargetForefootWidthMm({ left: null, right: null });
+		setSoleWidthOverrideRatio({ left: null, right: null });
 		rightFittingRef.current = null;
 		setShowOverlays(false);
 		clearLandmarkPipeline();
@@ -1485,14 +2036,16 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			const leftValidation = validateDetectedLandmarks(leftResult);
 			leftResult.warnings.push(...leftValidation);
 
-			console.log(
-				'[Auto-detect] Right confidence:', rightResult.overallConfidence.toFixed(2),
-				'Left confidence:', leftResult.overallConfidence.toFixed(2),
-				'\n  Right per-landmark:', Object.entries(rightResult.confidence).map(([k, v]) => `${k}: ${((v as number) * 100).toFixed(0)}%`).join(', '),
-				'\n  Left per-landmark:', Object.entries(leftResult.confidence).map(([k, v]) => `${k}: ${((v as number) * 100).toFixed(0)}%`).join(', '),
-				'\n  Right warnings:', rightResult.warnings,
-				'\n  Left warnings:', leftResult.warnings,
-			);
+			if (process.env.NODE_ENV === 'development') {
+				console.log(
+					'[Auto-detect] Right confidence:', rightResult.overallConfidence.toFixed(2),
+					'Left confidence:', leftResult.overallConfidence.toFixed(2),
+					'\n  Right per-landmark:', Object.entries(rightResult.confidence).map(([k, v]) => `${k}: ${((v as number) * 100).toFixed(0)}%`).join(', '),
+					'\n  Left per-landmark:', Object.entries(leftResult.confidence).map(([k, v]) => `${k}: ${((v as number) * 100).toFixed(0)}%`).join(', '),
+					'\n  Right warnings:', rightResult.warnings,
+					'\n  Left warnings:', leftResult.warnings,
+				);
+			}
 
 			// Check if both have sufficient confidence
 			const threshold = LANDMARK_CONFIDENCE_THRESHOLD;
@@ -1500,7 +2053,9 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				rightResult.overallConfidence < threshold ||
 				leftResult.overallConfidence < threshold
 			) {
-				console.log(`[Auto-detect] Low confidence R: ${(rightResult.overallConfidence * 100).toFixed(0)}%, L: ${(leftResult.overallConfidence * 100).toFixed(0)}%, falling back to manual`);
+				if (process.env.NODE_ENV === 'development') {
+					console.log(`[Auto-detect] Low confidence R: ${(rightResult.overallConfidence * 100).toFixed(0)}%, L: ${(leftResult.overallConfidence * 100).toFixed(0)}%, falling back to manual`);
+				}
 				setAutoDetectStatus('failed');
 				setAutoDetectMessage(
 					`Auto-detectie: R ${(rightResult.overallConfidence * 100).toFixed(0)}% · L ${(leftResult.overallConfidence * 100).toFixed(0)}% (drempel: ${(threshold * 100).toFixed(0)}%). Handmatig kiezen.`
@@ -1537,18 +2092,37 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				1,
 				generalNormalized.baseInsoleType
 			);
+			const rightArchProfile = deriveArchPeakProfileFromPlantarData(rightPlantar, 1, 'Right/auto');
+			const rightPlantarArchHeightMm =
+				rightArchProfile?.archHeightMm ?? rightSeeds.rimHeightMm;
+			const rightApexShiftMm = rightArchProfile?.apexShiftMm ?? 0;
 			const rightMeshShoeSize = estimateEuShoeSizeFromGeometry(rightGeom, 1);
 
 			// ── Left foot computation ──
 			const { footGeometry: leftFg } =
 				computeFootGeometryFrom3Points(leftResult.landmarks, leftGeom, leftUrl);
+			const leftPlantar = extractPlantarSurface(leftGeom, leftFg, 1.0);
 
 			const leftSeeds = deriveSeedFromFootGeometry(
 				leftFg,
 				1,
 				generalNormalized.baseInsoleType
 			);
+			const leftArchProfile = deriveArchPeakProfileFromPlantarData(leftPlantar, 1, 'Left/auto');
+			const leftPlantarArchHeightMm =
+				leftArchProfile?.archHeightMm ?? leftSeeds.rimHeightMm;
+			const leftApexShiftMm = leftArchProfile?.apexShiftMm ?? 0;
 			const leftMeshShoeSize = estimateEuShoeSizeFromGeometry(leftGeom, 1);
+
+			const rightCompensated = compensateArchHeight(rightPlantarArchHeightMm);
+			const leftCompensated = compensateArchHeight(leftPlantarArchHeightMm);
+
+			if (process.env.NODE_ENV === 'development') {
+				console.log('[Arch height seeding]',
+					`\n  Right: raw=${rightPlantarArchHeightMm}mm → compensated=${rightCompensated}mm, apexShift=${rightApexShiftMm}mm, groundNormal=[${rightFg.groundNormal.map(n => n.toFixed(3)).join(',')}]`,
+					`\n  Left:  raw=${leftPlantarArchHeightMm}mm → compensated=${leftCompensated}mm, apexShift=${leftApexShiftMm}mm, groundNormal=[${leftFg.groundNormal.map(n => n.toFixed(3)).join(',')}]`,
+				);
+			}
 
 			// ── Seed parameters from both feet ──
 			setParameters({
@@ -1559,25 +2133,35 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 						left: leftMeshShoeSize,
 						right: rightMeshShoeSize,
 					},
+					seededShoeSize: {
+						left: leftMeshShoeSize,
+						right: rightMeshShoeSize,
+					},
 					maxInsoleHeightMm: {
-						left: leftSeeds.rimHeightMm,
-						right: rightSeeds.rimHeightMm,
+						left: leftCompensated,
+						right: rightCompensated,
 					},
 				},
 			});
 
-			setCorrections(createDefaultOntwerpCorrections());
+			setCorrections({
+				...createDefaultOntwerpCorrections(),
+				apexMiddenvoet: {
+					left: leftApexShiftMm,
+					right: rightApexShiftMm,
+				},
+			});
 
-			setTargetForefootWidthMm({
-				left: Number(leftSeeds.forefootWidthMm.toFixed(1)),
-				right: Number(rightSeeds.forefootWidthMm.toFixed(1)),
+			setSoleWidthOverrideRatio({
+				left: getSoleWidthRatio(Number(leftSeeds.forefootWidthMm.toFixed(1)), effectiveTargetForefootWidthMm.left),
+				right: getSoleWidthRatio(Number(rightSeeds.forefootWidthMm.toFixed(1)), effectiveTargetForefootWidthMm.right),
 			});
 
 			// ── Transition to design step ──
 			setScansActive(true);
 			setShowOverlays(true);
 			setWorkflowStep('base');
-			setActiveDesignStep(2);
+			setActiveDesignStep(1);
 			setAutoDetectStatus('success');
 			setAutoDetectMessage(
 				`Landmarks automatisch gedetecteerd (R: ${(rightResult.overallConfidence * 100).toFixed(0)}%, L: ${(leftResult.overallConfidence * 100).toFixed(0)}%)`
@@ -1609,7 +2193,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		setPointStepIndex(0);
 		setPointPickFoot('right');
 		setPlanWorldToMm(1);
-		setTargetForefootWidthMm({ left: null, right: null });
+		setSoleWidthOverrideRatio({ left: null, right: null });
 		rightFittingRef.current = null;
 		setWorkflowStep('base');
 	}, []);
@@ -1649,7 +2233,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		setPointStepIndex(0);
 		setPointPickFoot('right');
 		setPlanWorldToMm(1);
-		setTargetForefootWidthMm({ left: null, right: null });
+		setSoleWidthOverrideRatio({ left: null, right: null });
 		rightFittingRef.current = null;
 	}, []);
 
@@ -1704,15 +2288,21 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 
 						const plantar = extractPlantarSurface(geom, fg, 1.0 * mmToWorld);
 						setPlantarData(plantar);
+						const archProfile = deriveArchPeakProfileFromPlantarData(plantar, worldToMm, 'Right/pick');
+						const scanArchHeightMm =
+							archProfile?.archHeightMm ??
+							normalizeScanArchHeightMm(fg.archHeight * worldToMm);
 
 						const seeds = deriveSeedFromPickedPoints(
 							updatedSelections,
-							clamp(fg.archHeight * worldToMm * 0.28, 3, 18),
+							scanArchHeightMm,
 							worldToMm
 						);
 						const meshShoeSizeEu = estimateEuShoeSizeFromGeometry(geom, worldToMm);
 						rightFittingRef.current = {
-							archHeight: roundStep(clamp(seeds.archMm, 3, 18), 0.5),
+							archHeight: compensateArchHeight(scanArchHeightMm),
+							scanArchHeightMm: compensateArchHeight(scanArchHeightMm),
+							archApexShiftMm: archProfile?.apexShiftMm ?? 0,
 							cupHeight: roundStep(clamp(seeds.cupMm, 2, 12), 0.5),
 							shoeSize: meshShoeSizeEu,
 							pronation: roundStep(clamp(seeds.pronationMm, 0, 6), 0.5),
@@ -1743,6 +2333,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				let leftPronation = 0;
 				let leftSupination = 0;
 				let leftForefootWidthMm = effectiveTargetForefootWidthMm.left;
+				let leftApexShiftMm = 0;
 
 				const leftGeom = viewerRef.current?.getRightGeometry?.();
 				const leftMmToWorld = viewerRef.current?.getRightMmToWorld?.() ?? 1;
@@ -1762,13 +2353,20 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 						};
 						const { footGeometry: fg } =
 							computeFootGeometryFrom3Points(leftThreePoints, leftGeom);
+						const leftPlantar = extractPlantarSurface(leftGeom, fg, 1.0 * leftMmToWorld);
+						const leftArchProfile = deriveArchPeakProfileFromPlantarData(leftPlantar, leftWorldToMm, 'Left/pick');
 						const seeds = deriveSeedFromPickedPoints(
 							updatedSelections,
-							clamp(fg.archHeight * leftWorldToMm * 0.28, 3, 18),
+							leftArchProfile?.archHeightMm ??
+								normalizeScanArchHeightMm(fg.archHeight * leftWorldToMm),
 							leftWorldToMm
 						);
+						const leftScanArchMm =
+							leftArchProfile?.archHeightMm ??
+							normalizeScanArchHeightMm(fg.archHeight * leftWorldToMm);
+						leftApexShiftMm = leftArchProfile?.apexShiftMm ?? 0;
 						const meshShoeSizeEu = estimateEuShoeSizeFromGeometry(leftGeom, leftWorldToMm);
-						leftArchMm = roundStep(clamp(seeds.archMm, 3, 18), 0.5);
+						leftArchMm = compensateArchHeight(leftScanArchMm);
 						leftCupMm = roundStep(clamp(seeds.cupMm, 2, 12), 0.5);
 						leftShoeSize = meshShoeSizeEu;
 						leftPronation = roundStep(clamp(seeds.pronationMm, 0, 6), 0.5);
@@ -1786,7 +2384,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 
 				// Gather right foot fitting from earlier
 				const rightFitting = rightFittingRef.current;
-				const rightArchMm = rightFitting?.archHeight ?? generalNormalized.maxInsoleHeightMm.right;
+				const rightArchMm = rightFitting?.scanArchHeightMm ?? rightFitting?.archHeight ?? generalNormalized.maxInsoleHeightMm.right;
+				const rightApexShiftMm = rightFitting?.archApexShiftMm ?? 0;
 				const rightCupMm = rightFitting?.cupHeight ?? 0;
 				const rightShoeSize = rightFitting?.shoeSize ?? generalNormalized.shoeSize.right;
 				const rightPronation = rightFitting?.pronation ?? 0;
@@ -1803,24 +2402,34 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 							left: leftShoeSize,
 							right: rightShoeSize,
 						},
+						seededShoeSize: {
+							left: leftShoeSize,
+							right: rightShoeSize,
+						},
 						maxInsoleHeightMm: {
-							left: clamp(leftCupMm + 4, 6, 18),
-							right: clamp(rightCupMm + 4, 6, 18),
+							left: leftArchMm,
+							right: rightArchMm,
 						},
 					},
 				});
 
-				setCorrections(createDefaultOntwerpCorrections());
+				setCorrections({
+					...createDefaultOntwerpCorrections(),
+					apexMiddenvoet: {
+						left: leftApexShiftMm,
+						right: rightApexShiftMm,
+					},
+				});
 
-				setTargetForefootWidthMm({
-					left: leftForefootWidthMm,
-					right: rightForefootWidthMm,
+				setSoleWidthOverrideRatio({
+					left: getSoleWidthRatio(leftForefootWidthMm, effectiveTargetForefootWidthMm.left),
+					right: getSoleWidthRatio(rightForefootWidthMm, effectiveTargetForefootWidthMm.right),
 				});
 
 				setScansActive(true);
 				setShowOverlays(true);
 				setWorkflowStep('base');
-				setActiveDesignStep(2);
+				setActiveDesignStep(1);
 				setTimeout(() => {
 					setIsFitting(false);
 					setIsGeneratingInsole(false);
@@ -2105,14 +2714,28 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		[]
 	);
 
+	const transparentBeforeSideViewRef = useRef<boolean | null>(null);
+
 	const handleOverlayView = useCallback(
 		(preset: string) => {
+			const leavingSideView = () => {
+				// Restore transparency if we previously forced it on
+				if (transparentBeforeSideViewRef.current !== null) {
+					setViewSettings((prev) => ({ ...prev, transparent: transparentBeforeSideViewRef.current! }));
+					transparentBeforeSideViewRef.current = null;
+				}
+			};
+
 			if (preset === 'rotate') {
+				leavingSideView();
 				setViewerControlMode('rotate');
+				setNamedViewActive(null);
 				return;
 			}
 			if (preset === 'pan') {
+				leavingSideView();
 				setViewerControlMode('pan');
+				setNamedViewActive(null);
 				return;
 			}
 			if (
@@ -2124,11 +2747,22 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				preset === 'bottom' ||
 				preset === 'iso'
 			) {
+				// Auto-enable transparency for side views (left/right)
+				if (preset === 'left' || preset === 'right') {
+					if (transparentBeforeSideViewRef.current === null) {
+						transparentBeforeSideViewRef.current = viewSettings.transparent;
+					}
+					setViewSettings((prev) => ({ ...prev, transparent: true }));
+				} else {
+					leavingSideView();
+				}
+
 				setViewerViewPreset(preset);
-				setViewerControlMode('rotate');
+				setViewerControlMode('pan');
+				setNamedViewActive(preset);
 			}
 		},
-		[]
+		[viewSettings.transparent]
 	);
 
 	const renderStepContent = () => {
@@ -2218,7 +2852,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 											{s === 'left' ? 'Links' : 'Rechts'}
 											{' '}
 											<span className="text-[10px] opacity-70">
-												({placedElements.filter((el) => el.side === s).length})
+												({s === 'left' ? leftPlacedElementCount : rightPlacedElementCount})
 											</span>
 										</button>
 									))}
@@ -2376,145 +3010,68 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								</div>
 							</div>
 
-							<div
-								ref={addCorrectionAnchorRef}
-								className="mb-3 flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm"
-							>
-								<span className="text-ui-text">Correctie toevoegen</span>
-								<button
-									type="button"
-									className="flex h-7 w-7 items-center justify-center rounded-full bg-ui-accent text-slate-900"
-									onClick={() => setAddCorrectionOpen(true)}
-								>
-									<Plus size={14} strokeWidth={2.5} />
-								</button>
-							</div>
-
-							<AddCorrectionModal
-								open={addCorrectionOpen}
-								onClose={() => setAddCorrectionOpen(false)}
-								activeCorrections={activeCorrections}
-								onToggle={toggleCorrection}
-								anchorRef={addCorrectionAnchorRef}
-							/>
-
-							{textEditorOpen ? (
-								<div className="rounded-xl border border-ui-border bg-[rgba(255,255,255,0.03)] p-3">
-									<div className="mb-3 flex items-center justify-between">
-										<span className="text-sm font-semibold text-ui-text">Tekst op onderkant</span>
-										<div className="flex items-center gap-2">
-											<button
-												type="button"
-												className="rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-2 py-1 text-xs text-ui-text hover:bg-[rgba(255,255,255,0.07)]"
-												onClick={() => {
-													// Cancel = discard changes; if nothing saved, also remove tool.
-													setDraftBottomText(
-														savedBottomText ?? { text: '', sizeMm: 10 }
-													);
-													setTextEditorOpen(false);
-													if (!savedBottomText) {
-														setActiveCorrections((prev) => prev.filter((k) => k !== 'tekst'));
-													}
-												}}
-											>
-												Annuleer
-											</button>
-											<button
-												type="button"
-												className="rounded-md bg-ui-accent px-3 py-1 text-xs font-semibold text-slate-900 hover:opacity-90"
-												onClick={() => {
-													setSavedBottomText({
-														text: draftBottomText.text,
-														sizeMm: draftBottomText.sizeMm,
-													});
-													setTextEditorOpen(false);
-												}}
-											>
-												Opslaan
-											</button>
-										</div>
-									</div>
-
-									<label className="flex flex-col gap-1">
-										<span className="text-xs uppercase tracking-wide text-(--ui-text)/70">Tekst</span>
-										<input
-											type="text"
-											className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm text-ui-text"
-											value={draftBottomText.text}
-											onChange={(e) =>
-												setDraftBottomText((p) => ({ ...p, text: e.target.value }))
-											}
-											placeholder="Bijv. naam / ordernummer"
-										/>
-									</label>
-
-										<div className="mt-3 grid grid-cols-1 gap-2">
-										<label className="flex flex-col gap-1">
-											<span className="text-xs uppercase tracking-wide text-(--ui-text)/70">Grootte (mm)</span>
-											<input
-												type="number"
-												inputMode="decimal"
-												className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm text-ui-text"
-												value={draftBottomText.sizeMm}
-												onChange={(e) =>
-												setDraftBottomText((p) => ({
-													...p,
-													sizeMm: Math.max(1, Number(e.target.value) || 1),
-												}))
-											}
-												min={1}
-												max={40}
-												step={0.5}
-											/>
-										</label>
-									</div>
-
-									<p className="mt-3 text-xs text-ui-muted">
-										Live preview staat gecentreerd op de onderkant van beide steunzolen.
-									</p>
-								</div>
-							) : (
-								<>
-									{activeCorrections.includes('tekst') && (
-										<div className="mb-3 rounded-lg border border-ui-border bg-[rgba(255,255,255,0.03)] px-3 py-2">
-											<div className="flex items-center justify-between">
-												<div>
-													<div className="text-sm font-semibold text-ui-text">Tekst</div>
-													<div className="text-xs text-ui-muted">
-														{savedBottomText?.text?.trim() ? savedBottomText.text : 'Nog geen tekst opgeslagen'}
-													</div>
-												</div>
-												<button
-													type="button"
-													className="rounded-md bg-[rgba(255,255,255,0.06)] px-2 py-1 text-xs text-ui-text hover:bg-[rgba(255,255,255,0.09)]"
-													onClick={() => {
-														setLeftPanelTab('view');
-														setViewerViewPreset('bottom');
-														setDraftBottomText(
-															savedBottomText ?? { text: 'PODO', sizeMm: 10 }
-														);
-														setTextEditorOpen(true);
-													}}
-												>
-													Bewerken
-												</button>
-											</div>
-										</div>
-									)}
-
-									<OntwerpPanel
+							<OntwerpPanel
 										corrections={corrections}
-										onCorrectionsChange={setCorrections}
+										onCorrectionsChange={handleCorrectionsChange}
 										activeCorrections={activeCorrections}
-										showZones={showZones}
-										onShowZonesChange={setShowZones}
 										soleWidthValueMm={resolvedTargetForefootWidthMm}
-										currentInsoleWidthMm={currentInsoleWidthMm}
 										onSoleWidthChange={handleSoleWidthChange}
-									/>
+										tekstEnabled={activeCorrections.includes('tekst')}
+										onTekstToggle={(enabled) => {
+											if (enabled) {
+												toggleCorrection('tekst');
+											} else {
+												setSavedBottomText({
+													text: draftBottomText.text,
+													sizeMm: draftBottomText.sizeMm,
+												});
+												resetBottomTextLoading();
+												setActiveCorrections((prev) => prev.filter((k) => k !== 'tekst'));
+												setTextEditorOpen(false);
+											}
+										}}
+										tekstEditorContent={activeCorrections.includes('tekst') ? (
+											<div className="space-y-3">
+												<label className="flex flex-col gap-1">
+													<span className="text-xs uppercase tracking-wide text-(--ui-text)/70">Tekst</span>
+													<input
+														type="text"
+														className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm text-ui-text"
+														value={draftBottomText.text}
+														onChange={(e) =>
+															setDraftBottomText((p) => ({ ...p, text: e.target.value }))
+														}
+														placeholder="Bijv. naam / ordernummer"
+													/>
+												</label>
 
-								</>
-							)}
+												<div className="mt-3 grid grid-cols-1 gap-2">
+													<label className="flex flex-col gap-1">
+														<span className="text-xs uppercase tracking-wide text-(--ui-text)/70">Grootte (mm)</span>
+														<input
+															type="number"
+															inputMode="decimal"
+															className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm text-ui-text"
+															value={draftBottomText.sizeMm}
+															onChange={(e) =>
+																setDraftBottomText((p) => ({
+																	...p,
+																	sizeMm: Math.max(1, Number(e.target.value) || 1),
+																}))
+															}
+															min={1}
+															max={40}
+															step={0.5}
+														/>
+													</label>
+												</div>
+
+												<p className="mt-3 text-xs text-ui-muted">
+													Live preview staat gecentreerd op de onderkant van beide steunzolen.
+												</p>
+											</div>
+										) : null}
+									/>
 						</CardContent>
 					</Card>
 				);
@@ -2987,14 +3544,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 					{workflowStep === 'point-pick' && (
 						<div
 							className="relative h-full w-full"
-							onMouseMove={(e) => {
-								const rect = e.currentTarget.getBoundingClientRect();
-								setCrosshair({
-									x: e.clientX - rect.left,
-									y: e.clientY - rect.top,
-								});
-							}}
-							onMouseLeave={() => setCrosshair(null)}
+							onMouseMove={handlePointPickMouseMove}
+							onMouseLeave={handlePointPickMouseLeave}
 						>
 							<EnhancedSTLViewer
 								ref={viewerRef}
@@ -3160,6 +3711,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									className="h-full w-full"
 									leftStlUrl={selectedBaseInsoleAssets.leftUrl}
 									rightStlUrl={selectedBaseInsoleAssets.rightUrl}
+									leftGeometry={cncPreviewGeometry.left}
+									rightGeometry={cncPreviewGeometry.right}
 									baseInsoleType={generalNormalized.baseInsoleType}
 								/>
 							) : (
@@ -3178,7 +3731,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								hideScans={false}
 								landmarkPoints={designPlan.points ?? undefined}
 								showGeneratedInsole={false}
-								showZones={showZones || (activeDesignStep === 3 && step3Current.elementsSplit)}
+								showZones={activeDesignStep === 3 && step3Current.elementsSplit}
 								showLeft={viewSettings.showLeft}
 								showRight={viewSettings.showRight}
 								transparent={viewSettings.transparent}
@@ -3189,7 +3742,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								viewPreset={viewerViewPreset}
 								controlMode={viewerControlMode}
 								analysisEnabled={leftPanelTab === 'analysis'}
-								onProbe={(payload) => setAnalysisProbe(payload)}
+								onProbe={handleAnalysisProbe}
 								corrections={corrections}
 								activeCorrections={activeCorrections}
 								bottomTextOverlay={bottomTextOverlay}
@@ -3200,10 +3753,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								onZoneClick={activeDesignStep === 3 && step3Current.elementsSplit ? (zone, side) => { setSelectedZone(zone); setStep3Side(side); } : undefined}
 								boxEnabled={boxEnabled}
 								gridEditMode={isSelectedGridModeOn || isElementBoxGridModeOn}
-								heelEdgeThicknessMm={{
-									left: step3Left.heelEdgeThicknessMm,
-									right: step3Right.heelEdgeThicknessMm,
-								}}
+								heelEdgeThicknessMm={viewerHeelEdgeThicknessMm}
 								savedBoxGridOffsets={boxGridPoints}
 								onBoxGridSave={handleBoxGridSave}
 								leftPlacedElements={leftPlacedElements}
@@ -3213,44 +3763,38 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								trimlineHandleProfiles={trimlineHandleProfiles}
 								trimlineEditSide={trimlineEditSide}
 								onPendingTrimlineChange={(side: 'left' | 'right', adj: TrimlineAdjustments) =>
-									setPendingTrimlineAdj((prev) => ({
-										...prev,
-										[side]: adj,
-									}))
+									{
+										pendingTrimlineAdjRef.current = {
+											...pendingTrimlineAdjRef.current,
+											[side]: adj,
+										};
+										scheduleTrimlinePanelSync();
+									}
 								}
 								onPendingTrimlineProfileChange={(side, profile) =>
-									setPendingTrimlineHandleProfiles((prev) => ({
-										...prev,
-										[side]: profile,
-									}))
+									{
+										pendingTrimlineHandleProfilesRef.current = {
+											...pendingTrimlineHandleProfilesRef.current,
+											[side]: profile,
+										};
+										scheduleTrimlinePanelSync();
+									}
 								}
-								selectedElementTrimlineEdit={
-									elementTrimlineEditId && selectedPlacedElement && selectedPlacedElement.id === elementTrimlineEditId
-										? {
-											elementId: elementTrimlineEditId,
-											side: selectedPlacedElement.side,
-											adjustments: pendingElementTrimlineAdj,
-											profile: pendingElementTrimlineHandleProfile,
-										}
-										: null
-								}
-								onPendingElementTrimlineChange={setPendingElementTrimlineAdj}
-								onPendingElementTrimlineProfileChange={setPendingElementTrimlineHandleProfile}
-								selectedElementBoxEdit={
-									isElementBoxGridModeOn && selectedPlacedElement
-										? {
-											elementId: selectedPlacedElement.id,
-											side: selectedPlacedElement.side,
-											savedOffsets: pendingElementBoxOffsets,
-										}
-										: null
-								}
+								selectedElementTrimlineEdit={viewerSelectedElementTrimlineEdit}
+								onPendingElementTrimlineChange={(adj) => {
+									pendingElementTrimlineAdjRef.current = adj;
+									scheduleElementTrimlinePanelSync();
+								}}
+								onPendingElementTrimlineProfileChange={(profile) => {
+									pendingElementTrimlineHandleProfileRef.current = profile;
+									scheduleElementTrimlinePanelSync();
+								}}
+								selectedElementBoxEdit={viewerSelectedElementBoxEdit}
 								onElementBoxGridSave={handleElementBoxGridSave}
 								onReady={() => setIsViewerReady(true)}
+									onBottomTextLoadingChange={handleBottomTextLoadingChange}
 								disableInteraction={!scansActive || !!selectedPlacedElement}
-								elementPlacementMode={selectedPlacedElement && elementEditMode === 'move'
-									? { elementId: selectedPlacedElement.id, side: selectedPlacedElement.side }
-									: null}
+								elementPlacementMode={viewerElementPlacementMode}
 								onElementPlace={selectedPlacedElement ? ({ side, u, v }) => {
 									if (selectedPlacedElement.side !== side) return;
 									updatePlacedElement(selectedPlacedElement.id, { positionU: u, positionV: v });
@@ -3307,6 +3851,21 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									</div>
 								</div>
 							)}
+							{isBottomTextLoading && !isFitting && autoDetectStatus !== 'detecting' && (
+								<div className="absolute inset-0 z-35 flex items-center justify-center bg-gray-900/55 backdrop-blur-[2px]">
+									<div className="animate-fade-in-up flex flex-col items-center gap-3 rounded-2xl border border-ui-border bg-ui-panel/95 px-6 py-5 shadow-xl">
+										<div className="relative h-8 w-8">
+											<div className="absolute inset-0 rounded-full border-2 border-ui-border" />
+											<div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ui-accent" />
+										</div>
+										<p className="text-xs font-semibold text-ui-text">Tekst laden op de steunzool…</p>
+										<p className="text-center text-[11px] text-ui-muted">De onderkant wordt bijgewerkt met de nieuwe tekst op beide steunzolen.</p>
+										<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
+											<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
+										</div>
+									</div>
+								</div>
+							)}
 							{autoDetectStatus === 'detecting' && !isFitting && (
 								<div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-900/40 backdrop-blur-[1px]">
 									<div className="animate-fade-in-up flex flex-col items-center gap-3 rounded-2xl border border-ui-border bg-ui-panel/95 px-6 py-5 shadow-xl">
@@ -3356,6 +3915,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								viewSettings={viewSettings}
 								onToggle={handleToggleViewSetting}
 								onView={handleOverlayView}
+								activeView={namedViewActive}
+								activeControlMode={viewerControlMode}
 								analysisHeightMm={analysisProbe?.heightMm ?? null}
 								analysisSide={analysisProbe?.side ?? null}
 								className="absolute left-6 top-6 z-20"
@@ -3419,17 +3980,19 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										<button
 											type="button"
 											onClick={() => {
-												setPendingElementTrimlineAdj(normalizeElementTrimlineAdjustments(selectedPlacedElement.trimlineAdjustments));
-												setPendingElementTrimlineHandleProfile(
-													selectedPlacedElement.trimlineHandleProfile
-														? {
-															...selectedPlacedElement.trimlineHandleProfile,
-															tValues: [...selectedPlacedElement.trimlineHandleProfile.tValues],
-															rightOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.rightOffsetsMm],
-															leftOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.leftOffsetsMm],
-														}
-														: null
-												);
+												const restoredAdj = normalizeElementTrimlineAdjustments(selectedPlacedElement.trimlineAdjustments);
+												const restoredProfile = selectedPlacedElement.trimlineHandleProfile
+													? {
+														...selectedPlacedElement.trimlineHandleProfile,
+														tValues: [...selectedPlacedElement.trimlineHandleProfile.tValues],
+														rightOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.rightOffsetsMm],
+														leftOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.leftOffsetsMm],
+													}
+													: null;
+												pendingElementTrimlineAdjRef.current = restoredAdj;
+												pendingElementTrimlineHandleProfileRef.current = restoredProfile;
+												setPendingElementTrimlineAdj(restoredAdj);
+												setPendingElementTrimlineHandleProfile(restoredProfile);
 												setElementTrimlineEditId(null);
 												setElementEditMode(null);
 											}}
@@ -3440,20 +4003,20 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									</div>
 									<div className="mt-3 rounded-xl border border-(--ui-border) bg-black/10 px-3 py-2.5 text-xs text-(--ui-muted)">
 										Vrije contour: sleep de punten rondom het element precies zoals je de rand wilt hebben.
-										<span className="ml-2 font-mono text-(--ui-text)">{pendingElementTrimlineAdj.global > 0 ? '+' : ''}{pendingElementTrimlineAdj.global.toFixed(1)} mm gemiddeld</span>
+										<span className="ml-2 font-mono text-(--ui-text)">{pendingElementTrimlineAdjRef.current.global > 0 ? '+' : ''}{pendingElementTrimlineAdjRef.current.global.toFixed(1)} mm gemiddeld</span>
 									</div>
 									<div className="mt-3 flex gap-2">
 										<button
 											type="button"
 											onClick={() => {
 												updatePlacedElement(selectedPlacedElement.id, {
-													trimlineAdjustments: normalizeElementTrimlineAdjustments(pendingElementTrimlineAdj),
-													trimlineHandleProfile: pendingElementTrimlineHandleProfile
+													trimlineAdjustments: normalizeElementTrimlineAdjustments(pendingElementTrimlineAdjRef.current),
+													trimlineHandleProfile: pendingElementTrimlineHandleProfileRef.current
 														? {
-															...pendingElementTrimlineHandleProfile,
-															tValues: [...pendingElementTrimlineHandleProfile.tValues],
-															rightOffsetsMm: [...pendingElementTrimlineHandleProfile.rightOffsetsMm],
-															leftOffsetsMm: [...pendingElementTrimlineHandleProfile.leftOffsetsMm],
+															...pendingElementTrimlineHandleProfileRef.current,
+															tValues: [...pendingElementTrimlineHandleProfileRef.current.tValues],
+															rightOffsetsMm: [...pendingElementTrimlineHandleProfileRef.current.rightOffsetsMm],
+															leftOffsetsMm: [...pendingElementTrimlineHandleProfileRef.current.leftOffsetsMm],
 														}
 														: null,
 												});
@@ -3464,11 +4027,14 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										>
 											Opslaan
 										</button>
-										{(pendingElementTrimlineAdj.global !== 0 || !!pendingElementTrimlineHandleProfile) && (
+										{(pendingElementTrimlineAdjRef.current.global !== 0 || !!pendingElementTrimlineHandleProfileRef.current) && (
 											<button
 												type="button"
 												onClick={() => {
-													setPendingElementTrimlineAdj(normalizeElementTrimlineAdjustments());
+													const resetAdj = normalizeElementTrimlineAdjustments();
+													pendingElementTrimlineAdjRef.current = resetAdj;
+													pendingElementTrimlineHandleProfileRef.current = null;
+													setPendingElementTrimlineAdj(resetAdj);
 													setPendingElementTrimlineHandleProfile(null);
 												}}
 												className="rounded-lg border border-(--ui-border) px-3 py-2 text-xs text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)]"
@@ -3487,6 +4053,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									onMirrorToOther={mirrorCorrectionsToOtherSide}
 									onTrimlineEdit={(side) => {
 										setTrimlineEditSide(side);
+										pendingTrimlineAdjRef.current = { ...trimlineAdjustments };
+										pendingTrimlineHandleProfilesRef.current = { ...trimlineHandleProfiles };
 										setPendingTrimlineAdj({ ...trimlineAdjustments });
 										setPendingTrimlineHandleProfiles({ ...trimlineHandleProfiles });
 										setViewerViewPreset('top');
@@ -3509,14 +4077,16 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										<button
 											type="button"
 											onClick={() => {
-												setPendingTrimlineAdj((prev) => ({
-													...prev,
+												pendingTrimlineAdjRef.current = {
+													...pendingTrimlineAdjRef.current,
 													[trimlineEditSide]: { ...trimlineAdjustments[trimlineEditSide] },
-												}));
-												setPendingTrimlineHandleProfiles((prev) => ({
-													...prev,
+												};
+												pendingTrimlineHandleProfilesRef.current = {
+													...pendingTrimlineHandleProfilesRef.current,
 													[trimlineEditSide]: trimlineHandleProfiles[trimlineEditSide],
-												}));
+												};
+												setPendingTrimlineAdj({ ...pendingTrimlineAdjRef.current });
+												setPendingTrimlineHandleProfiles({ ...pendingTrimlineHandleProfilesRef.current });
 												setTrimlineEditSide(null);
 											}}
 											className="rounded-lg border border-(--ui-border) px-2.5 py-1 text-xs text-(--ui-muted) transition hover:bg-[rgba(255,255,255,0.08)] hover:text-(--ui-text)"
@@ -3528,22 +4098,22 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
 											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#ef4444]" />
 											<span>Hiel</span>
-											<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].heel > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].heel.toFixed(1)} mm</span>
+											<span className="ml-auto font-mono">{pendingTrimlineAdjRef.current[trimlineEditSide].heel > 0 ? '+' : ''}{pendingTrimlineAdjRef.current[trimlineEditSide].heel.toFixed(1)} mm</span>
 										</div>
 										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
 											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#22c55e]" />
 											<span>Middenvoet</span>
-											<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].midfoot > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].midfoot.toFixed(1)} mm</span>
+											<span className="ml-auto font-mono">{pendingTrimlineAdjRef.current[trimlineEditSide].midfoot > 0 ? '+' : ''}{pendingTrimlineAdjRef.current[trimlineEditSide].midfoot.toFixed(1)} mm</span>
 										</div>
 										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
 											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#3b82f6]" />
 											<span>Voorvoet</span>
-											<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].forefoot > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].forefoot.toFixed(1)} mm</span>
+											<span className="ml-auto font-mono">{pendingTrimlineAdjRef.current[trimlineEditSide].forefoot > 0 ? '+' : ''}{pendingTrimlineAdjRef.current[trimlineEditSide].forefoot.toFixed(1)} mm</span>
 										</div>
 										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
 											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#f59e0b]" />
 											<span>Teen</span>
-											<span className="ml-auto font-mono">{pendingTrimlineAdj[trimlineEditSide].toe > 0 ? '+' : ''}{pendingTrimlineAdj[trimlineEditSide].toe.toFixed(1)} mm</span>
+											<span className="ml-auto font-mono">{pendingTrimlineAdjRef.current[trimlineEditSide].toe > 0 ? '+' : ''}{pendingTrimlineAdjRef.current[trimlineEditSide].toe.toFixed(1)} mm</span>
 										</div>
 									</div>
 									<div className="mt-3 flex gap-2">
@@ -3551,24 +4121,26 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										<button
 											type="button"
 											onClick={() => {
-												setTrimlineAdjustments({ ...pendingTrimlineAdj });
-												setTrimlineHandleProfiles({ ...pendingTrimlineHandleProfiles });
+												setTrimlineAdjustments({ ...pendingTrimlineAdjRef.current });
+												setTrimlineHandleProfiles({ ...pendingTrimlineHandleProfilesRef.current });
 											}}
 											disabled={
-												JSON.stringify(pendingTrimlineAdj[trimlineEditSide]) ===
+												JSON.stringify(pendingTrimlineAdjRef.current[trimlineEditSide]) ===
 												JSON.stringify(trimlineAdjustments[trimlineEditSide]) &&
-												JSON.stringify(pendingTrimlineHandleProfiles[trimlineEditSide]) ===
+												JSON.stringify(pendingTrimlineHandleProfilesRef.current[trimlineEditSide]) ===
 												JSON.stringify(trimlineHandleProfiles[trimlineEditSide])
 											}
 											className="flex-1 rounded-lg bg-[#56f2d6] px-3 py-2 text-xs font-semibold text-gray-900 transition hover:bg-[#3ddbb8] disabled:opacity-30 disabled:cursor-not-allowed"
 										>
 											Opslaan
 										</button>
-										{Object.values(pendingTrimlineAdj[trimlineEditSide]).some((v) => v !== 0) && (
+										{Object.values(pendingTrimlineAdjRef.current[trimlineEditSide]).some((v) => v !== 0) && (
 											<button
 												type="button"
 												onClick={() => {
 													const reset = { global: 0, heel: 0, midfoot: 0, forefoot: 0, toe: 0 };
+													pendingTrimlineAdjRef.current = { ...pendingTrimlineAdjRef.current, [trimlineEditSide!]: reset };
+													pendingTrimlineHandleProfilesRef.current = { ...pendingTrimlineHandleProfilesRef.current, [trimlineEditSide!]: null };
 													setTrimlineAdjustments((prev) => ({ ...prev, [trimlineEditSide!]: reset }));
 													setPendingTrimlineAdj((prev) => ({ ...prev, [trimlineEditSide!]: reset }));
 													setTrimlineHandleProfiles((prev) => ({ ...prev, [trimlineEditSide!]: null }));
@@ -3633,14 +4205,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									</div>
 								</div>
 							)}
-							{designPlan.plan && (
-								<div className="absolute left-1/2 top-4 z-20 -translate-x-1/2 rounded-full border border-ui-border bg-ui-panel/90 px-4 py-2 text-xs text-ui-text">
-									Steunzool gegenereerd — lengte{' '}
-									{(designPlan.plan.frame.footLength * planWorldToMm).toFixed(1)} mm, breedte{' '}
-									{(designPlan.plan.frame.forefootWidth * planWorldToMm).toFixed(1)} mm, boog{' '}
-									{(designPlan.plan.frame.archHeight * planWorldToMm).toFixed(1)} mm
-								</div>
-							)}
 							</>
 							)}
 							{leftPanelTab !== 'analysis' && !selectedInsoleSide && selectedPlacedElement && (
@@ -3696,15 +4260,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 												</>
 											)}
 										</div>
-										{scansActive && (
-											<Button
-												onClick={() => setActiveDesignStep(2)}
-												size="sm"
-												className="bg-ui-accent text-slate-900"
-											>
-												Volgende
-											</Button>
-										)}
 									</div>
 								</div>
 							)}

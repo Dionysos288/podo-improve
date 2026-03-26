@@ -1,12 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { BufferGeometry } from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { cn } from '@/src/shared/lib/cn';
 import {
 	ELEMENTEN_ITEMS,
 	DIEPELEMENTEN_ITEMS,
 	ELEMENT_COLORS,
+	getElementStlLoadUrls,
 	type ElementTab,
 	type ElementLibraryItem,
 } from '@/src/features/design/elements';
@@ -29,74 +31,84 @@ type StlSilhouette = { points: [number, number][]; w: number; h: number };
 const silhouetteCache = new Map<string, StlSilhouette>();
 
 /** Load the STL and project its vertices top-down to get a 2D silhouette */
-function loadStlSilhouette(stlUrl: string): Promise<StlSilhouette | null> {
-	if (silhouetteCache.has(stlUrl)) return Promise.resolve(silhouetteCache.get(stlUrl)!);
-
-	return new Promise((resolve) => {
-		const loader = new STLLoader();
-		loader.load(
-			stlUrl,
-			(geom) => {
-				geom.computeBoundingBox();
-				const bb = geom.boundingBox!;
-				const pos = geom.getAttribute('position');
-				const count = pos.count;
-
-				// Find which axis is height (smallest span) — project onto the other two
-				const sx = bb.max.x - bb.min.x;
-				const sy = bb.max.y - bb.min.y;
-				const sz = bb.max.z - bb.min.z;
-
-				// For the SD element: X=width, Y=length, Z=height → project onto X,Y
-				const w = Math.max(sx, 1e-6);
-				const h = Math.max(sy, 1e-6);
-
-				// Build a grid of "is occupied" cells then trace an outline
-				const GRID = 32;
-				const occupied = new Uint8Array(GRID * GRID);
-				for (let i = 0; i < count; i++) {
-					const x = pos.getX(i);
-					const y = pos.getY(i);
-					const gx = Math.min(GRID - 1, Math.max(0, Math.floor(((x - bb.min.x) / w) * GRID)));
-					const gy = Math.min(GRID - 1, Math.max(0, Math.floor(((y - bb.min.y) / h) * GRID)));
-					occupied[gy * GRID + gx] = 1;
-				}
-
-				// Extract boundary cells (occupied with at least one empty neighbor)
-				const boundary: [number, number][] = [];
-				for (let gy = 0; gy < GRID; gy++) {
-					for (let gx = 0; gx < GRID; gx++) {
-						if (!occupied[gy * GRID + gx]) continue;
-						let isBorder = gx === 0 || gx === GRID - 1 || gy === 0 || gy === GRID - 1;
-						if (!isBorder) {
-							for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
-								if (!occupied[(gy + dy) * GRID + (gx + dx)]) { isBorder = true; break; }
-							}
-						}
-						if (isBorder) {
-							boundary.push([(gx + 0.5) / GRID, (gy + 0.5) / GRID]);
-						}
+function buildStlSilhouette(geom: BufferGeometry): StlSilhouette {
+	geom.computeBoundingBox();
+	const bb = geom.boundingBox!;
+	const pos = geom.getAttribute('position');
+	const count = pos.count;
+	const sx = bb.max.x - bb.min.x;
+	const sy = bb.max.y - bb.min.y;
+	const w = Math.max(sx, 1e-6);
+	const h = Math.max(sy, 1e-6);
+	const GRID = 32;
+	const occupied = new Uint8Array(GRID * GRID);
+	for (let i = 0; i < count; i++) {
+		const x = pos.getX(i);
+		const y = pos.getY(i);
+		const gx = Math.min(GRID - 1, Math.max(0, Math.floor(((x - bb.min.x) / w) * GRID)));
+		const gy = Math.min(GRID - 1, Math.max(0, Math.floor(((y - bb.min.y) / h) * GRID)));
+		occupied[gy * GRID + gx] = 1;
+	}
+	const boundary: [number, number][] = [];
+	for (let gy = 0; gy < GRID; gy++) {
+		for (let gx = 0; gx < GRID; gx++) {
+			if (!occupied[gy * GRID + gx]) continue;
+			let isBorder = gx === 0 || gx === GRID - 1 || gy === 0 || gy === GRID - 1;
+			if (!isBorder) {
+				for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
+					if (!occupied[(gy + dy) * GRID + (gx + dx)]) {
+						isBorder = true;
+						break;
 					}
 				}
+			}
+			if (isBorder) boundary.push([(gx + 0.5) / GRID, (gy + 0.5) / GRID]);
+		}
+	}
+	if (boundary.length > 2) {
+		let cx = 0;
+		let cy = 0;
+		for (const [x, y] of boundary) {
+			cx += x;
+			cy += y;
+		}
+		cx /= boundary.length;
+		cy /= boundary.length;
+		boundary.sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+	}
+	return { points: boundary, w, h };
+}
 
-				// Sort boundary points by angle from centroid for a clean outline
-				if (boundary.length > 2) {
-					let cx = 0, cy = 0;
-					for (const [x, y] of boundary) { cx += x; cy += y; }
-					cx /= boundary.length; cy /= boundary.length;
-					boundary.sort((a, b) =>
-						Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx)
-					);
-				}
+function loadStlSilhouette(stlUrls: string[]): Promise<StlSilhouette | null> {
+	const cacheKey = stlUrls[0];
+	if (!cacheKey) return Promise.resolve(null);
+	if (silhouetteCache.has(cacheKey)) return Promise.resolve(silhouetteCache.get(cacheKey)!);
 
-				const result: StlSilhouette = { points: boundary, w, h };
-				silhouetteCache.set(stlUrl, result);
-				resolve(result);
-			},
-			undefined,
-			() => resolve(null),
-		);
-	});
+	const loader = new STLLoader();
+	const tryLoad = (index: number): Promise<StlSilhouette | null> => {
+		const stlUrl = stlUrls[index];
+		if (!stlUrl) return Promise.resolve(null);
+		return new Promise((resolve) => {
+			loader.load(
+				stlUrl,
+				(geom) => {
+					const result = buildStlSilhouette(geom);
+					silhouetteCache.set(cacheKey, result);
+					resolve(result);
+				},
+				undefined,
+				() => {
+					if (index < stlUrls.length - 1) {
+						resolve(tryLoad(index + 1));
+						return;
+					}
+					resolve(null);
+				},
+			);
+		});
+	};
+
+	return tryLoad(0);
 }
 
 function ElementThumbnail({
@@ -108,23 +120,25 @@ function ElementThumbnail({
 }) {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const fillColor = ELEMENT_COLORS[item.color] ?? '#999';
+	const stlLoadUrls = useMemo(() => getElementStlLoadUrls(item), [item]);
+	const silhouetteCacheKey = stlLoadUrls[0];
 	const [silhouette, setSilhouette] = useState<StlSilhouette | null>(
-		item.stlUrl ? silhouetteCache.get(item.stlUrl) ?? null : null
+		silhouetteCacheKey ? silhouetteCache.get(silhouetteCacheKey) ?? null : null
 	);
 
 	// Load the STL silhouette
 	useEffect(() => {
-		if (!item.stlUrl) return;
-		if (silhouetteCache.has(item.stlUrl)) {
-			setSilhouette(silhouetteCache.get(item.stlUrl)!);
+		if (!silhouetteCacheKey) return;
+		if (silhouetteCache.has(silhouetteCacheKey)) {
+			setSilhouette(silhouetteCache.get(silhouetteCacheKey)!);
 			return;
 		}
 		let cancelled = false;
-		loadStlSilhouette(item.stlUrl).then((s) => {
+		loadStlSilhouette(stlLoadUrls).then((s) => {
 			if (!cancelled && s) setSilhouette(s);
 		});
 		return () => { cancelled = true; };
-	}, [item.stlUrl]);
+	}, [silhouetteCacheKey, stlLoadUrls]);
 
 	// Draw onto the 2D canvas
 	useEffect(() => {

@@ -81,10 +81,12 @@ export interface ElementLibraryItem {
 	defaultScale?: [number, number];
 	/** Optional: preferred default placement in normalized insole UV space */
 	defaultPosition?: { u: number; v: number };
-	/** Optional: default rotation in radians for the left foot; mirrored for right */
+	/** Optional: default rotation in radians for the right foot; mirrored for left */
 	defaultRotationRad?: number;
 	/** Optional: URL to a pre-built STL mesh for this element (relative to public/) */
 	stlUrl?: string;
+	/** Optional: alternate STL URL preferred for interactive editor rendering */
+	stlInteractiveUrl?: string;
 	/** Intrinsic size of the STL in mm [width, depth] for correct scaling */
 	stlSizeMm?: [number, number];
 	/** If true, the STL has Y↔Z axes swapped and they will be corrected on load */

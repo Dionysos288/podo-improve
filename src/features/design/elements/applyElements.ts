@@ -10,7 +10,8 @@
 import * as THREE from 'three';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { PlacedElement, ElementProfile } from './types';
-import { getElementByKey, ELEMENT_COLORS } from './catalog';
+import { getElementByKey, getElementPreferredStlUrl, ELEMENT_COLORS } from './catalog';
+import { getDefaultPlacementForSide } from './placement';
 
 /* ── helpers (same as insoleCorrections.ts) ──── */
 
@@ -78,50 +79,84 @@ function getMaxForAxis(bbox: THREE.Box3, axis: string): number {
 
 /* ── point-in-polygon (2D, winding number) ──── */
 
+type PreparedPolygonEdge = {
+	ax: number;
+	ay: number;
+	bx: number;
+	by: number;
+	dx: number;
+	dy: number;
+	len2: number;
+};
+
+type PreparedPolygon = {
+	points: [number, number][];
+	edges: PreparedPolygonEdge[];
+};
+
+function preparePolygon(points: [number, number][]): PreparedPolygon {
+	const edges: PreparedPolygonEdge[] = [];
+	const n = points.length;
+	for (let i = 0, j = n - 1; i < n; j = i++) {
+		const ax = points[i][0];
+		const ay = points[i][1];
+		const bx = points[j][0];
+		const by = points[j][1];
+		const dx = bx - ax;
+		const dy = by - ay;
+		edges.push({
+			ax,
+			ay,
+			bx,
+			by,
+			dx,
+			dy,
+			len2: dx * dx + dy * dy,
+		});
+	}
+	return { points, edges };
+}
+
+function measurePreparedPolygon(
+	px: number,
+	py: number,
+	polygon: PreparedPolygon,
+): { inside: boolean; edgeDist: number } {
+	let inside = false;
+	let minDistSq = Infinity;
+	for (const edge of polygon.edges) {
+		if (edge.ay > py !== edge.by > py && px < (edge.dx * (py - edge.ay)) / (edge.by - edge.ay) + edge.ax) {
+			inside = !inside;
+		}
+		let t = edge.len2 > 0 ? ((px - edge.ax) * edge.dx + (py - edge.ay) * edge.dy) / edge.len2 : 0;
+		t = Math.max(0, Math.min(1, t));
+		const cx = edge.ax + t * edge.dx;
+		const cy = edge.ay + t * edge.dy;
+		const dx = px - cx;
+		const dy = py - cy;
+		const distSq = dx * dx + dy * dy;
+		if (distSq < minDistSq) minDistSq = distSq;
+	}
+	return {
+		inside,
+		edgeDist: Math.sqrt(minDistSq),
+	};
+}
+
 function pointInPolygon(
 	px: number,
 	py: number,
-	polygon: [number, number][]
+	polygon: [number, number][],
 ): boolean {
-	let inside = false;
-	const n = polygon.length;
-	for (let i = 0, j = n - 1; i < n; j = i++) {
-		const xi = polygon[i][0],
-			yi = polygon[i][1];
-		const xj = polygon[j][0],
-			yj = polygon[j][1];
-		if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
-			inside = !inside;
-		}
-	}
-	return inside;
+	return measurePreparedPolygon(px, py, preparePolygon(polygon)).inside;
 }
 
-/** Distance from point to closest polygon edge (approximate) */
 function distToPolygonEdge(
 	px: number,
 	py: number,
-	polygon: [number, number][]
+	polygon: [number, number][],
 ): number {
-	let minDist = Infinity;
-	const n = polygon.length;
-	for (let i = 0, j = n - 1; i < n; j = i++) {
-		const ax = polygon[i][0],
-			ay = polygon[i][1];
-		const bx = polygon[j][0],
-			by = polygon[j][1];
-		// Project point onto segment
-		const dx = bx - ax,
-			dy = by - ay;
-		const len2 = dx * dx + dy * dy;
-		let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
-		t = Math.max(0, Math.min(1, t));
-		const cx = ax + t * dx,
-			cy = ay + t * dy;
-		const dist = Math.sqrt((px - cx) ** 2 + (py - cy) ** 2);
-		if (dist < minDist) minDist = dist;
-	}
-	return minDist;
+	return measurePreparedPolygon(px, py, preparePolygon(polygon)).edgeDist;
 }
 
 /* ── profile height functions ────────────────── */
@@ -244,7 +279,8 @@ function transformOutline(
 	el: PlacedElement,
 	/** Size of the element in U,V normalised space */
 	elementSizeU: number,
-	elementSizeV: number
+	elementSizeV: number,
+	mirrorWidth = false,
 ): [number, number][] {
 	const cos = Math.cos(el.rotationRad);
 	const sin = Math.sin(el.rotationRad);
@@ -253,6 +289,9 @@ function transformOutline(
 		// Centre the outline at origin (-0.5..+0.5)
 		let lx = (ox - 0.5) * elementSizeU * el.scaleU;
 		let ly = (oy - 0.5) * elementSizeV * el.scaleV;
+		if (mirrorWidth) {
+			ly = -ly;
+		}
 		// Rotate
 		const rx = lx * cos - ly * sin;
 		const ry = lx * sin + ly * cos;
@@ -283,6 +322,10 @@ type PlacementContext = {
 	heelAtMin: boolean;
 	mmToWorld: number;
 };
+
+function getEffectiveMirrorWidth(side: 'left' | 'right', mirrorWidth?: boolean) {
+	return side === 'left' ? !Boolean(mirrorWidth) : Boolean(mirrorWidth);
+}
 
 type TopSurfaceHeightSamplerContext = {
 	positions: THREE.BufferAttribute;
@@ -390,6 +433,393 @@ function buildTopSurfaceHeightSampler({
 			+ h01 * (1 - guf) * gvf
 			+ h11 * guf * gvf;
 	};
+}
+
+type GeometryAxes = ReturnType<typeof getGeometryAxes>;
+
+type CachedInsoleOverlayAnalysis = {
+	positionVersion: number;
+	normalVersion: number;
+	axes: GeometryAxes;
+	lengthMin: number;
+	widthMin: number;
+	heightMin: number;
+	heightSpan: number;
+	heelAtMin: boolean;
+	sampleHeight: (u: number, v: number) => number;
+	sampleInsoleExtent: (uNorm: number) => { minV: number; maxV: number };
+	sampleInsoleUExtent: (vNorm: number) => { minU: number; maxU: number };
+	getNormalComponent: (index: number) => number;
+	upSign: number;
+};
+
+const insoleOverlayAnalysisCache = new WeakMap<THREE.BufferGeometry, CachedInsoleOverlayAnalysis>();
+
+function getPositionVersion(attribute: THREE.BufferAttribute | undefined) {
+	return attribute?.version ?? 0;
+}
+
+function buildCachedInsoleOverlayAnalysis(insoleGeometry: THREE.BufferGeometry): CachedInsoleOverlayAnalysis {
+	if (!insoleGeometry.getAttribute('normal')) {
+		insoleGeometry.computeVertexNormals();
+	}
+
+	const axes = getGeometryAxes(insoleGeometry);
+	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = axes;
+	const lengthMin = getMinForAxis(bbox, lengthAxis);
+	const widthMin = getMinForAxis(bbox, widthAxis);
+	const heightMin = getMinForAxis(bbox, heightAxis);
+	const heightMax = getMaxForAxis(bbox, heightAxis);
+	const heightSpan = heightMax - heightMin;
+	const heelAtMin = true;
+
+	const positions = insoleGeometry.getAttribute('position') as THREE.BufferAttribute;
+	const normals = insoleGeometry.getAttribute('normal') as THREE.BufferAttribute;
+	const vertexCount = positions.count;
+	const sampleHeight = buildTopSurfaceHeightSampler({
+		positions,
+		normals,
+		vertexCount,
+		lengthAxis,
+		widthAxis,
+		heightAxis,
+		lengthMin,
+		widthMin,
+		heightMin,
+		heightSpan,
+		lengthSpan,
+		widthSpan,
+		heelAtMin,
+	});
+
+	const normalIdx = heightAxis === 'x' ? 0 : heightAxis === 'y' ? 1 : 2;
+	const getNormalComponent = (index: number): number => {
+		if (normalIdx === 0) return normals.getX(index);
+		if (normalIdx === 1) return normals.getY(index);
+		return normals.getZ(index);
+	};
+
+	let signSum = 0;
+	let signCount = 0;
+	const topThresh = heightMin + heightSpan * 0.8;
+	for (let i = 0; i < vertexCount; i++) {
+		if (getAxisValue(positions, i, heightAxis) >= topThresh) {
+			signSum += getNormalComponent(i);
+			signCount++;
+		}
+	}
+	const upSign = signCount > 0 && signSum / signCount < 0 ? -1 : 1;
+
+	const BGRID = 96;
+	const insoleOccupied = new Uint8Array(BGRID * BGRID);
+	for (let i = 0; i < vertexCount; i++) {
+		if (getNormalComponent(i) * upSign < 0.1) continue;
+		const lv = getAxisValue(positions, i, lengthAxis);
+		const wv = getAxisValue(positions, i, widthAxis);
+		const rawU = (lv - lengthMin) / Math.max(lengthSpan, 1e-6);
+		const u = heelAtMin ? rawU : 1 - rawU;
+		const v = (wv - widthMin) / Math.max(widthSpan, 1e-6);
+		const bu = Math.max(0, Math.min(BGRID - 1, Math.floor(u * BGRID)));
+		const bv = Math.max(0, Math.min(BGRID - 1, Math.floor(v * BGRID)));
+		insoleOccupied[bu * BGRID + bv] = 1;
+	}
+
+	const insoleMinVPerU = new Float32Array(BGRID).fill(1.0);
+	const insoleMaxVPerU = new Float32Array(BGRID).fill(0.0);
+	for (let bu = 0; bu < BGRID; bu++) {
+		for (let bv = 0; bv < BGRID; bv++) {
+			if (!insoleOccupied[bu * BGRID + bv]) continue;
+			const vNorm = (bv + 0.5) / BGRID;
+			if (vNorm < insoleMinVPerU[bu]) insoleMinVPerU[bu] = vNorm;
+			if (vNorm > insoleMaxVPerU[bu]) insoleMaxVPerU[bu] = vNorm;
+		}
+	}
+	for (let pass = 0; pass < 3; pass++) {
+		for (let bu = 1; bu < BGRID - 1; bu++) {
+			if (insoleMinVPerU[bu] > insoleMaxVPerU[bu]) {
+				insoleMinVPerU[bu] = insoleMinVPerU[bu - 1];
+				insoleMaxVPerU[bu] = insoleMaxVPerU[bu - 1];
+			}
+		}
+	}
+	for (let pass = 0; pass < 10; pass++) {
+		const tmpMin = new Float32Array(insoleMinVPerU);
+		const tmpMax = new Float32Array(insoleMaxVPerU);
+		for (let bu = 1; bu < BGRID - 1; bu++) {
+			if (tmpMin[bu] > tmpMax[bu]) continue;
+			const prevOk = tmpMin[bu - 1] <= tmpMax[bu - 1];
+			const nextOk = tmpMin[bu + 1] <= tmpMax[bu + 1];
+			let wSum = 2;
+			let minSum = tmpMin[bu] * 2;
+			let maxSum = tmpMax[bu] * 2;
+			if (prevOk) { minSum += tmpMin[bu - 1]; maxSum += tmpMax[bu - 1]; wSum += 1; }
+			if (nextOk) { minSum += tmpMin[bu + 1]; maxSum += tmpMax[bu + 1]; wSum += 1; }
+			insoleMinVPerU[bu] = minSum / wSum;
+			insoleMaxVPerU[bu] = maxSum / wSum;
+		}
+	}
+
+	const insoleMinUPerV = new Float32Array(BGRID).fill(1.0);
+	const insoleMaxUPerV = new Float32Array(BGRID).fill(0.0);
+	for (let bv = 0; bv < BGRID; bv++) {
+		for (let bu = 0; bu < BGRID; bu++) {
+			if (!insoleOccupied[bu * BGRID + bv]) continue;
+			const uNorm = (bu + 0.5) / BGRID;
+			if (uNorm < insoleMinUPerV[bv]) insoleMinUPerV[bv] = uNorm;
+			if (uNorm > insoleMaxUPerV[bv]) insoleMaxUPerV[bv] = uNorm;
+		}
+	}
+	for (let pass = 0; pass < 3; pass++) {
+		for (let bv = 1; bv < BGRID - 1; bv++) {
+			if (insoleMinUPerV[bv] > insoleMaxUPerV[bv]) {
+				insoleMinUPerV[bv] = insoleMinUPerV[bv - 1];
+				insoleMaxUPerV[bv] = insoleMaxUPerV[bv - 1];
+			}
+		}
+	}
+	for (let pass = 0; pass < 10; pass++) {
+		const tmpMin = new Float32Array(insoleMinUPerV);
+		const tmpMax = new Float32Array(insoleMaxUPerV);
+		for (let bv = 1; bv < BGRID - 1; bv++) {
+			if (tmpMin[bv] > tmpMax[bv]) continue;
+			const prevOk = tmpMin[bv - 1] <= tmpMax[bv - 1];
+			const nextOk = tmpMin[bv + 1] <= tmpMax[bv + 1];
+			let wSum = 2;
+			let minSum = tmpMin[bv] * 2;
+			let maxSum = tmpMax[bv] * 2;
+			if (prevOk) { minSum += tmpMin[bv - 1]; maxSum += tmpMax[bv - 1]; wSum += 1; }
+			if (nextOk) { minSum += tmpMin[bv + 1]; maxSum += tmpMax[bv + 1]; wSum += 1; }
+			insoleMinUPerV[bv] = minSum / wSum;
+			insoleMaxUPerV[bv] = maxSum / wSum;
+		}
+	}
+
+	const sampleInsoleUExtent = (vNorm: number): { minU: number; maxU: number } => {
+		const gv = Math.max(0, Math.min(BGRID - 1.001, vNorm * BGRID));
+		const gvi = Math.floor(gv);
+		const frac = gv - gvi;
+		const gvi1 = Math.min(BGRID - 1, gvi + 1);
+		return {
+			minU: insoleMinUPerV[gvi] * (1 - frac) + insoleMinUPerV[gvi1] * frac,
+			maxU: insoleMaxUPerV[gvi] * (1 - frac) + insoleMaxUPerV[gvi1] * frac,
+		};
+	};
+
+	const sampleInsoleExtent = (uNorm: number): { minV: number; maxV: number } => {
+		const gu = Math.max(0, Math.min(BGRID - 1.001, uNorm * BGRID));
+		const gui = Math.floor(gu);
+		const frac = gu - gui;
+		const gui1 = Math.min(BGRID - 1, gui + 1);
+		return {
+			minV: insoleMinVPerU[gui] * (1 - frac) + insoleMinVPerU[gui1] * frac,
+			maxV: insoleMaxVPerU[gui] * (1 - frac) + insoleMaxVPerU[gui1] * frac,
+		};
+	};
+
+	return {
+		positionVersion: getPositionVersion(positions),
+		normalVersion: getPositionVersion(normals),
+		axes,
+		lengthMin,
+		widthMin,
+		heightMin,
+		heightSpan,
+		heelAtMin,
+		sampleHeight,
+		sampleInsoleExtent,
+		sampleInsoleUExtent,
+		getNormalComponent,
+		upSign,
+	};
+}
+
+function getCachedInsoleOverlayAnalysis(insoleGeometry: THREE.BufferGeometry) {
+	const positions = insoleGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+	const normals = insoleGeometry.getAttribute('normal') as THREE.BufferAttribute | undefined;
+	const positionVersion = getPositionVersion(positions);
+	const normalVersion = getPositionVersion(normals);
+	const cached = insoleOverlayAnalysisCache.get(insoleGeometry);
+	if (cached && cached.positionVersion === positionVersion && cached.normalVersion === normalVersion) {
+		return cached;
+	}
+	const next = buildCachedInsoleOverlayAnalysis(insoleGeometry);
+	insoleOverlayAnalysisCache.set(insoleGeometry, next);
+	return next;
+}
+
+type CachedStlDistanceField = {
+	sourceWidthMm: number;
+	sourceLengthMm: number;
+	sourceHeightMm: number;
+	stlCenterX: number;
+	stlCenterY: number;
+	stlBaseZ: number;
+	stlMinX: number;
+	stlMinY: number;
+	cellW: number;
+	cellL: number;
+	cellSizeMm: number;
+	distGrid: Float32Array;
+	gridSize: number;
+};
+
+const stlDistanceFieldCache = new WeakMap<THREE.BufferGeometry, Map<string, CachedStlDistanceField>>();
+const preparedOverlayStlGeometryCache = new WeakMap<THREE.BufferGeometry, Map<string, THREE.BufferGeometry>>();
+
+function getPreparedOverlayStlGeometry(
+	sourceGeometry: THREE.BufferGeometry,
+	swapYZ: boolean,
+): THREE.BufferGeometry {
+	let perGeometryCache = preparedOverlayStlGeometryCache.get(sourceGeometry);
+	if (!perGeometryCache) {
+		perGeometryCache = new Map<string, THREE.BufferGeometry>();
+		preparedOverlayStlGeometryCache.set(sourceGeometry, perGeometryCache);
+	}
+	const cacheKey = swapYZ ? 'swap-yz' : 'native';
+	const cached = perGeometryCache.get(cacheKey);
+	if (cached) return cached;
+
+	let prepared: THREE.BufferGeometry;
+	try {
+		prepared = mergeVertices(sourceGeometry.clone(), 0.01);
+	} catch {
+		prepared = sourceGeometry.clone();
+	}
+
+	if (swapYZ) {
+		const position = prepared.getAttribute('position') as THREE.BufferAttribute;
+		for (let index = 0; index < position.count; index++) {
+			const y = position.getY(index);
+			const z = position.getZ(index);
+			position.setY(index, z);
+			position.setZ(index, y);
+		}
+		position.needsUpdate = true;
+	}
+
+	prepared.computeVertexNormals();
+	prepared.computeBoundingBox();
+	prepared.computeBoundingSphere();
+	perGeometryCache.set(cacheKey, prepared);
+	return prepared;
+}
+
+function getCachedStlDistanceField(
+	sourceGeometry: THREE.BufferGeometry,
+	swapYZ: boolean,
+): CachedStlDistanceField {
+	let perGeometryCache = stlDistanceFieldCache.get(sourceGeometry);
+	if (!perGeometryCache) {
+		perGeometryCache = new Map<string, CachedStlDistanceField>();
+		stlDistanceFieldCache.set(sourceGeometry, perGeometryCache);
+	}
+	const cacheKey = swapYZ ? 'swap-yz' : 'native';
+	const cached = perGeometryCache.get(cacheKey);
+	if (cached) return cached;
+
+	const pos = sourceGeometry.getAttribute('position') as THREE.BufferAttribute;
+	const vtxCount = pos.count;
+	let minX = Infinity, maxX = -Infinity;
+	let minY = Infinity, maxY = -Infinity;
+	let minZ = Infinity, maxZ = -Infinity;
+	for (let i = 0; i < vtxCount; i++) {
+		const x = pos.getX(i);
+		const y = swapYZ ? pos.getZ(i) : pos.getY(i);
+		const z = swapYZ ? pos.getY(i) : pos.getZ(i);
+		if (x < minX) minX = x;
+		if (x > maxX) maxX = x;
+		if (y < minY) minY = y;
+		if (y > maxY) maxY = y;
+		if (z < minZ) minZ = z;
+		if (z > maxZ) maxZ = z;
+	}
+
+	const sourceWidthMm = Math.max(1e-6, maxX - minX);
+	const sourceLengthMm = Math.max(1e-6, maxY - minY);
+	const sourceHeightMm = Math.max(1e-6, maxZ - minZ);
+	const stlCenterX = (minX + maxX) / 2;
+	const stlCenterY = (minY + maxY) / 2;
+	const stlBaseZ = minZ;
+	const gridSize = 64;
+	const cellW = sourceWidthMm / gridSize;
+	const cellL = sourceLengthMm / gridSize;
+	const occupied = new Uint8Array(gridSize * gridSize);
+	const distGrid = new Float32Array(gridSize * gridSize);
+	distGrid.fill(1e6);
+	const baseThresh = stlBaseZ + sourceHeightMm * 0.08;
+
+	for (let i = 0; i < vtxCount; i++) {
+		const px = pos.getX(i);
+		const py = swapYZ ? pos.getZ(i) : pos.getY(i);
+		const pz = swapYZ ? pos.getY(i) : pos.getZ(i);
+		if (pz <= baseThresh) continue;
+		const gx = Math.min(gridSize - 1, Math.max(0, Math.floor((px - minX) / cellW)));
+		const gy = Math.min(gridSize - 1, Math.max(0, Math.floor((py - minY) / cellL)));
+		occupied[gy * gridSize + gx] = 1;
+	}
+
+	const queue: number[] = [];
+	for (let gy = 0; gy < gridSize; gy++) {
+		for (let gx = 0; gx < gridSize; gx++) {
+			const gi = gy * gridSize + gx;
+			if (!occupied[gi]) {
+				distGrid[gi] = 0;
+				continue;
+			}
+			let isBoundary = gx === 0 || gx === gridSize - 1 || gy === 0 || gy === gridSize - 1;
+			if (!isBoundary) {
+				for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
+					const nx = gx + dx;
+					const ny = gy + dy;
+					if (nx >= 0 && nx < gridSize && ny >= 0 && ny < gridSize && !occupied[ny * gridSize + nx]) {
+						isBoundary = true;
+						break;
+					}
+				}
+			}
+			if (isBoundary) {
+				distGrid[gi] = 0;
+				queue.push(gx, gy);
+			}
+		}
+	}
+
+	let qi = 0;
+	while (qi < queue.length) {
+		const cx = queue[qi++];
+		const cy = queue[qi++];
+		const cd = distGrid[cy * gridSize + cx];
+		for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]] as const) {
+			const nx = cx + dx;
+			const ny = cy + dy;
+			if (nx < 0 || nx >= gridSize || ny < 0 || ny >= gridSize) continue;
+			const ni = ny * gridSize + nx;
+			if (!occupied[ni]) continue;
+			const nd = cd + (dx !== 0 && dy !== 0 ? 1.414 : 1.0);
+			if (nd < distGrid[ni]) {
+				distGrid[ni] = nd;
+				queue.push(nx, ny);
+			}
+		}
+	}
+
+	const next: CachedStlDistanceField = {
+		sourceWidthMm,
+		sourceLengthMm,
+		sourceHeightMm,
+		stlCenterX,
+		stlCenterY,
+		stlBaseZ,
+		stlMinX: minX,
+		stlMinY: minY,
+		cellW,
+		cellL,
+		cellSizeMm: Math.max(cellW, cellL),
+		distGrid,
+		gridSize,
+	};
+	perGeometryCache.set(cacheKey, next);
+	return next;
 }
 
 function clamp01(value: number) {
@@ -503,20 +933,6 @@ function trimAdditiveOverlayGeometry({
 	const trimmedGeometry = new THREE.BufferGeometry();
 	trimmedGeometry.setAttribute('position', new THREE.Float32BufferAttribute(keptPositions, 3));
 	return trimmedGeometry;
-}
-
-function getDefaultPlacementForSide(item: ReturnType<typeof getElementByKey>, side: 'left' | 'right') {
-	const defaultU = item?.defaultPosition?.u ?? 0.5;
-	const baseV = item?.defaultPosition?.v ?? 0.5;
-	const defaultV = side === 'right' ? baseV : 1 - baseV;
-	const baseRotation = item?.defaultRotationRad ?? 0;
-	const defaultRotation = side === 'right' ? -baseRotation : baseRotation;
-
-	return {
-		positionU: defaultU,
-		positionV: defaultV,
-		rotationRad: defaultRotation,
-	};
 }
 
 function resolveAdaptiveSd25Layout(
@@ -1492,40 +1908,22 @@ export function applyElements(
 	if (!elements || elements.length === 0) return;
 
 	const mmToWorld = options?.mmToWorld ?? 1;
-	const axes = getGeometryAxes(geometry);
-	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = axes;
-
+	const geometryAnalysis = getCachedInsoleOverlayAnalysis(geometry);
+	const {
+		axes,
+		lengthMin,
+		widthMin,
+		heightMin,
+		heightSpan,
+		heelAtMin,
+		sampleHeight: sampleSurfaceHeight,
+	} = geometryAnalysis;
+	const { lengthAxis, widthAxis, heightAxis, lengthSpan, widthSpan } = axes;
 	const positions = geometry.getAttribute('position') as THREE.BufferAttribute;
 	const vertexCount = positions.count;
 	if (!geometry.getAttribute('normal')) {
 		geometry.computeVertexNormals();
 	}
-	const normals = geometry.getAttribute('normal') as THREE.BufferAttribute;
-
-	const lengthMin = getMinForAxis(bbox, lengthAxis);
-	const widthMin = getMinForAxis(bbox, widthAxis);
-	const heightMax = getMaxForAxis(bbox, heightAxis);
-	const heightMin = getMinForAxis(bbox, heightAxis);
-	const heightSpan = heightMax - heightMin;
-
-	// The viewer canonicalizes insole meshes so heel is always at the minimum
-	// of the length axis before elements are applied.
-	const heelAtMin = true;
-	const sampleSurfaceHeight = buildTopSurfaceHeightSampler({
-		positions,
-		normals,
-		vertexCount,
-		lengthAxis,
-		widthAxis,
-		heightAxis,
-		lengthMin,
-		widthMin,
-		heightMin,
-		heightSpan,
-		lengthSpan,
-		widthSpan,
-		heelAtMin,
-	});
 
 	// Precompute transformed outlines and bounding boxes for each element
 	const prepared = elements.map((el) => {
@@ -1548,13 +1946,15 @@ export function applyElements(
 			positionV: resolved.positionV,
 			rotationRad: resolved.rotationRad,
 		};
+		const effectiveMirrorWidth = getEffectiveMirrorWidth(el.side, resolved.mirrorWidth);
 		const outline = item?.outline ?? [[0, 0] as [number, number]];
 		const { elementSizeU, elementSizeV } = getElementFootprintUv(item, el, {
 			lengthSpan,
 			widthSpan,
 			mmToWorld,
 		}, resolved);
-		const transformed = transformOutline(outline, resolvedElement, elementSizeU, elementSizeV);
+		const transformed = transformOutline(outline, resolvedElement, elementSizeU, elementSizeV, effectiveMirrorWidth);
+		const polygon = preparePolygon(transformed);
 
 		// Bounding box for early reject
 		let minU = Infinity,
@@ -1581,7 +1981,7 @@ export function applyElements(
 			el,
 			item,
 			resolved,
-			transformed,
+			polygon,
 			profile: el.profile,
 			heightWorld,
 			baseSurfaceHeight,
@@ -1631,8 +2031,7 @@ export function applyElements(
 			if (u < p.bboxMinU || u > p.bboxMaxU || v < p.bboxMinV || v > p.bboxMaxV)
 				continue;
 
-			const inside = pointInPolygon(u, v, p.transformed);
-			const edgeDist = distToPolygonEdge(u, v, p.transformed);
+			const { inside, edgeDist } = measurePreparedPolygon(u, v, p.polygon);
 
 			let weight: number;
 			if (inside) {
@@ -1711,175 +2110,21 @@ export function buildElementOverlayGeometries(
 		insoleGeometry.computeVertexNormals();
 	}
 
-	const axes = getGeometryAxes(insoleGeometry);
-	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = axes;
-	const lengthMin = getMinForAxis(bbox, lengthAxis);
-	const widthMin  = getMinForAxis(bbox, widthAxis);
-	const heightMax = getMaxForAxis(bbox, heightAxis);
-	const heightMin = getMinForAxis(bbox, heightAxis);
-	const heightSpan = heightMax - heightMin;
-
-	const positions = insoleGeometry.getAttribute('position') as THREE.BufferAttribute;
-	const normals   = insoleGeometry.getAttribute('normal')   as THREE.BufferAttribute;
-	const vertexCount = positions.count;
-	const sampleHeight = buildTopSurfaceHeightSampler({
-		positions,
-		normals,
-		vertexCount,
-		lengthAxis,
-		widthAxis,
-		heightAxis,
+	const overlayAnalysis = getCachedInsoleOverlayAnalysis(insoleGeometry);
+	const {
+		axes,
 		lengthMin,
 		widthMin,
 		heightMin,
 		heightSpan,
-		lengthSpan,
-		widthSpan,
-		heelAtMin: true,
-	});
-
-	// Detect which normal direction is "up" (toward the top surface)
-	const normalIdx = heightAxis === 'x' ? 0 : heightAxis === 'y' ? 1 : 2;
-	const getNComp = (i: number): number => {
-		if (normalIdx === 0) return normals.getX(i);
-		if (normalIdx === 1) return normals.getY(i);
-		return normals.getZ(i);
-	};
-	let signSum = 0, signCount = 0;
-	const topThresh = heightMin + heightSpan * 0.8;
-	for (let i = 0; i < vertexCount; i++) {
-		if (getAxisValue(positions, i, heightAxis) >= topThresh) {
-			signSum += getNComp(i); signCount++;
-		}
-	}
-	const upSign = signCount > 0 && signSum / signCount < 0 ? -1 : 1;
-
-	// The insole geometry is already canonicalized to heel-at-min in the viewer.
-	const heelAtMin = true;
-
-	// Build a UV occupancy grid from top-facing vertices for boundary detection.
-	// Also build a boolean occupancy grid from the RAW vertices (before fill
-	// passes expand the height grid beyond the true insole footprint).
-	// Use a higher-resolution grid for accurate boundary detection.
-	const BGRID = 96; // boundary grid resolution
-	const insoleOccupied = new Uint8Array(BGRID * BGRID);
-	for (let i = 0; i < vertexCount; i++) {
-		if (getNComp(i) * upSign < 0.1) continue; // skip sides / bottom
-		const lv = getAxisValue(positions, i, lengthAxis);
-		const wv = getAxisValue(positions, i, widthAxis);
-		const hv = getAxisValue(positions, i, heightAxis);
-		const rawU = (lv - lengthMin) / lengthSpan;
-		const u = heelAtMin ? rawU : 1 - rawU;
-		const v = (wv - widthMin) / widthSpan;
-		// Mark occupancy in the higher-res boundary grid
-		const bu = Math.max(0, Math.min(BGRID - 1, Math.floor(u * BGRID)));
-		const bv = Math.max(0, Math.min(BGRID - 1, Math.floor(v * BGRID)));
-		insoleOccupied[bu * BGRID + bv] = 1;
-	}
-
-	// Build per-U insole width extents for boundary clipping.
-	// Uses the raw occupancy grid (BGRID resolution) which is NOT contaminated
-	// by the height-grid fill passes, so it represents the true insole footprint.
-	const insoleMinVPerU = new Float32Array(BGRID).fill(1.0);
-	const insoleMaxVPerU = new Float32Array(BGRID).fill(0.0);
-	for (let bu = 0; bu < BGRID; bu++) {
-		for (let bv = 0; bv < BGRID; bv++) {
-			if (insoleOccupied[bu * BGRID + bv]) {
-				const vNorm = (bv + 0.5) / BGRID;
-				if (vNorm < insoleMinVPerU[bu]) insoleMinVPerU[bu] = vNorm;
-				if (vNorm > insoleMaxVPerU[bu]) insoleMaxVPerU[bu] = vNorm;
-			}
-		}
-	}
-	// Fill gaps where some U rows might have no data
-	for (let pass = 0; pass < 3; pass++) {
-		for (let bu = 1; bu < BGRID - 1; bu++) {
-			if (insoleMinVPerU[bu] > insoleMaxVPerU[bu]) {
-				insoleMinVPerU[bu] = insoleMinVPerU[bu - 1];
-				insoleMaxVPerU[bu] = insoleMaxVPerU[bu - 1];
-			}
-		}
-	}
-	// Smooth the boundary arrays to eliminate stair-stepping.
-	// Multiple averaging passes produce a clean, continuous contour.
-	for (let pass = 0; pass < 10; pass++) {
-		const tmpMin = new Float32Array(insoleMinVPerU);
-		const tmpMax = new Float32Array(insoleMaxVPerU);
-		for (let bu = 1; bu < BGRID - 1; bu++) {
-			if (tmpMin[bu] > tmpMax[bu]) continue; // skip empty rows
-			const prevOk = tmpMin[bu - 1] <= tmpMax[bu - 1];
-			const nextOk = tmpMin[bu + 1] <= tmpMax[bu + 1];
-			let wSum = 2, minSum = tmpMin[bu] * 2, maxSum = tmpMax[bu] * 2;
-			if (prevOk) { minSum += tmpMin[bu - 1]; maxSum += tmpMax[bu - 1]; wSum += 1; }
-			if (nextOk) { minSum += tmpMin[bu + 1]; maxSum += tmpMax[bu + 1]; wSum += 1; }
-			insoleMinVPerU[bu] = minSum / wSum;
-			insoleMaxVPerU[bu] = maxSum / wSum;
-		}
-	}
-
-	// Compute the actual U (length) range of the insole from the occupancy grid.
-	// This lets us clip vertices that extend past the heel tip or toe tip.
-	// We build per-V arrays so the U boundary follows the curved insole contour.
-	const insoleMinUPerV = new Float32Array(BGRID).fill(1.0);
-	const insoleMaxUPerV = new Float32Array(BGRID).fill(0.0);
-	for (let bv = 0; bv < BGRID; bv++) {
-		for (let bu = 0; bu < BGRID; bu++) {
-			if (insoleOccupied[bu * BGRID + bv]) {
-				const uNorm = (bu + 0.5) / BGRID;
-				if (uNorm < insoleMinUPerV[bv]) insoleMinUPerV[bv] = uNorm;
-				if (uNorm > insoleMaxUPerV[bv]) insoleMaxUPerV[bv] = uNorm;
-			}
-		}
-	}
-	// Fill gaps where some V columns might have no data
-	for (let pass = 0; pass < 3; pass++) {
-		for (let bv = 1; bv < BGRID - 1; bv++) {
-			if (insoleMinUPerV[bv] > insoleMaxUPerV[bv]) {
-				insoleMinUPerV[bv] = insoleMinUPerV[bv - 1];
-				insoleMaxUPerV[bv] = insoleMaxUPerV[bv - 1];
-			}
-		}
-	}
-	// Smooth the U boundary arrays
-	for (let pass = 0; pass < 10; pass++) {
-		const tmpMin = new Float32Array(insoleMinUPerV);
-		const tmpMax = new Float32Array(insoleMaxUPerV);
-		for (let bv = 1; bv < BGRID - 1; bv++) {
-			if (tmpMin[bv] > tmpMax[bv]) continue;
-			const prevOk = tmpMin[bv - 1] <= tmpMax[bv - 1];
-			const nextOk = tmpMin[bv + 1] <= tmpMax[bv + 1];
-			let wSum = 2, minSum = tmpMin[bv] * 2, maxSum = tmpMax[bv] * 2;
-			if (prevOk) { minSum += tmpMin[bv - 1]; maxSum += tmpMax[bv - 1]; wSum += 1; }
-			if (nextOk) { minSum += tmpMin[bv + 1]; maxSum += tmpMax[bv + 1]; wSum += 1; }
-			insoleMinUPerV[bv] = minSum / wSum;
-			insoleMaxUPerV[bv] = maxSum / wSum;
-		}
-	}
-
-	// Interpolated sampler: at a given V, return smooth min/max U (heel/toe edges)
-	const sampleInsoleUExtent = (vNorm: number): { minU: number; maxU: number } => {
-		const gv = Math.max(0, Math.min(BGRID - 1.001, vNorm * BGRID));
-		const gvi = Math.floor(gv);
-		const frac = gv - gvi;
-		const gvi1 = Math.min(BGRID - 1, gvi + 1);
-		return {
-			minU: insoleMinUPerV[gvi] * (1 - frac) + insoleMinUPerV[gvi1] * frac,
-			maxU: insoleMaxUPerV[gvi] * (1 - frac) + insoleMaxUPerV[gvi1] * frac,
-		};
-	};
-
-	// Interpolated insole boundary sampler — returns smooth min/max V at any U
-	const sampleInsoleExtent = (uNorm: number): { minV: number; maxV: number } => {
-		const gu = Math.max(0, Math.min(BGRID - 1.001, uNorm * BGRID));
-		const gui = Math.floor(gu);
-		const frac = gu - gui;
-		const gui1 = Math.min(BGRID - 1, gui + 1);
-		return {
-			minV: insoleMinVPerU[gui] * (1 - frac) + insoleMinVPerU[gui1] * frac,
-			maxV: insoleMaxVPerU[gui] * (1 - frac) + insoleMaxVPerU[gui1] * frac,
-		};
-	};
-
+		heelAtMin,
+		sampleHeight,
+		sampleInsoleExtent,
+		sampleInsoleUExtent,
+	} = overlayAnalysis;
+	const { lengthAxis, widthAxis, heightAxis, lengthSpan, widthSpan } = axes;
+	const positions = insoleGeometry.getAttribute('position') as THREE.BufferAttribute;
+	const vertexCount = positions.count;
 	// Map UV + height to 3D world-space position
 	const uvToWorld = (u: number, v: number, h: number): [number, number, number] => {
 		const rawU = heelAtMin ? u : 1-u;
@@ -2045,6 +2290,7 @@ export function buildElementOverlayGeometries(
 	for (const el of elements) {
 		const item = getElementByKey(el.libraryKey);
 		if (!item) continue;
+		const preferredStlUrl = getElementPreferredStlUrl(item);
 		const resolved = resolveElementLayout(item, el, placementContext);
 		const isInset = el.heightMm < 0;
 		const baseSurfaceHeight = !isInset && el.floorMode !== 'sole'
@@ -2052,28 +2298,10 @@ export function buildElementOverlayGeometries(
 			: undefined;
 
 		// ── STL-based overlay (preferred when stlUrl is available) ──
-		if (item.stlUrl && stlGeometries?.has(item.stlUrl) && !isInset) {
-			const srcGeom = stlGeometries.get(item.stlUrl)!;
-			// Merge duplicate vertices so computeVertexNormals() produces
-			// smooth, averaged normals instead of flat per-face shading.
-			let geom: THREE.BufferGeometry;
-			try {
-				geom = mergeVertices(srcGeom.clone(), 0.01);
-			} catch {
-				geom = srcGeom.clone();
-			}
-
-			// If the STL has Y↔Z axes swapped, fix it now
-			if (item.stlSwapYZ) {
-				const p = geom.getAttribute('position') as THREE.BufferAttribute;
-				for (let i = 0; i < p.count; i++) {
-					const y = p.getY(i);
-					const z = p.getZ(i);
-					p.setY(i, z);
-					p.setZ(i, y);
-				}
-				p.needsUpdate = true;
-			}
+		if (preferredStlUrl && stlGeometries?.has(preferredStlUrl) && !isInset) {
+			const srcGeom = stlGeometries.get(preferredStlUrl)!;
+			const cachedDistanceField = getCachedStlDistanceField(srcGeom, Boolean(item.stlSwapYZ));
+			let geom = getPreparedOverlayStlGeometry(srcGeom, Boolean(item.stlSwapYZ)).clone();
 
 			// The STL is in mm, centred at origin in X, Y starts at 0.
 			// We need to:
@@ -2083,90 +2311,44 @@ export function buildElementOverlayGeometries(
 
 			const pos = geom.getAttribute('position') as THREE.BufferAttribute;
 			const vtxCount = pos.count;
-
-			// Compute the STL bounding box in mm (before scaling)
-			geom.computeBoundingBox();
-			const stlBBox = geom.boundingBox!;
-			const sourceWidthMm = Math.max(1e-6, stlBBox.max.x - stlBBox.min.x);
-			const sourceLengthMm = Math.max(1e-6, stlBBox.max.y - stlBBox.min.y);
-			const sourceHeightMm = Math.max(1e-6, stlBBox.max.z - stlBBox.min.z);
-			const stlCenterX = (stlBBox.min.x + stlBBox.max.x) / 2;
-			const stlCenterY = (stlBBox.min.y + stlBBox.max.y) / 2;
-			const stlBaseZ = stlBBox.min.z;
+			const {
+				sourceWidthMm,
+				sourceLengthMm,
+				sourceHeightMm,
+				stlCenterX,
+				stlCenterY,
+				stlBaseZ,
+				stlMinX,
+				stlMinY,
+				cellW,
+				cellL,
+				cellSizeMm,
+				distGrid,
+				gridSize,
+			} = cachedDistanceField;
 
 			const targetWidthMm = (resolved.targetWidthMm ?? item.stlSizeMm?.[0] ?? sourceWidthMm) * el.scaleV;
 			const targetLengthMm = (resolved.targetLengthMm ?? item.stlSizeMm?.[1] ?? sourceLengthMm) * el.scaleU;
 			const targetHeightMm = Math.max(0.2, Math.abs(el.heightMm));
 
 			let scaleWidth = (targetWidthMm * mmToWorld) / sourceWidthMm;
-			if (resolved.mirrorWidth) scaleWidth = -scaleWidth;
+			if (getEffectiveMirrorWidth(el.side, resolved.mirrorWidth)) scaleWidth = -scaleWidth;
 			const scaleLength = (targetLengthMm * mmToWorld) / sourceLengthMm;
 			const scaleHeight = (targetHeightMm * mmToWorld) / sourceHeightMm;
 
-			// ── Build 2D distance field for smooth edge blending ──
-			// Project the STL onto a 2D grid, find boundary cells, compute
-			// distance-to-boundary for each cell so we can taper height smoothly.
-			const DGRID = 64;
-			const cellW = sourceWidthMm / DGRID;
-			const cellL = sourceLengthMm / DGRID;
-			const occupied = new Uint8Array(DGRID * DGRID);
-			const baseThresh = stlBaseZ + sourceHeightMm * 0.08;
-			for (let i = 0; i < vtxCount; i++) {
-				if (pos.getZ(i) <= baseThresh) continue;
-				const gx = Math.min(DGRID - 1, Math.max(0, Math.floor((pos.getX(i) - stlBBox.min.x) / cellW)));
-				const gy = Math.min(DGRID - 1, Math.max(0, Math.floor((pos.getY(i) - stlBBox.min.y) / cellL)));
-				occupied[gy * DGRID + gx] = 1;
-			}
-			// BFS from boundary cells (occupied cells next to unoccupied/outside)
-			const distGrid = new Float32Array(DGRID * DGRID);
-			distGrid.fill(1e6);
-			const queue: number[] = [];
-			for (let gy = 0; gy < DGRID; gy++) {
-				for (let gx = 0; gx < DGRID; gx++) {
-					const gi = gy * DGRID + gx;
-					if (!occupied[gi]) { distGrid[gi] = 0; continue; }
-					// Check if at grid edge or adjacent to unoccupied cell
-					let isBoundary = gx === 0 || gx === DGRID - 1 || gy === 0 || gy === DGRID - 1;
-					if (!isBoundary) {
-						for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]] as const) {
-							const nx = gx + dx, ny = gy + dy;
-							if (nx >= 0 && nx < DGRID && ny >= 0 && ny < DGRID && !occupied[ny * DGRID + nx]) {
-								isBoundary = true; break;
-							}
-						}
-					}
-					if (isBoundary) { distGrid[gi] = 0; queue.push(gx, gy); }
-				}
-			}
-			// BFS flood to compute distance (in grid cells)
-			let qi = 0;
-			while (qi < queue.length) {
-				const cx = queue[qi++], cy = queue[qi++];
-				const cd = distGrid[cy * DGRID + cx];
-				for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]] as const) {
-					const nx = cx + dx, ny = cy + dy;
-					if (nx < 0 || nx >= DGRID || ny < 0 || ny >= DGRID) continue;
-					const ni = ny * DGRID + nx;
-					if (!occupied[ni]) continue;
-					const nd = cd + (dx !== 0 && dy !== 0 ? 1.414 : 1.0);
-					if (nd < distGrid[ni]) { distGrid[ni] = nd; queue.push(nx, ny); }
-				}
-			}
-			// Convert grid distance to mm and compute blend factor
-			const cellSizeMm = Math.max(cellW, cellL);
 			// Wider blend zone (at least 8mm) for a gentle slope from the insole surface
 			const blendMm = Math.max(8, el.blendMm * 1.6);
 			const sampleEdgeFactor = (stlX: number, stlY: number): number => {
-				const gx = Math.min(DGRID - 1, Math.max(0, (stlX - stlBBox.min.x) / cellW));
-				const gy = Math.min(DGRID - 1, Math.max(0, (stlY - stlBBox.min.y) / cellL));
+				const gx = Math.min(gridSize - 1, Math.max(0, (stlX - stlMinX) / cellW));
+				const gy = Math.min(gridSize - 1, Math.max(0, (stlY - stlMinY) / cellL));
 				// Bilinear sample
-				const gxi = Math.min(DGRID - 2, Math.floor(gx));
-				const gyi = Math.min(DGRID - 2, Math.floor(gy));
+				const gxi = Math.min(gridSize - 2, Math.floor(gx));
+				const gyi = Math.min(gridSize - 2, Math.floor(gy));
 				const fx = gx - gxi, fy = gy - gyi;
-				const d00 = distGrid[gyi * DGRID + gxi];
-				const d10 = distGrid[gyi * DGRID + gxi + 1];
-				const d01 = distGrid[(gyi + 1) * DGRID + gxi];
-				const d11 = distGrid[(gyi + 1) * DGRID + gxi + 1];
+				const d00 = distGrid[gyi * gridSize + gxi];
+				const d10 = distGrid[gyi * gridSize + gxi + 1];
+				const d01 = distGrid[(gyi + 1) * gridSize + gxi];
+				const d11 = distGrid[(gyi + 1) * gridSize + gxi + 1];
 				const dCells = d00 * (1 - fx) * (1 - fy) + d10 * fx * (1 - fy) + d01 * (1 - fx) * fy + d11 * fx * fy;
 				const dMm = dCells * cellSizeMm;
 				if (dMm >= blendMm) return 1.0;
@@ -2204,8 +2386,8 @@ export function buildElementOverlayGeometries(
 				// Per-variant regional deformation (e.g. RCTB 1/2/pronatie)
 				const deformFn = item.key ? RCTB_DEFORM[item.key] : undefined;
 				if (deformFn) {
-					const nu = (rawX - stlBBox.min.x) / sourceWidthMm;
-					const nv = (rawY - stlBBox.min.y) / sourceLengthMm;
+					const nu = (rawX - stlMinX) / sourceWidthMm;
+					const nv = (rawY - stlMinY) / sourceLengthMm;
 					// Only deform the top surface — scale by relative Z height
 					// so the bottom face stays flat on the insole
 					const heightFrac = Math.max(0, (pos.getZ(i) - stlBaseZ) / sourceHeightMm);
@@ -2216,8 +2398,8 @@ export function buildElementOverlayGeometries(
 				// Per-variant diagonal slope (SC Bol / PPSI / SPSI)
 				const slopeFn = item.key ? SC_BOL_SLOPE[item.key] : undefined;
 				if (slopeFn) {
-					const nu = (rawX - stlBBox.min.x) / sourceWidthMm;
-					const nv = (rawY - stlBBox.min.y) / sourceLengthMm;
+					const nu = (rawX - stlMinX) / sourceWidthMm;
+					const nv = (rawY - stlMinY) / sourceLengthMm;
 					rawLocalHeight *= slopeFn(nu, nv, el.side);
 				}
 
@@ -2323,9 +2505,10 @@ export function buildElementOverlayGeometries(
 			continue;
 		}
 
-		// If the element has an STL URL but it hasn't loaded yet, skip entirely
-		// (don't show the procedural polygon as a flash-of-wrong-content)
-		if (item.stlUrl && !isInset) continue;
+		// If the element expects an STL overlay but that STL is not ready yet,
+		// skip rendering for now. The viewer preloads catalog STLs so this delay
+		// is normally brief, and it avoids flashing the procedural placeholder.
+		if (preferredStlUrl && !isInset) continue;
 
 		// ── Fallback: procedural polygon overlay ──
 		const resolvedElement = {
@@ -2334,12 +2517,13 @@ export function buildElementOverlayGeometries(
 			positionV: resolved.positionV,
 			rotationRad: resolved.rotationRad,
 		};
+		const effectiveMirrorWidth = getEffectiveMirrorWidth(el.side, resolved.mirrorWidth);
 		const { elementSizeU, elementSizeV } = getElementFootprintUv(item, el, {
 			lengthSpan,
 			widthSpan,
 			mmToWorld,
 		}, resolved);
-		const rawOutline = transformOutline(item.outline, resolvedElement, elementSizeU, elementSizeV);
+		const rawOutline = transformOutline(item.outline, resolvedElement, elementSizeU, elementSizeV, effectiveMirrorWidth);
 		// Clip outline to insole boundary so no procedural polygon overflows
 		const outline = clipOutlineToInsole(rawOutline, sampleInsoleExtent);
 
@@ -2442,18 +2626,9 @@ export function applyElementColors(
 		return;
 	}
 
-	// Reuse the same axis detection as applyElements
-	const axes = getGeometryAxes(geometry);
-	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = axes;
-
-	const lengthMin = getMinForAxis(bbox, lengthAxis);
-	const widthMin = getMinForAxis(bbox, widthAxis);
-	const heightMax = getMaxForAxis(bbox, heightAxis);
-	const heightMin = getMinForAxis(bbox, heightAxis);
-	const heightSpan = heightMax - heightMin;
-
-	// The insole geometry is already canonicalized to heel-at-min in the viewer.
-	const heelAtMin = true;
+	const geometryAnalysis = getCachedInsoleOverlayAnalysis(geometry);
+	const { axes, lengthMin, widthMin, heightMin, heightSpan, heelAtMin } = geometryAnalysis;
+	const { lengthAxis, widthAxis, heightAxis, lengthSpan, widthSpan } = axes;
 
 	// Precompute transformed outlines + bounding boxes
 	const prepared = elements.map((el) => {
@@ -2476,13 +2651,15 @@ export function applyElementColors(
 			positionV: resolved.positionV,
 			rotationRad: resolved.rotationRad,
 		};
+		const effectiveMirrorWidth = getEffectiveMirrorWidth(el.side, resolved.mirrorWidth);
 		const outline = item?.outline ?? ([[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]] as [number, number][]);
 		const { elementSizeU, elementSizeV } = getElementFootprintUv(item, el, {
 			lengthSpan,
 			widthSpan,
 			mmToWorld: options?.mmToWorld ?? 1,
 		}, resolved);
-		const transformed = transformOutline(outline, resolvedElement, elementSizeU, elementSizeV);
+		const transformed = transformOutline(outline, resolvedElement, elementSizeU, elementSizeV, effectiveMirrorWidth);
+		const polygon = preparePolygon(transformed);
 		const colorHex = item ? ELEMENT_COLORS[item.color] : '#999';
 		const col = new THREE.Color(colorHex);
 
@@ -2496,7 +2673,7 @@ export function applyElementColors(
 		}
 		// Small UV margin for soft edge taper
 		const edgeMargin = 0.012;
-		return { transformed, color: col, minU: minU - edgeMargin, maxU: maxU + edgeMargin, minV: minV - edgeMargin, maxV: maxV + edgeMargin, edgeMargin };
+		return { polygon, color: col, minU: minU - edgeMargin, maxU: maxU + edgeMargin, minV: minV - edgeMargin, maxV: maxV + edgeMargin, edgeMargin };
 	});
 
 	// Use vertex normals to detect top surface (normal points in +heightAxis direction).
@@ -2550,7 +2727,7 @@ export function applyElementColors(
 			// Fast bounding-box reject
 			if (u < p.minU || u > p.maxU || v < p.minV || v > p.maxV) continue;
 
-			const inside = pointInPolygon(u, v, p.transformed);
+			const { inside, edgeDist } = measurePreparedPolygon(u, v, p.polygon);
 
 			let alpha: number;
 			if (inside) {
@@ -2558,7 +2735,6 @@ export function applyElementColors(
 				alpha = 1.0;
 			} else {
 				// Soft taper just outside the polygon edge (tiny margin only)
-				const edgeDist = distToPolygonEdge(u, v, p.transformed);
 				if (edgeDist < p.edgeMargin) {
 					alpha = 1.0 - edgeDist / p.edgeMargin;
 				} else {

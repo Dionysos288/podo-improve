@@ -31,8 +31,10 @@ type Props = {
  *   └────────────────────────┘
  */
 export function ElementActionsPanel({ element, className, editMode = null, onEditModeChange }: Props) {
-	const { updateElement, removeElement, duplicateElement, selectElement } =
-		useElementsStore();
+	const updateElement = useElementsStore((state) => state.updateElement);
+	const removeElement = useElementsStore((state) => state.removeElement);
+	const duplicateElement = useElementsStore((state) => state.duplicateElement);
+	const selectElement = useElementsStore((state) => state.selectElement);
 
 	const item = getElementByKey(element.libraryKey);
 	const color = item ? ELEMENT_COLORS[item.color] : '#999';
