@@ -805,14 +805,26 @@ function applyHeelEdgeThicknessBand(
 	geom: THREE.BufferGeometry,
 	heelEdgeThicknessMm: number | null | undefined,
 	mmToWorld: number,
-	side: 'left' | 'right' = 'right'
+	_side: 'left' | 'right' = 'right'
 ) {
 	const targetMm = typeof heelEdgeThicknessMm === 'number' && Number.isFinite(heelEdgeThicknessMm)
-		? Math.max(0.25, heelEdgeThicknessMm)
+		? Math.max(0, heelEdgeThicknessMm)
 		: 1;
+	// Default baseline is 1mm — values above thicken outward, below thin inward
+	const baselineMm = 1;
+	const deltaMm = targetMm - baselineMm;
+	if (Math.abs(deltaMm) < 0.01) return;
 
 	const posAttr = geom.getAttribute('position') as THREE.BufferAttribute | undefined;
 	if (!posAttr) return;
+
+	// Compute smooth vertex normals BEFORE modification — these tell us which
+	// vertices are on side walls (normal ≈ horizontal) vs top/bottom surfaces
+	// (normal ≈ vertical).
+	geom.computeVertexNormals();
+	const normalAttr = geom.getAttribute('normal') as THREE.BufferAttribute | undefined;
+	if (!normalAttr) return;
+
 	geom.computeBoundingBox();
 	const bbox = geom.boundingBox;
 	if (!bbox) return;
@@ -821,83 +833,59 @@ function applyHeelEdgeThicknessBand(
 	const axes: Array<'x' | 'y' | 'z'> = ['x', 'y', 'z'];
 	const sizes = { x: size.x, y: size.y, z: size.z };
 	axes.sort((a, b) => sizes[a] - sizes[b]);
-	const heightAxis = axes[0];
-	const widthAxis = axes[1];
-	const lengthAxis = axes[2];
+	const heightAxis = axes[0]; // thinnest = height
+	// widthAxis = axes[1], lengthAxis = axes[2] — not needed individually
 
-	const getAxis = (i: number, axis: 'x' | 'y' | 'z') =>
-		axis === 'x' ? posAttr.getX(i) : axis === 'y' ? posAttr.getY(i) : posAttr.getZ(i);
-	const setAxis = (i: number, axis: 'x' | 'y' | 'z', v: number) => {
-		if (axis === 'x') posAttr.setX(i, v);
-		else if (axis === 'y') posAttr.setY(i, v);
-		else posAttr.setZ(i, v);
-	};
+	// Helper to read the height-axis component of the normal
+	const normalH = (i: number) =>
+		heightAxis === 'x' ? normalAttr.getX(i) : heightAxis === 'y' ? normalAttr.getY(i) : normalAttr.getZ(i);
+
+	const pushWorld = deltaMm * Math.max(1e-6, mmToWorld);
+
 	const smoothstep01 = (edge0: number, edge1: number, x: number) => {
 		const t = Math.max(0, Math.min(1, (x - edge0) / Math.max(1e-6, edge1 - edge0)));
 		return t * t * (3 - 2 * t);
 	};
 
-	const minW = widthAxis === 'x' ? bbox.min.x : widthAxis === 'y' ? bbox.min.y : bbox.min.z;
-	const maxW = widthAxis === 'x' ? bbox.max.x : widthAxis === 'y' ? bbox.max.y : bbox.max.z;
-	const minL = lengthAxis === 'x' ? bbox.min.x : lengthAxis === 'y' ? bbox.min.y : bbox.min.z;
-	const maxL = lengthAxis === 'x' ? bbox.max.x : lengthAxis === 'y' ? bbox.max.y : bbox.max.z;
-	const minH = heightAxis === 'x' ? bbox.min.x : heightAxis === 'y' ? bbox.min.y : bbox.min.z;
-	const maxH = heightAxis === 'x' ? bbox.max.x : heightAxis === 'y' ? bbox.max.y : bbox.max.z;
-	const widthSpan = Math.max(1e-6, maxW - minW);
-	const lengthSpan = Math.max(1e-6, maxL - minL);
-	const heightSpan = Math.max(1e-6, maxH - minH);
-	const centerW = (minW + maxW) * 0.5;
-	const halfW = Math.max(1e-6, widthSpan * 0.5);
-	const oneMmWorld = Math.max(1e-6, mmToWorld);
-	const targetBandWorld = Math.max(
-		0.75 * oneMmWorld,
-		Math.min(halfW * 0.42, targetMm * oneMmWorld)
-	);
-	const baselineBandWorld = Math.max(
-		0.75 * oneMmWorld,
-		Math.min(halfW * 0.42, oneMmWorld)
-	);
-	if (Math.abs(targetBandWorld - baselineBandWorld) <= 1e-6) return;
-	const lateralSign = side === 'left' ? -1 : 1;
-	const shoulderLiftWorld = Math.max(oneMmWorld * 0.9, heightSpan * 0.22);
-	const rimTopReference = maxH;
-	const rimInnerReference = maxH - shoulderLiftWorld;
-	const bandWeightAtDistance = (bandWorld: number, distanceFromOuterEdge: number) => {
-		if (distanceFromOuterEdge >= bandWorld) return 0;
-		return 1 - smoothstep01(bandWorld * 0.15, bandWorld, distanceFromOuterEdge);
-	};
-
 	for (let i = 0; i < posAttr.count; i++) {
-		const widthVal = getAxis(i, widthAxis);
-		const lengthVal = getAxis(i, lengthAxis);
-		const heightVal = getAxis(i, heightAxis);
-		const distFromCenter = widthVal - centerW;
-		const lateralSignedNorm = Math.max(-1, Math.min(1, (distFromCenter / halfW) * lateralSign));
-		const lateralSideWeight = smoothstep01(0.2, 0.98, lateralSignedNorm);
-		if (lateralSideWeight <= 1e-4) continue;
-		const signedLateralDistance = distFromCenter * lateralSign;
-		const distanceFromOuterEdge = Math.max(0, halfW - Math.max(0, signedLateralDistance));
-		const targetBandWeight = bandWeightAtDistance(targetBandWorld, distanceFromOuterEdge);
-		const baselineBandWeight = bandWeightAtDistance(baselineBandWorld, distanceFromOuterEdge);
-		const bandDelta = targetBandWeight - baselineBandWeight;
-		if (Math.abs(bandDelta) <= 1e-4) continue;
+		const nx = normalAttr.getX(i);
+		const ny = normalAttr.getY(i);
+		const nz = normalAttr.getZ(i);
 
-		const tLen = Math.max(0, Math.min(1, (lengthVal - minL) / lengthSpan));
-		const heelToArchWeight = 1 - smoothstep01(0.58, 0.84, tLen);
-		if (heelToArchWeight <= 1e-4) continue;
+		// Decompose normal into vertical (height) and horizontal components
+		const nH = normalH(i);                                     // vertical component
+		const horizSq = nx * nx + ny * ny + nz * nz - nH * nH;    // horizontal² (avoids sqrt for test)
+		const horizMag = Math.sqrt(Math.max(0, horizSq));
 
-		const heightNorm = Math.max(0, Math.min(1, (heightVal - minH) / heightSpan));
-		const topWeight = smoothstep01(0.36, 0.94, heightNorm);
-		if (topWeight <= 1e-4) continue;
-		const totalWeight = lateralSideWeight * heelToArchWeight * topWeight;
-		if (totalWeight <= 1e-4) continue;
+		// wallWeight: 1.0 for pure side-wall vertices (normal fully horizontal),
+		// 0.0 for flat top/bottom surfaces (normal fully vertical).
+		// Smooth ramp between 0.25 and 0.7 so the transition is gradual.
+		const wallWeight = smoothstep01(0.25, 0.7, horizMag);
+		if (wallWeight < 0.001) continue;
 
-		const desiredHeight = rimInnerReference + (rimTopReference - rimInnerReference) * targetBandWeight;
-		const shoulderDelta = bandDelta > 0
-			? Math.max(0, desiredHeight - heightVal)
-			: -Math.min(shoulderLiftWorld, Math.max(0, heightVal - rimInnerReference));
-		const nextHeight = heightVal + shoulderDelta * Math.abs(bandDelta) * totalWeight;
-		setAxis(i, heightAxis, nextHeight);
+		// Horizontal push direction: the horizontal part of the vertex normal,
+		// normalized.  This ensures every wall vertex pushes perpendicular to
+		// the wall surface → uniform thickening that follows the insole contour.
+		if (horizMag < 1e-6) continue;
+		const invH = 1 / horizMag;
+		// Subtract the height-axis contribution to get horizontal-only direction
+		let dX = nx, dY = ny, dZ = nz;
+		if (heightAxis === 'x') dX = 0;
+		else if (heightAxis === 'y') dY = 0;
+		else dZ = 0;
+		const dLen = Math.sqrt(dX * dX + dY * dY + dZ * dZ);
+		if (dLen < 1e-6) continue;
+		dX /= dLen;
+		dY /= dLen;
+		dZ /= dLen;
+
+		const push = pushWorld * wallWeight;
+		posAttr.setXYZ(
+			i,
+			posAttr.getX(i) + push * dX,
+			posAttr.getY(i) + push * dY,
+			posAttr.getZ(i) + push * dZ,
+		);
 	}
 
 	posAttr.needsUpdate = true;
@@ -1198,6 +1186,94 @@ function weldAndSmoothNormals(
 		geometry.computeVertexNormals();
 		return geometry;
 	}
+}
+
+/**
+ * Smooth the side walls of the insole mesh to remove small chips, notches
+ * and scan artifacts that create jagged edges along the rim.
+ *
+ * Wall vertices are identified by having a mostly-horizontal normal (i.e.
+ * the height-axis component is small relative to the horizontal component).
+ * A few passes of Laplacian smoothing are applied ONLY to wall positions,
+ * keeping the top surface and bottom sole untouched.
+ */
+function smoothInsoleWalls(
+	geometry: THREE.BufferGeometry,
+	passes = 6,
+	alpha = 0.35,
+	wallNormalThreshold = 0.55,
+): THREE.BufferGeometry {
+	if (!geometry.index) return geometry;
+	const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute | null;
+	const normalAttr = geometry.getAttribute('normal') as THREE.BufferAttribute | null;
+	if (!posAttr || !normalAttr) return geometry;
+
+	const vertCount = posAttr.count;
+	const idxArr = geometry.index.array;
+	const faceCount = idxArr.length / 3;
+
+	// Determine height axis
+	geometry.computeBoundingBox();
+	const bbox = geometry.boundingBox!;
+	const sz = bbox.getSize(new THREE.Vector3());
+	const hAxisIdx: 0 | 1 | 2 = sz.x <= sz.y && sz.x <= sz.z ? 0 : sz.y <= sz.z ? 1 : 2;
+
+	// Build 1-ring neighbour sets
+	const neighborSets: Set<number>[] = Array.from({ length: vertCount }, () => new Set<number>());
+	for (let f = 0; f < faceCount; f++) {
+		const a = idxArr[f * 3], b = idxArr[f * 3 + 1], c = idxArr[f * 3 + 2];
+		neighborSets[a].add(b); neighborSets[a].add(c);
+		neighborSets[b].add(a); neighborSets[b].add(c);
+		neighborSets[c].add(a); neighborSets[c].add(b);
+	}
+
+	// Identify wall vertices: normal has large horizontal component relative
+	// to the height-axis component.  |nH| < wallNormalThreshold means "mostly
+	// horizontal" → side wall.
+	const normals = normalAttr.array as Float32Array;
+	const isWall = new Uint8Array(vertCount);
+	for (let v = 0; v < vertCount; v++) {
+		const nH = Math.abs(normals[v * 3 + hAxisIdx]);
+		if (nH < wallNormalThreshold) isWall[v] = 1;
+	}
+
+	// Expand wall zone by 1 ring for a smoother transition
+	const expanded = new Uint8Array(isWall);
+	for (let v = 0; v < vertCount; v++) {
+		if (!isWall[v]) continue;
+		for (const nb of neighborSets[v]) expanded[nb] = 1;
+	}
+	isWall.set(expanded);
+
+	// Laplacian position smoothing on wall vertices only.
+	// We smooth ALL 3 coordinates (not just height) so chips/notches get
+	// flattened along the wall surface.
+	const pos = posAttr.array as Float32Array;
+	const tmp = new Float32Array(pos.length);
+
+	for (let p = 0; p < passes; p++) {
+		tmp.set(pos);
+		for (let v = 0; v < vertCount; v++) {
+			if (!isWall[v]) continue;
+			const nbs = neighborSets[v];
+			if (nbs.size === 0) continue;
+			let sx = 0, sy = 0, sz2 = 0;
+			for (const nb of nbs) {
+				sx += pos[nb * 3];
+				sy += pos[nb * 3 + 1];
+				sz2 += pos[nb * 3 + 2];
+			}
+			const inv = 1 / nbs.size;
+			tmp[v * 3]     = pos[v * 3]     + alpha * (sx * inv - pos[v * 3]);
+			tmp[v * 3 + 1] = pos[v * 3 + 1] + alpha * (sy * inv - pos[v * 3 + 1]);
+			tmp[v * 3 + 2] = pos[v * 3 + 2] + alpha * (sz2 * inv - pos[v * 3 + 2]);
+		}
+		pos.set(tmp);
+	}
+
+	posAttr.needsUpdate = true;
+	geometry.computeVertexNormals();
+	return geometry;
 }
 
 /**
@@ -1991,6 +2067,146 @@ function snapRegistrationToHeelEdge(
 	return new THREE.Matrix4()
 		.makeTranslation(tLong.x * deltaWorld, tLong.y * deltaWorld, tLong.z * deltaWorld)
 		.multiply(initial);
+}
+
+/**
+ * Compute the scene-space position offset needed for a driekwart insole so
+ * its heel end aligns with the scan overlay's heel end.
+ *
+ * The scan overlay uses a different mesh rotation than the insole
+ * (`rotationOffset=[PI,0,PI]` vs `[0,0,0]`). When `skipIcp=true` (driekwart),
+ * the geometry-space registration doesn't compensate for this rotation
+ * difference, so the insole appears shifted relative to the scan in the scene.
+ *
+ * We solve this by finding the heel-edge centroid of both geometries in
+ * scene space (after their respective mesh rotations) and returning the delta.
+ */
+function computeDriekwartInsoleOffset(
+	insoleGeometry: THREE.BufferGeometry | null,
+	overlayGeometry: THREE.BufferGeometry | null,
+	registration: OverlayRegistration
+): THREE.Vector3 {
+	const zero = new THREE.Vector3(0, 0, 0);
+	if (!insoleGeometry || !overlayGeometry || !registration.valid) return zero;
+
+	const insolePos = insoleGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+	const overlayPos = overlayGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+	if (!insolePos || !overlayPos || insolePos.count < 32 || overlayPos.count < 32) return zero;
+
+	// Mesh rotations in scene (same as applyOrientation)
+	const insoleRotMatrix = new THREE.Matrix4().makeRotationFromEuler(
+		new THREE.Euler(-Math.PI / 2, 0, 0)
+	);
+	const overlayRotMatrix = new THREE.Matrix4().makeRotationFromEuler(
+		new THREE.Euler(-Math.PI / 2 + Math.PI, 0, Math.PI)
+	);
+
+	// Combined transform for overlay: registration × overlayRotation
+	const overlayFullTransform = new THREE.Matrix4()
+		.copy(registration.matrix)
+		.multiply(overlayRotMatrix);
+
+	// Find the length axis in geometry space for the insole
+	const insoleMeta = getAxesAndBounds(insoleGeometry);
+	if (!insoleMeta) return zero;
+	const { lengthAxis, bbox } = insoleMeta;
+
+	const minLen = axisValue(bbox.min, lengthAxis);
+	const maxLen = axisValue(bbox.max, lengthAxis);
+	const lenSpan = Math.max(1e-6, maxLen - minLen);
+
+	// Identify heel end of the insole (wider end)
+	const slice = Math.max(lenSpan * 0.08, 1e-6);
+	let minEndWidth = 0, maxEndWidth = 0;
+	let minEndCount = 0, maxEndCount = 0;
+	const { widthAxis } = insoleMeta;
+	for (let i = 0; i < insolePos.count; i++) {
+		const p = new THREE.Vector3(insolePos.getX(i), insolePos.getY(i), insolePos.getZ(i));
+		const lenVal = axisValue(p, lengthAxis);
+		const wVal = axisValue(p, widthAxis);
+		if (lenVal <= minLen + slice) {
+			minEndWidth += Math.abs(wVal);
+			minEndCount++;
+		}
+		if (lenVal >= maxLen - slice) {
+			maxEndWidth += Math.abs(wVal);
+			maxEndCount++;
+		}
+	}
+	const heelAtMin = minEndCount > 0 && maxEndCount > 0
+		? (minEndWidth / minEndCount) >= (maxEndWidth / maxEndCount)
+		: true;
+
+	// Collect heel-edge vertices of the insole in scene space
+	const heelThreshold = heelAtMin ? minLen + lenSpan * 0.05 : maxLen - lenSpan * 0.05;
+	const insoleHeelPts: THREE.Vector3[] = [];
+	for (let i = 0; i < insolePos.count; i++) {
+		const p = new THREE.Vector3(insolePos.getX(i), insolePos.getY(i), insolePos.getZ(i));
+		const lenVal = axisValue(p, lengthAxis);
+		const isHeel = heelAtMin ? lenVal <= heelThreshold : lenVal >= heelThreshold;
+		if (isHeel) {
+			insoleHeelPts.push(p.clone().applyMatrix4(insoleRotMatrix));
+		}
+	}
+
+	// Collect heel-edge vertices of the overlay scan in scene space
+	// First find the scan's length axis
+	const overlayMeta = getAxesAndBounds(overlayGeometry);
+	if (!overlayMeta) return zero;
+	const oLengthAxis = overlayMeta.lengthAxis;
+	const oBbox = overlayMeta.bbox;
+	const oMinLen = axisValue(oBbox.min, oLengthAxis);
+	const oMaxLen = axisValue(oBbox.max, oLengthAxis);
+	const oLenSpan = Math.max(1e-6, oMaxLen - oMinLen);
+
+	// Find the scan's heel end (wider end)
+	const oSlice = Math.max(oLenSpan * 0.08, 1e-6);
+	let oMinEndWidth = 0, oMaxEndWidth = 0;
+	let oMinEndCount = 0, oMaxEndCount = 0;
+	const oWidthAxis = overlayMeta.widthAxis;
+	for (let i = 0; i < overlayPos.count; i++) {
+		const p = new THREE.Vector3(overlayPos.getX(i), overlayPos.getY(i), overlayPos.getZ(i));
+		const lenVal = axisValue(p, oLengthAxis);
+		const wVal = axisValue(p, oWidthAxis);
+		if (lenVal <= oMinLen + oSlice) {
+			oMinEndWidth += Math.abs(wVal);
+			oMinEndCount++;
+		}
+		if (lenVal >= oMaxLen - oSlice) {
+			oMaxEndWidth += Math.abs(wVal);
+			oMaxEndCount++;
+		}
+	}
+	const oHeelAtMin = oMinEndCount > 0 && oMaxEndCount > 0
+		? (oMinEndWidth / oMinEndCount) >= (oMaxEndWidth / oMaxEndCount)
+		: true;
+
+	const oHeelThreshold = oHeelAtMin ? oMinLen + oLenSpan * 0.05 : oMaxLen - oLenSpan * 0.05;
+	const overlayHeelPts: THREE.Vector3[] = [];
+	for (let i = 0; i < overlayPos.count; i++) {
+		const p = new THREE.Vector3(overlayPos.getX(i), overlayPos.getY(i), overlayPos.getZ(i));
+		const lenVal = axisValue(p, oLengthAxis);
+		const isHeel = oHeelAtMin ? lenVal <= oHeelThreshold : lenVal >= oHeelThreshold;
+		if (isHeel) {
+			overlayHeelPts.push(p.clone().applyMatrix4(overlayFullTransform));
+		}
+	}
+
+	if (insoleHeelPts.length < 4 || overlayHeelPts.length < 4) return zero;
+
+	// Average scene-space heel positions
+	const insoleHeel = insoleHeelPts
+		.reduce((acc, p) => acc.add(p), new THREE.Vector3())
+		.multiplyScalar(1 / insoleHeelPts.length);
+	const overlayHeel = overlayHeelPts
+		.reduce((acc, p) => acc.add(p), new THREE.Vector3())
+		.multiplyScalar(1 / overlayHeelPts.length);
+
+	// Only shift along the length direction in the scene (Y and Z),
+	// keep X as-is to avoid sideways shifting.
+	const delta = new THREE.Vector3().subVectors(overlayHeel, insoleHeel);
+	delta.x = 0;
+	return delta;
 }
 
 function estimateRigidTransformFromPairs(
@@ -3232,7 +3448,7 @@ function STLMesh({
 		// Recompute normals for better lighting. For STL inputs we also weld
 		// duplicate vertices first, otherwise smooth shading can look striped.
 		const smoothedGeometry = meshRole === 'insole'
-			? smoothInsoleTopSurface(weldAndSmoothNormals(cloned))
+			? smoothInsoleTopSurface(smoothInsoleWalls(weldAndSmoothNormals(cloned)))
 			: (() => {
 				cloned.computeVertexNormals();
 				return cloned;
@@ -3520,11 +3736,25 @@ function STLMesh({
 	}, []);
 
 	// EVA block: contour-following solid block (side walls + bottom cap, no top)
-	const evaBlock = useMemo(() => {
-		if (!evaBlockMode || !geometry) return null;
+	// Uses a ref + state approach so it rebuilds whenever geometry positions
+	// change (trimline, hielrand dikte, corrections, etc.), not just when
+	// the geometry object reference changes.
+	const [evaBlock, setEvaBlock] = useState<{ geometry: THREE.BufferGeometry } | null>(null);
+	const evaBlockRef = useRef<THREE.BufferGeometry | null>(null);
 
-		geometry.computeBoundingBox();
-		const bb = geometry.boundingBox!;
+	const rebuildEvaBlock = useCallback(() => {
+		const geom = geometryRef.current;
+		if (!evaBlockMode || !geom) {
+			if (evaBlockRef.current) {
+				evaBlockRef.current.dispose();
+				evaBlockRef.current = null;
+			}
+			setEvaBlock(null);
+			return;
+		}
+
+		geom.computeBoundingBox();
+		const bb = geom.boundingBox!;
 		const sz = bb.getSize(new THREE.Vector3());
 
 		// Detect axes: height = smallest, then width, then length
@@ -3538,26 +3768,26 @@ function STLMesh({
 		const uI = dimArr[1].i; // width axis
 		const vI = dimArr[2].i; // length axis
 
-		const pos = geometry.getAttribute('position') as THREE.BufferAttribute;
-		if (!pos || pos.count < 3) return null;
+		const pos = geom.getAttribute('position') as THREE.BufferAttribute;
+		if (!pos || pos.count < 3) return;
 
-		const g = (idx: number, axis: number) =>
+		const gA = (idx: number, axis: number) =>
 			axis === 0 ? pos.getX(idx) : axis === 1 ? pos.getY(idx) : pos.getZ(idx);
 
 		// Centroid in the UV plane
 		let cu = 0, cv = 0;
-		for (let i = 0; i < pos.count; i++) { cu += g(i, uI); cv += g(i, vI); }
+		for (let i = 0; i < pos.count; i++) { cu += gA(i, uI); cv += gA(i, vI); }
 		cu /= pos.count;
 		cv /= pos.count;
 
-		// Radial sweep: 180 angular bins → outermost vertex per bin
-		const BINS = 180;
+		// Radial sweep: 360 angular bins → outermost vertex per bin for smooth contour
+		const BINS = 360;
 		const best = new Array<{ u: number; v: number; h: number; d: number } | null>(BINS).fill(null);
 
 		for (let i = 0; i < pos.count; i++) {
-			const u = g(i, uI);
-			const v = g(i, vI);
-			const h = g(i, hI);
+			const u = gA(i, uI);
+			const v = gA(i, vI);
+			const h = gA(i, hI);
 			const du = u - cu, dv = v - cv;
 			const d = Math.sqrt(du * du + dv * dv);
 			const a = Math.atan2(dv, du);
@@ -3567,8 +3797,38 @@ function STLMesh({
 		}
 
 		// Collect valid outline points (skip empty bins)
-		const contour = best.filter((p): p is NonNullable<typeof p> => p !== null);
-		if (contour.length < 3) return null;
+		const raw = best.filter((p): p is NonNullable<typeof p> => p !== null);
+		if (raw.length < 3) return;
+
+		// ── Laplacian smoothing of the contour (3 passes) to remove jagged edges ──
+		// Smooth u, v, and h separately so the wall follows a clean curve.
+		const contourU = raw.map(p => p.u);
+		const contourV = raw.map(p => p.v);
+		const contourH = raw.map(p => p.h);
+		const cn2 = raw.length;
+		const SMOOTH_PASSES = 4;
+		const SMOOTH_ALPHA = 0.45;
+		for (let pass = 0; pass < SMOOTH_PASSES; pass++) {
+			const tmpU = contourU.slice();
+			const tmpV = contourV.slice();
+			const tmpH = contourH.slice();
+			for (let i = 0; i < cn2; i++) {
+				const prev = (i - 1 + cn2) % cn2;
+				const next = (i + 1) % cn2;
+				tmpU[i] = contourU[i] + SMOOTH_ALPHA * ((contourU[prev] + contourU[next]) * 0.5 - contourU[i]);
+				tmpV[i] = contourV[i] + SMOOTH_ALPHA * ((contourV[prev] + contourV[next]) * 0.5 - contourV[i]);
+				tmpH[i] = contourH[i] + SMOOTH_ALPHA * ((contourH[prev] + contourH[next]) * 0.5 - contourH[i]);
+			}
+			for (let i = 0; i < cn2; i++) {
+				contourU[i] = tmpU[i];
+				contourV[i] = tmpV[i];
+				contourH[i] = tmpH[i];
+			}
+		}
+
+		const contour = raw.map((_, i) => ({
+			u: contourU[i], v: contourV[i], h: contourH[i], d: raw[i].d,
+		}));
 
 		// Height bounds
 		const hMin = hI === 0 ? bb.min.x : hI === 1 ? bb.min.y : bb.min.z;
@@ -3587,6 +3847,7 @@ function STLMesh({
 		const n = contour.length;
 
 		// ── Side walls: quad per consecutive pair, from edge vertex height → bottom ──
+		// Winding: outward-facing (normals point away from centroid)
 		for (let i = 0; i < n; i++) {
 			const a = contour[i];
 			const b = contour[(i + 1) % n];
@@ -3594,24 +3855,79 @@ function STLMesh({
 			const tB = v3(b.u, b.v, b.h);
 			const bA = v3(a.u, a.v, bottomH);
 			const bB = v3(b.u, b.v, bottomH);
-			verts.push(...tA, ...bA, ...tB);
-			verts.push(...tB, ...bA, ...bB);
+			// Two triangles per quad — outward winding
+			verts.push(...tA, ...tB, ...bA);
+			verts.push(...tB, ...bB, ...bA);
 		}
 
-		// ── Bottom cap: triangle fan from centroid ──
+		// ── Bottom cap: triangle fan from centroid (facing downward) ──
 		const cB = v3(cu, cv, bottomH);
 		for (let i = 0; i < n; i++) {
 			const pA = v3(contour[i].u, contour[i].v, bottomH);
 			const pB = v3(contour[(i + 1) % n].u, contour[(i + 1) % n].v, bottomH);
-			verts.push(...cB, ...pB, ...pA);
+			verts.push(...cB, ...pA, ...pB);
 		}
 
 		const blockGeom = new THREE.BufferGeometry();
 		blockGeom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-		blockGeom.computeVertexNormals();
 
-		return { geometry: blockGeom };
-	}, [evaBlockMode, geometry]);
+		// Merge + smooth normals so walls render as one clean surface
+		const welded = BufferGeometryUtils.mergeVertices(blockGeom, 1e-4);
+		welded.computeVertexNormals();
+		blockGeom.dispose();
+
+		// Smooth normals across the wall for a clean look
+		const nAttr = welded.getAttribute('normal') as THREE.BufferAttribute | undefined;
+		if (nAttr && welded.index) {
+			const normals = nAttr.array as Float32Array;
+			const vc = nAttr.count;
+			const idx2 = welded.index.array;
+			const fc = idx2.length / 3;
+			const nbSets: Set<number>[] = Array.from({ length: vc }, () => new Set<number>());
+			for (let f = 0; f < fc; f++) {
+				const a2 = idx2[f * 3], b2 = idx2[f * 3 + 1], c2 = idx2[f * 3 + 2];
+				nbSets[a2].add(b2); nbSets[a2].add(c2);
+				nbSets[b2].add(a2); nbSets[b2].add(c2);
+				nbSets[c2].add(a2); nbSets[c2].add(b2);
+			}
+			const ntmp = new Float32Array(normals.length);
+			for (let p = 0; p < 3; p++) {
+				for (let vv = 0; vv < vc; vv++) {
+					const nbs = nbSets[vv];
+					let sx2 = normals[vv * 3], sy2 = normals[vv * 3 + 1], sz2 = normals[vv * 3 + 2];
+					for (const nb of nbs) {
+						sx2 += normals[nb * 3]; sy2 += normals[nb * 3 + 1]; sz2 += normals[nb * 3 + 2];
+					}
+					const len = Math.sqrt(sx2 * sx2 + sy2 * sy2 + sz2 * sz2) || 1;
+					ntmp[vv * 3] = sx2 / len; ntmp[vv * 3 + 1] = sy2 / len; ntmp[vv * 3 + 2] = sz2 / len;
+				}
+				normals.set(ntmp);
+			}
+			nAttr.needsUpdate = true;
+		}
+
+		if (evaBlockRef.current) evaBlockRef.current.dispose();
+		evaBlockRef.current = welded;
+		setEvaBlock({ geometry: welded });
+	}, [evaBlockMode]);
+
+	// Clean up EVA block on unmount
+	useEffect(() => {
+		return () => {
+			if (evaBlockRef.current) {
+				evaBlockRef.current.dispose();
+				evaBlockRef.current = null;
+			}
+		};
+	}, []);
+
+	const rebuildEvaBlockRef = useRef(rebuildEvaBlock);
+	rebuildEvaBlockRef.current = rebuildEvaBlock;
+
+	// Rebuild EVA block when evaBlockMode toggles
+	useEffect(() => {
+		rebuildEvaBlock();
+	}, [evaBlockMode, rebuildEvaBlock]);
 
 	// Debounced corrections application to prevent UI blocking
 	const pendingCorrectionsRef = useRef<OntwerpCorrections | undefined>(undefined);
@@ -3824,6 +4140,7 @@ function STLMesh({
 				geometryToFinalize.deleteAttribute('color');
 			}
 			if (hasPlacedElements) scheduleElementOverlayRebuild();
+			rebuildEvaBlockRef.current();
 			if (meshRef.current) {
 				applyOrientation(meshRef.current);
 				meshRef.current.updateWorldMatrix(true, false);
@@ -3839,6 +4156,9 @@ function STLMesh({
 		}
 		if (!existing) {
 			setGeometry(target);
+			requestAnimationFrame(() => {
+				finalizeGeometryUpdate(target);
+			});
 			invalidate();
 			return;
 		}
@@ -4080,7 +4400,7 @@ function STLMesh({
 			}
 
 			// Re-weld after corrections to keep one solid mesh
-			const weldedWorking = weldAndSmoothNormals(workingGeometry);
+			const weldedWorking = smoothInsoleWalls(weldAndSmoothNormals(workingGeometry));
 
 			// Cache corrected geometry and rebuild final (thickness/rim) immediately.
 			if (correctedGeometryRef.current) {
@@ -4429,7 +4749,7 @@ function STLMesh({
 				vertexColors={showZones || heatmap || clampDebug || deviationMap}
 				side={THREE.DoubleSide}
 				shadowSide={THREE.DoubleSide}
-				roughness={0.3}
+				roughness={0.4}
 				metalness={0.0}
 				flatShading={false}
 				transparent={transparentMode}
@@ -4461,10 +4781,11 @@ function STLMesh({
 			{evaBlockMode && evaBlock && (
 				<mesh geometry={evaBlock.geometry}>
 					<meshStandardMaterial
-						color={color}
+						color={showZones ? '#ffffff' : pointPickMode ? '#d9b5a1' : color}
 						side={THREE.DoubleSide}
-						roughness={0.3}
+						roughness={0.4}
 						metalness={0.0}
+						flatShading={false}
 					/>
 				</mesh>
 			)}
@@ -5170,6 +5491,25 @@ export const EnhancedSTLViewer = forwardRef<
 				),
 			[rightOverlayGeometry, rightOverlayRegistration]
 		);
+
+		// In driekwart mode, compute position offset to align insole heel with
+		// the scan overlay heel. The insole and scan use different mesh rotations,
+		// so the geometry-space registration doesn't fully align them in the scene.
+		const driekwartLeftOffset = useMemo(
+			() =>
+				useQuarterRegistration
+					? computeDriekwartInsoleOffset(leftGeometry, leftOverlayGeometry, leftOverlayRegistration)
+					: new THREE.Vector3(0, 0, 0),
+			[useQuarterRegistration, leftGeometry, leftOverlayGeometry, leftOverlayRegistration]
+		);
+		const driekwartRightOffset = useMemo(
+			() =>
+				useQuarterRegistration
+					? computeDriekwartInsoleOffset(rightGeometry, rightOverlayGeometry, rightOverlayRegistration)
+					: new THREE.Vector3(0, 0, 0),
+			[useQuarterRegistration, rightGeometry, rightOverlayGeometry, rightOverlayRegistration]
+		);
+
 		const showRegistrationDebug =
 			process.env.NODE_ENV === 'development' &&
 			(leftOverlayRegistration.valid || rightOverlayRegistration.valid);
@@ -5756,11 +6096,14 @@ export const EnhancedSTLViewer = forwardRef<
 						position={[0, -60, 180]}
 						fov={50}
 					/>
-					<ambientLight intensity={0.4} />
-					<directionalLight position={[50, 50, 50]} intensity={1.5} />
-					<directionalLight position={[-50, 50, -50]} intensity={1.0} />
-					<directionalLight position={[0, 100, 0]} intensity={0.8} />
-					<directionalLight position={[0, -50, 50]} intensity={0.6} />
+					<ambientLight intensity={0.05} />
+					<hemisphereLight args={['#b0a8a0', '#111120', 0.18]} />
+					{/* Key light — upper-front-right */}
+					<directionalLight position={[40, 70, 80]} intensity={1.2} />
+					{/* Fill — very weak from left */}
+					<directionalLight position={[-60, 50, 30]} intensity={0.2} />
+					{/* Rim — from behind-below for edge definition */}
+					<directionalLight position={[0, -30, -50]} intensity={0.2} />
 
 					<Suspense fallback={null}>
 						{!effectiveHideScans && showInsoles && showLeft && leftUrl && (
@@ -5774,8 +6117,8 @@ export const EnhancedSTLViewer = forwardRef<
 									trimlineOffsetMm={trimlineOffsetMm}
 									trimlineAdjustments={trimlineAdjustments?.left}
 									trimlineHandleProfile={trimlineHandleProfiles?.left ?? null}
-									color={leftOverlayUrl || rightOverlayUrl ? '#cfe9ff' : '#d7dadd'}
-									position={[-30, 0, 0]}
+									color={leftOverlayUrl || rightOverlayUrl ? '#e2e6ec' : '#dee2e6'}
+									position={[-30 + driekwartLeftOffset.x, driekwartLeftOffset.y, driekwartLeftOffset.z]}
 									interactive={!disableInteraction}
 									onGeometryReady={handleLeftGeometryReady}
 									onPickPoint={(pt) => onPickPoint?.([pt.x, pt.y, pt.z])}
@@ -5833,8 +6176,8 @@ export const EnhancedSTLViewer = forwardRef<
 									trimlineOffsetMm={trimlineOffsetMm}
 									trimlineAdjustments={trimlineAdjustments?.right}
 									trimlineHandleProfile={trimlineHandleProfiles?.right ?? null}
-									color={leftOverlayUrl || rightOverlayUrl ? '#cfe9ff' : '#d7dadd'}
-									position={[30, 0, 0]}
+									color={leftOverlayUrl || rightOverlayUrl ? '#e2e6ec' : '#dee2e6'}
+									position={[30 + driekwartRightOffset.x, driekwartRightOffset.y, driekwartRightOffset.z]}
 									interactive={!disableInteraction}
 									onGeometryReady={handleRightGeometryReady}
 									onPickPoint={(pt) => onPickPoint?.([pt.x, pt.y, pt.z])}

@@ -56,19 +56,19 @@ export function EvaPreparationPanel({
 			<div className="space-y-3">
 				<h4 className="text-sm font-semibold text-ui-accent">Optimalisatie</h4>
 
-				{/* Hiel dikte */}
+				{/* Hielrand dikte */}
 				<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2.5">
-					<span className="text-sm text-ui-text">Hiel dikte</span>
+					<span className="text-sm text-ui-text">Hielrand dikte</span>
 					<div className="flex items-center gap-2">
 						<input
 							type="number"
 							min={0}
-							max={20}
-							step={0.5}
-							value={settings.heelThicknessMm}
+							max={10}
+							step={0.1}
+							value={settings.heelEdgeThicknessMm}
 							onChange={(e) => {
 								const v = parseFloat(e.target.value);
-								if (!Number.isNaN(v)) update({ heelThicknessMm: v });
+								if (!Number.isNaN(v)) update({ heelEdgeThicknessMm: v });
 							}}
 							className="w-16 rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-2 py-1.5 text-sm text-ui-text text-center focus:outline-none focus:border-ui-accent"
 						/>

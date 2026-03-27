@@ -930,8 +930,13 @@ function trimAdditiveOverlayGeometry({
 
 	if (keptPositions.length < 9) return null;
 
-	const trimmedGeometry = new THREE.BufferGeometry();
+	let trimmedGeometry = new THREE.BufferGeometry();
 	trimmedGeometry.setAttribute('position', new THREE.Float32BufferAttribute(keptPositions, 3));
+	// Merge coincident vertices so computeVertexNormals produces smooth (shared) normals
+	// instead of flat per-face normals that cause a faceted look.
+	try {
+		trimmedGeometry = mergeVertices(trimmedGeometry, 0.001);
+	} catch { /* keep unmerged if it fails */ }
 	return trimmedGeometry;
 }
 
@@ -2268,9 +2273,16 @@ export function buildElementOverlayGeometries(
 		});
 		if (!trimmed) return null;
 
-		trimmed.computeVertexNormals();
-		trimmed.computeBoundingBox();
-		return trimmed;
+		// Merge coincident vertices for smooth normals
+		let smoothed: THREE.BufferGeometry;
+		try {
+			smoothed = mergeVertices(trimmed, 0.001);
+		} catch {
+			smoothed = trimmed;
+		}
+		smoothed.computeVertexNormals();
+		smoothed.computeBoundingBox();
+		return smoothed;
 	};
 
 	const result: ElementOverlayData[] = [];
@@ -2493,6 +2505,10 @@ export function buildElementOverlayGeometries(
 			}
 
 			pos.needsUpdate = true;
+			// Re-merge vertices after transform + optional trim to ensure smooth normals
+			try {
+				geom = mergeVertices(geom, 0.001);
+			} catch { /* keep as-is */ }
 			geom.computeVertexNormals();
 			geom.computeBoundingBox();
 

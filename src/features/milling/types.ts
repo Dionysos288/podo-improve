@@ -41,13 +41,13 @@ export function isDoubleSided(mode: MillingMode): boolean {
 export interface EvaPreparationSettings {
 	/** "elementen vloeien" = flow/blend mode. true = blended (single body), false = split zones */
 	elementsFlow: boolean;
-	/** Heel thickness in mm */
-	heelThicknessMm: number;
+	/** Heel edge / rim thickness in mm (wall thickness) */
+	heelEdgeThicknessMm: number;
 }
 
 export const DEFAULT_EVA_SETTINGS: EvaPreparationSettings = {
 	elementsFlow: false,
-	heelThicknessMm: 2,
+	heelEdgeThicknessMm: 1,
 };
 
 // ──────────────────────────────────────────────

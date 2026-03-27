@@ -1053,6 +1053,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	/* ── Step 3 – Print preparation state (per side) ── */
 	type SideHardness = {
 		heelEdgeThicknessMm: number;
+		elementsVloeien: boolean;
 		elementsSplit: boolean;
 		overall: HardnessKey;
 		front: HardnessKey;
@@ -1061,6 +1062,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	};
 	const DEFAULT_SIDE_HARDNESS: SideHardness = {
 		heelEdgeThicknessMm: 1,
+		elementsVloeien: false,
 		elementsSplit: false,
 		overall: 'normal',
 		front: 'normal',
@@ -1270,12 +1272,29 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	);
 	const leftPlacedElementCount = leftPlacedElements.length;
 	const rightPlacedElementCount = rightPlacedElements.length;
+
+	// ── Effective elements: override floorMode when "elementen vloeien" is active ──
+	// In EVA mode the global toggle lives in cncState.evaSettings.elementsFlow.
+	// In Print mode each side has its own elementsVloeien flag.
+
+	const effectiveLeftPlacedElements = useMemo(() => {
+		const vloeien = isEvaMethod ? cncState.evaSettings.elementsFlow : step3Left.elementsVloeien;
+		if (!vloeien) return leftPlacedElements;
+		return leftPlacedElements.map((el) => el.floorMode === 'sole' ? el : { ...el, floorMode: 'sole' as const });
+	}, [leftPlacedElements, isEvaMethod, cncState.evaSettings.elementsFlow, step3Left.elementsVloeien]);
+
+	const effectiveRightPlacedElements = useMemo(() => {
+		const vloeien = isEvaMethod ? cncState.evaSettings.elementsFlow : step3Right.elementsVloeien;
+		if (!vloeien) return rightPlacedElements;
+		return rightPlacedElements.map((el) => el.floorMode === 'sole' ? el : { ...el, floorMode: 'sole' as const });
+	}, [rightPlacedElements, isEvaMethod, cncState.evaSettings.elementsFlow, step3Right.elementsVloeien]);
+
 	const viewerHeelEdgeThicknessMm = useMemo(
 		() => ({
-			left: step3Left.heelEdgeThicknessMm,
-			right: step3Right.heelEdgeThicknessMm,
+			left: isEvaMethod ? cncState.evaSettings.heelEdgeThicknessMm : step3Left.heelEdgeThicknessMm,
+			right: isEvaMethod ? cncState.evaSettings.heelEdgeThicknessMm : step3Right.heelEdgeThicknessMm,
 		}),
-		[step3Left.heelEdgeThicknessMm, step3Right.heelEdgeThicknessMm]
+		[isEvaMethod, cncState.evaSettings.heelEdgeThicknessMm, step3Left.heelEdgeThicknessMm, step3Right.heelEdgeThicknessMm]
 	);
 	const viewerSelectedElementTrimlineEdit = useMemo(() => {
 		if (!elementTrimlineEditId || !selectedPlacedElement || selectedPlacedElement.id !== elementTrimlineEditId) {
@@ -3149,6 +3168,33 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								))}
 							</div>
 
+							{/* ── Elementen vloeien ── */}
+							<div className="space-y-2">
+								<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2.5">
+									<div className="flex flex-col">
+										<span className="text-sm text-ui-text">Elementen</span>
+										<span className="text-xs text-ui-muted">vloeien</span>
+									</div>
+									<button
+										type="button"
+										role="switch"
+										aria-checked={s.elementsVloeien}
+										onClick={() => setStep3Current((prev) => ({ ...prev, elementsVloeien: !prev.elementsVloeien }))}
+										className={cn(
+											'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+											s.elementsVloeien ? 'bg-ui-accent' : 'bg-ui-border'
+										)}
+									>
+										<span
+											className={cn(
+												'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+												s.elementsVloeien ? 'translate-x-4' : 'translate-x-0'
+											)}
+										/>
+									</button>
+								</div>
+							</div>
+
 							{/* ── Hielrand dikte ── */}
 							<div className="space-y-1.5">
 								<span className="text-xs font-medium uppercase tracking-wide text-(--ui-text)/70">
@@ -3756,8 +3802,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								heelEdgeThicknessMm={viewerHeelEdgeThicknessMm}
 								savedBoxGridOffsets={boxGridPoints}
 								onBoxGridSave={handleBoxGridSave}
-								leftPlacedElements={leftPlacedElements}
-								rightPlacedElements={rightPlacedElements}
+								leftPlacedElements={effectiveLeftPlacedElements}
+								rightPlacedElements={effectiveRightPlacedElements}
 								evaBlockMode={isEvaMethod}
 								trimlineAdjustments={trimlineAdjustments}
 								trimlineHandleProfiles={trimlineHandleProfiles}
