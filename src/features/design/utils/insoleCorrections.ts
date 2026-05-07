@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpPanel';
 import type { CorrectionKey } from '@/src/shared/components/design/correctionsCatalog';
+import type { TrimlineHandleProfile } from '@/src/shared/components/design/TrimlineEditOverlay';
 
 /**
  * Smooth interpolation function for creating smooth transitions
@@ -157,17 +158,25 @@ function createHeelToToeMapper(params: {
 
 /**
  * KUIP HOOGTE (Cup Height)
- * Raises the edges/rim of the insole to create a cup shape that holds the foot
- * The effect is strongest at the lateral edges and reduces toward the center
+ * Raises side walls along the selected trimline path.
+ *
+ * New behavior:
+ * - Uses the per-handle trimline profile (when available) as the path mask.
+ * - Raises only the side-wall/rim region (not the whole top or bottom).
+ * - Falls back to a heel-focused wall raise when no path selection is present.
  */
 export function applyKuipHoogte(
 	geometry: THREE.BufferGeometry,
-	amount: number // in mm
+	amount: number, // in world units (already converted from mm)
+	options?: {
+		side?: 'left' | 'right';
+		trimlineHandleProfile?: TrimlineHandleProfile | null;
+	}
 ): void {
 	if (amount === 0) return;
 	
 	const positions = geometry.attributes.position as THREE.BufferAttribute;
-	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = getGeometryAxes(geometry);
+	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan, heightSpan } = getGeometryAxes(geometry);
 	const heelToToe = createHeelToToeMapper({
 		positions,
 		lengthAxis,
@@ -178,28 +187,81 @@ export function applyKuipHoogte(
 	
 	const minWidth = getMinForAxis(bbox, widthAxis);
 	const centerWidth = minWidth + widthSpan / 2;
+	const minHeight = getMinForAxis(bbox, heightAxis);
+
+	const profile = options?.trimlineHandleProfile;
+	const hasProfile = Boolean(
+		profile &&
+		profile.bins > 1 &&
+		profile.rightOffsetsMm.length >= profile.bins &&
+		profile.leftOffsetsMm.length >= profile.bins
+	);
+
+	const sampleProfileOffset = (values: number[], bins: number, t: number) => {
+		const clampedT = Math.max(0, Math.min(1, t));
+		const scaled = clampedT * (bins - 1);
+		const i0 = Math.floor(scaled);
+		const i1 = Math.min(bins - 1, i0 + 1);
+		const f = scaled - i0;
+		const a = values[i0] ?? 0;
+		const b = values[i1] ?? a;
+		return a * (1 - f) + b * f;
+	};
+
+	const rightPeak = hasProfile
+		? profile!.rightOffsetsMm.slice(0, profile!.bins).reduce((m, v) => Math.max(m, Math.abs(v)), 0)
+		: 0;
+	const leftPeak = hasProfile
+		? profile!.leftOffsetsMm.slice(0, profile!.bins).reduce((m, v) => Math.max(m, Math.abs(v)), 0)
+		: 0;
+	const hasPathMask = hasProfile && (rightPeak > 0.05 || leftPeak > 0.05);
+
+	const lateralPositiveEdge = options?.side === 'left';
 	
 	for (let i = 0; i < positions.count; i++) {
 		const lengthVal = getAxisValue(positions, i, lengthAxis);
 		const t = heelToToe.getT(lengthVal);
-		// Heel cup should be strongest in the rearfoot and fade toward the forefoot.
-		// 1.0 at heel->~midfoot, then fades to 0 by ~2/3 length.
-		const lengthWeight = smoothstep(0.65, 0.35, t);
-		if (lengthWeight <= 0.001) continue;
-
 		const widthVal = getAxisValue(positions, i, widthAxis);
+		const heightVal = getAxisValue(positions, i, heightAxis);
+
+		// Keep the correction on the upper wall/rim region.
+		const relHeight = heightSpan > 1e-6
+			? (heightVal - minHeight) / heightSpan
+			: 1;
+		const topWallWeight = smoothstep(0.30, 0.88, relHeight);
+		if (topWallWeight <= 0.001) continue;
 		
-		// Calculate distance from center (normalized 0-1 where 1 is at edge)
+		// Distance from center (0=center, 1=edge)
 		const distFromCenter = Math.abs(widthVal - centerWidth) / (widthSpan / 2);
-		
-		// Only apply to the outer 40% of the width on each side
-		if (distFromCenter > 0.6) {
-			const adjustedFactor = smoothstep(0.6, 1.0, distFromCenter);
-			const heightAdjust = amount * adjustedFactor * lengthWeight;
-			
-			const currentHeight = getAxisValue(positions, i, heightAxis);
-			setAxisValue(positions, i, heightAxis, currentHeight - heightAdjust);
+		const wallWeight = smoothstep(0.55, 0.98, distFromCenter);
+		if (wallWeight <= 0.001) continue;
+
+		const isPositiveEdge = widthVal >= centerWidth;
+		const edgeBias = isPositiveEdge === lateralPositiveEdge ? 1.0 : 0.9;
+
+		let pathWeight: number;
+		if (hasPathMask) {
+			const bins = profile!.bins;
+			const edgeValues = isPositiveEdge
+				? profile!.rightOffsetsMm
+				: profile!.leftOffsetsMm;
+			const edgePeak = isPositiveEdge ? rightPeak : leftPeak;
+			if (edgePeak <= 0.05) continue;
+			const offsetAbs = Math.abs(sampleProfileOffset(edgeValues, bins, t));
+			const normOffset = offsetAbs / Math.max(edgePeak, 1e-6);
+			pathWeight = smoothstep(0.08, 0.35, normOffset);
+			if (pathWeight <= 0.001) continue;
+		} else {
+			// Fallback when no selected path exists: heel-to-midfoot bowl wall.
+			pathWeight = smoothstep(0.85, 0.22, t);
+			if (pathWeight <= 0.001) continue;
 		}
+		
+		const heightAdjust = amount * wallWeight * topWallWeight * pathWeight * edgeBias;
+		if (heightAdjust <= 1e-6) continue;
+
+		const currentHeight = getAxisValue(positions, i, heightAxis);
+		setAxisValue(positions, i, heightAxis, currentHeight - heightAdjust);
 	}
 	
 	positions.needsUpdate = true;
@@ -907,6 +969,7 @@ export function applyAllCorrections(
 		 */
 		mmToWorld?: number;
 		activeCorrections?: CorrectionKey[];
+		trimlineHandleProfile?: TrimlineHandleProfile | null;
 	}
 ): void {
 	const isLeft = side === 'left';
@@ -945,7 +1008,10 @@ export function applyAllCorrections(
 		const cupValue = isLeft
 			? corrections.kuipHoogte.left
 			: corrections.kuipHoogte.right;
-		applyKuipHoogte(geometry, cupValue * mmToWorld);
+		applyKuipHoogte(geometry, cupValue * mmToWorld, {
+			side,
+			trimlineHandleProfile: options?.trimlineHandleProfile ?? null,
+		});
 	}
 	
 	// 4. Forefoot flattening

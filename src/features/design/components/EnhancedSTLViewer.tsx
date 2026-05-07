@@ -4393,6 +4393,7 @@ function STLMesh({
 					applyAllCorrections(workingGeometry, pendingCorrections, side, {
 						mmToWorld,
 						activeCorrections,
+						trimlineHandleProfile,
 					});
 				} catch (err) {
 					console.error('Error applying corrections:', err);
