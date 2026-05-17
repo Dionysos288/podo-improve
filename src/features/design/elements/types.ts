@@ -2,7 +2,7 @@
  *  Orthotic Element Types
  * ────────────────────────────────────────────── */
 
-import type { BoxGridSavedOffsets } from '@/src/features/design/components/InteractiveBoxGrid';
+import type { BoxGridSavedOffsets } from '@/src/features/design/types/boxGrid';
 import type { TrimlineAdjustments, TrimlineHandleProfile } from '@/src/shared/components/design/TrimlineEditOverlay';
 
 /** Tab in the elements modal */

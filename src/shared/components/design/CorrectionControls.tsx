@@ -221,7 +221,7 @@ export function StyledSlider({
 	label,
 	className,
 }: StyledSliderProps) {
-	const { draftValue, updateValue } = useRafBufferedNumber(value, onChange);
+	const { draftValue, updateValue } = useBufferedNumber(value, onChange);
 
 	return (
 		<div className={cn('space-y-1', className)}>

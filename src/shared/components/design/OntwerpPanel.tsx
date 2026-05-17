@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, type ReactNode } from 'react';
+import { useState, useCallback } from 'react';
 import {
 	CollapsibleSection,
 	StyledNumberField,
@@ -109,8 +109,8 @@ interface OntwerpPanelProps {
 	tekstEnabled?: boolean;
 	/** Called when the user toggles the tekst switch */
 	onTekstToggle?: (enabled: boolean) => void;
-	/** Inline editor shown under the tekst switch when active */
-	tekstEditorContent?: ReactNode;
+	/** Opens the text engrave overlay when tekst is already enabled */
+	onTekstEdit?: () => void;
 }
 
 export function OntwerpPanel({
@@ -122,7 +122,7 @@ export function OntwerpPanel({
 	onSoleWidthChange,
 	tekstEnabled = false,
 	onTekstToggle,
-	tekstEditorContent,
+	onTekstEdit,
 }: OntwerpPanelProps) {
 	const [internalCorrections, setInternalCorrections] = useState<OntwerpCorrections>(createDefaultOntwerpCorrections());
 	const corrections = externalCorrections ?? internalCorrections;
@@ -152,16 +152,24 @@ export function OntwerpPanel({
 		<div className="space-y-3">
 			{/* ── Tekst toevoegen ── */}
 			<div className="rounded-lg bg-[rgba(255,255,255,0.04)] px-3 py-2">
-				<div className="flex items-center justify-between">
+				<div className="flex items-center justify-between gap-2">
 					<span className="text-sm text-ui-text">Tekst toevoegen</span>
-					<StyledSwitch
-						checked={tekstEnabled}
-						onChange={(checked) => onTekstToggle?.(checked)}
-					/>
+					<div className="flex items-center gap-2">
+						{tekstEnabled && onTekstEdit ? (
+							<button
+								type="button"
+								onClick={() => onTekstEdit()}
+								className="rounded-md px-2 py-1 text-[11px] font-medium text-ui-accent underline-offset-2 hover:underline"
+							>
+								Bewerken
+							</button>
+						) : null}
+						<StyledSwitch
+							checked={tekstEnabled}
+							onChange={(checked) => onTekstToggle?.(checked)}
+						/>
+					</div>
 				</div>
-				{tekstEnabled && tekstEditorContent ? (
-					<div className="mt-3">{tekstEditorContent}</div>
-				) : null}
 			</div>
 
 			{/* ── 1. Kuip hoogte ── */}

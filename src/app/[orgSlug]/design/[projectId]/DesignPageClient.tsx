@@ -17,6 +17,9 @@ import {
 	type TrimlineAdjustments,
 	type TrimlineHandleProfile,
 } from '@/src/shared/components/design/TrimlineEditOverlay';
+import { TrimlineEditCard } from '@/src/shared/components/design/TrimlineEditCard';
+import { ScanRotateEditCard } from '@/src/shared/components/design/ScanRotateEditCard';
+import { TextEditCard } from '@/src/shared/components/design/TextEditCard';
 import {
 	DirectProducePanel,
 	type PrinterSettings,
@@ -57,6 +60,7 @@ import type {
 	AutoLandmarkResult,
 	FootGeometry,
 	PlantarData,
+	ScanManualAlignment,
 } from '@/src/features/design/types/types';
 import { LANDMARK_CONFIDENCE_THRESHOLD } from '@/src/features/design/types/types';
 import { STLLoader } from 'three-stdlib';
@@ -68,7 +72,7 @@ import type {
 	EnhancedSTLViewerRef,
 	BottomTextOverlay,
 } from '@/src/features/design/components/EnhancedSTLViewer';
-import type { BoxGridSavedOffsets } from '@/src/features/design/components/InteractiveBoxGrid';
+import type { BoxGridSavedOffsets, LatticeOffsetVec } from '@/src/features/design/types/boxGrid';
 import type { HardnessKey, PrinterSettings as OrgPrinterSettings } from '@/src/features/printers/types/printers';
 import {
 	useElementsStore,
@@ -106,6 +110,8 @@ import { useRouter } from 'next/navigation';
 import { Check, Loader2, AlertCircle, ArrowUp, ArrowDown, ArrowLeft, ArrowRight } from 'lucide-react';
 import { flushSync } from 'react-dom';
 
+type SavedBottomTextState = { text: string; sizeMm: number; depthMm: number };
+
 type ElementEditMode = 'move' | 'scale' | 'trimline' | 'box' | null;
 const ELEMENT_MOVE_STEP_UV = 0.01;
 
@@ -118,14 +124,57 @@ function normalizeElementTrimlineAdjustments(
 	};
 }
 
+function scanManualAlignmentsEquals(
+	a: ScanManualAlignment | null,
+	b: ScanManualAlignment | null,
+): boolean {
+	if (!a && !b) return true;
+	if (!a || !b) return false;
+	const ep = 1e-9;
+	const ey = 1e-9;
+	return (
+		Math.abs(a.yawRad - b.yawRad) < ey &&
+		Math.abs(a.pivot[0] - b.pivot[0]) < ep &&
+		Math.abs(a.pivot[1] - b.pivot[1]) < ep &&
+		Math.abs(a.pivot[2] - b.pivot[2]) < ep
+	);
+}
+
 function cloneBoxGridOffsets(
 	source?: BoxGridSavedOffsets | null,
 ): BoxGridSavedOffsets | null {
 	if (!source) return null;
+	if (source.version === 3) {
+		const src = source.offsets as (number | LatticeOffsetVec)[];
+		return {
+			cols: source.cols,
+			rows: source.rows,
+			layers: source.layers,
+			version: 3,
+			offsets: src.map((o) =>
+				typeof o === 'number'
+					? o
+					: { du: o.du, dv: o.dv, dh: o.dh },
+			) as LatticeOffsetVec[],
+		};
+	}
+	if (source.version === 2) {
+		const src = source.offsets as (number | LatticeOffsetVec)[];
+		return {
+			cols: source.cols,
+			rows: source.rows,
+			version: 2,
+			offsets: src.map((o) =>
+				typeof o === 'number'
+					? o
+					: { du: o.du, dv: o.dv, dh: o.dh },
+			) as LatticeOffsetVec[],
+		};
+	}
 	return {
 		cols: source.cols,
 		rows: source.rows,
-		offsets: [...source.offsets],
+		offsets: [...(source.offsets as number[])],
 	};
 }
 
@@ -646,8 +695,8 @@ function ExportProgressOverlay({ progress, onDismiss }: { progress: ExportProgre
 								className={[
 									'h-1.5 rounded-full transition-all duration-300',
 									phase.status === 'done' ? 'w-6 bg-ui-accent' :
-									phase.status === 'active' ? 'w-6 bg-ui-accent/50 animate-pulse' :
-									'w-3 bg-ui-border/40',
+										phase.status === 'active' ? 'w-6 bg-ui-accent/50 animate-pulse' :
+											'w-3 bg-ui-border/40',
 								].join(' ')}
 							/>
 						))}
@@ -675,6 +724,20 @@ function ExportProgressOverlay({ progress, onDismiss }: { progress: ExportProgre
 			</div>
 		</div>
 	);
+}
+
+function cloneTrimlineProfile(p: TrimlineHandleProfile): TrimlineHandleProfile {
+	return {
+		...p,
+		tValues: [...p.tValues],
+		rightOffsetsMm: [...p.rightOffsetsMm],
+		leftOffsetsMm: [...p.leftOffsetsMm],
+		rightHeightOffsetsMm: p.rightHeightOffsetsMm ? [...p.rightHeightOffsetsMm] : undefined,
+		leftHeightOffsetsMm: p.leftHeightOffsetsMm ? [...p.leftHeightOffsetsMm] : undefined,
+		rightDeltasMm: p.rightDeltasMm?.map((d) => ({ x: d.x, y: d.y, z: d.z })),
+		leftDeltasMm: p.leftDeltasMm?.map((d) => ({ x: d.x, y: d.y, z: d.z })),
+		points3D: p.points3D?.map((pt) => ({ x: pt.x, y: pt.y, z: pt.z })),
+	};
 }
 
 interface DesignPageClientProps {
@@ -1303,10 +1366,9 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		return {
 			elementId: elementTrimlineEditId,
 			side: selectedPlacedElement.side,
-			adjustments: pendingElementTrimlineAdj,
 			profile: pendingElementTrimlineHandleProfile,
 		};
-	}, [elementTrimlineEditId, selectedPlacedElement, pendingElementTrimlineAdj, pendingElementTrimlineHandleProfile]);
+	}, [elementTrimlineEditId, selectedPlacedElement, pendingElementTrimlineHandleProfile]);
 	const viewerSelectedElementBoxEdit = useMemo(() => {
 		if (
 			!selectedPlacedElement ||
@@ -1341,12 +1403,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		if (mode === 'trimline' && selectedPlacedElement) {
 			const initialAdj = normalizeElementTrimlineAdjustments(selectedPlacedElement.trimlineAdjustments);
 			const initialProfile = selectedPlacedElement.trimlineHandleProfile
-				? {
-					...selectedPlacedElement.trimlineHandleProfile,
-					tValues: [...selectedPlacedElement.trimlineHandleProfile.tValues],
-					rightOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.rightOffsetsMm],
-					leftOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.leftOffsetsMm],
-				}
+				? cloneTrimlineProfile(selectedPlacedElement.trimlineHandleProfile)
 				: null;
 			setElementTrimlineEditId(selectedPlacedElement.id);
 			pendingElementTrimlineAdjRef.current = initialAdj;
@@ -1484,15 +1541,29 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		generalNormalized.maxInsoleHeightMm.right,
 	]);
 	const [textEditorOpen, setTextEditorOpen] = useState(false);
-	const [savedBottomText, setSavedBottomText] = useState<
-		{ text: string; sizeMm: number } | null
-	>(null);
-	const [draftBottomText, setDraftBottomText] = useState<
-		{ text: string; sizeMm: number }
-	>({ text: '', sizeMm: 10 });
-	const [debouncedDraftBottomText, setDebouncedDraftBottomText] = useState<
-		{ text: string; sizeMm: number }
-	>({ text: '', sizeMm: 10 });
+	const textEditSessionRef = useRef<{
+		savedBottomText: SavedBottomTextState | null;
+		draftBottomText: SavedBottomTextState;
+	} | null>(null);
+	const [savedBottomText, setSavedBottomText] = useState<SavedBottomTextState | null>(null);
+	const [draftBottomText, setDraftBottomText] = useState<SavedBottomTextState>({
+		text: '',
+		sizeMm: 10,
+		depthMm: 0.6,
+	});
+	const [debouncedDraftBottomText, setDebouncedDraftBottomText] = useState<SavedBottomTextState>({
+		text: '',
+		sizeMm: 10,
+		depthMm: 0.6,
+	});
+	const [bottomTextMeshOk, setBottomTextMeshOk] = useState<{ left: boolean; right: boolean }>({
+		left: true,
+		right: true,
+	});
+	const [bottomTextIssue, setBottomTextIssue] = useState<{
+		left?: string;
+		right?: string;
+	}>({});
 	const [bottomTextLoadingBySide, setBottomTextLoadingBySide] = useState<{
 		left: boolean;
 		right: boolean;
@@ -1556,6 +1627,18 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		left: TrimlineHandleProfile | null;
 		right: TrimlineHandleProfile | null;
 	}>({ left: null, right: null });
+	const [scanManualAlignments, setScanManualAlignments] = useState<{
+		left: ScanManualAlignment | null;
+		right: ScanManualAlignment | null;
+	}>({ left: null, right: null });
+	const [pendingScanManualAlignments, setPendingScanManualAlignments] = useState<{
+		left: ScanManualAlignment | null;
+		right: ScanManualAlignment | null;
+	}>({ left: null, right: null });
+	const pendingScanManualAlignmentsRef = useRef(pendingScanManualAlignments);
+	const [scanRotateEditSide, setScanRotateEditSide] = useState<'left' | 'right' | null>(
+		null,
+	);
 	const trimlinePanelSyncRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const [, forceTrimlinePanelSync] = useState(0);
 
@@ -1593,16 +1676,71 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				: { ...prev, [payload.side]: payload.isLoading }
 		));
 	}, []);
+	const handleBottomTextValidityChange = useCallback(
+		(payload: { side: 'left' | 'right'; ok: boolean; reason?: string }) => {
+			setBottomTextMeshOk((prev) =>
+				prev[payload.side] === payload.ok ? prev : { ...prev, [payload.side]: payload.ok },
+			);
+			setBottomTextIssue((prev) => ({
+				...prev,
+				[payload.side]: payload.ok ? undefined : payload.reason,
+			}));
+		},
+		[],
+	);
+	const handleTekstEditOpen = useCallback(() => {
+		const baseline: SavedBottomTextState =
+			savedBottomText ?? {
+				text: 'PODO',
+				sizeMm: 10,
+				depthMm: 0.6,
+			};
+		textEditSessionRef.current = {
+			savedBottomText: savedBottomText ? { ...savedBottomText } : null,
+			draftBottomText: { ...baseline },
+		};
+		setDraftBottomText({ ...baseline });
+		setDebouncedDraftBottomText({ ...baseline });
+		setTextEditorOpen(true);
+		setLeftPanelTab('view');
+		setViewerViewPreset('bottom');
+	}, [savedBottomText]);
+	const handleCancelTextEdit = useCallback(() => {
+		const snap = textEditSessionRef.current;
+		if (snap) {
+			setSavedBottomText(snap.savedBottomText);
+			setDraftBottomText(snap.draftBottomText);
+			setDebouncedDraftBottomText(snap.draftBottomText);
+		}
+		setTextEditorOpen(false);
+	}, []);
+	const handleSaveTextEdit = useCallback(() => {
+		const trimmed = draftBottomText.text.trim();
+		const next: SavedBottomTextState = {
+			text: trimmed,
+			sizeMm: draftBottomText.sizeMm,
+			depthMm: draftBottomText.depthMm,
+		};
+		setSavedBottomText(next);
+		setDraftBottomText(next);
+		setDebouncedDraftBottomText(next);
+		setTextEditorOpen(false);
+	}, [draftBottomText]);
 	const toggleCorrection = useCallback((key: CorrectionKey) => {
 		setActiveCorrections((prev) => {
 			const has = prev.includes(key);
 			const next = has ? prev.filter((k) => k !== key) : [...prev, key];
 			if (!has && key === 'tekst') {
-				const initialBottomText =
+				const initialBottomText: SavedBottomTextState =
 					savedBottomText ?? {
 						text: 'PODO',
 						sizeMm: 10,
+						depthMm: 0.6,
 					};
+				textEditSessionRef.current = {
+					savedBottomText: savedBottomText ? { ...savedBottomText } : null,
+					draftBottomText: { ...initialBottomText },
+				};
 				primeBottomTextLoading();
 				setLeftPanelTab('view');
 				setViewerViewPreset('bottom');
@@ -1623,6 +1761,18 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	}, [pendingTrimlineHandleProfiles]);
 
 	useEffect(() => {
+		pendingScanManualAlignmentsRef.current = pendingScanManualAlignments;
+	}, [pendingScanManualAlignments]);
+
+	const editorTrimlineHandleProfiles = useMemo(() => {
+		if (!trimlineEditSide) return trimlineHandleProfiles;
+		return {
+			...trimlineHandleProfiles,
+			[trimlineEditSide]: pendingTrimlineHandleProfiles[trimlineEditSide],
+		};
+	}, [trimlineEditSide, trimlineHandleProfiles, pendingTrimlineHandleProfiles]);
+
+	useEffect(() => {
 		return () => {
 			if (trimlinePanelSyncRef.current) clearTimeout(trimlinePanelSyncRef.current);
 			if (elementTrimlinePanelSyncRef.current) clearTimeout(elementTrimlinePanelSyncRef.current);
@@ -1632,45 +1782,62 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const bottomTextOverlay: BottomTextOverlay | undefined = useMemo(() => {
 		if (!activeCorrections.includes('tekst')) return undefined;
 		if (textEditorOpen) {
+			if (!debouncedDraftBottomText.text.trim()) return undefined;
 			return {
 				enabled: true,
 				text: debouncedDraftBottomText.text,
 				sizeMm: debouncedDraftBottomText.sizeMm,
+				depthMm: debouncedDraftBottomText.depthMm,
 				orientation: 'vertical',
 			};
 		}
-		if (!savedBottomText) return undefined;
+		if (!savedBottomText || !savedBottomText.text.trim()) return undefined;
 		return {
 			enabled: true,
 			text: savedBottomText.text,
 			sizeMm: savedBottomText.sizeMm,
+			depthMm: savedBottomText.depthMm,
 			orientation: 'vertical',
 		};
 	}, [activeCorrections, textEditorOpen, debouncedDraftBottomText, savedBottomText]);
 
 	useEffect(() => {
-		const timer = setTimeout(() => {
-			setDebouncedDraftBottomText(draftBottomText);
-		}, 120);
-		return () => clearTimeout(timer);
-	}, [draftBottomText]);
+		if (!(textEditorOpen && activeCorrections.includes('tekst'))) return;
+		setBottomTextMeshOk({
+			left: !selectedBaseInsoleAssets.leftUrl,
+			right: !selectedBaseInsoleAssets.rightUrl,
+		});
+		setBottomTextIssue({});
+	}, [
+		textEditorOpen,
+		activeCorrections,
+		selectedBaseInsoleAssets.leftUrl,
+		selectedBaseInsoleAssets.rightUrl,
+	]);
+
+	const textEditSaveDisabled =
+		(Boolean(selectedBaseInsoleAssets.leftUrl) && !bottomTextMeshOk.left) ||
+		(Boolean(selectedBaseInsoleAssets.rightUrl) && !bottomTextMeshOk.right);
+
+	const textEditWarning = useMemo(() => {
+		const parts: string[] = [];
+		const label = { left: 'Links', right: 'Rechts' } as const;
+		(['left', 'right'] as const).forEach((side) => {
+			const r = bottomTextIssue[side];
+			if (!r) return;
+			if (r === 'font_loading') parts.push(`${label[side]}: lettertype laden…`);
+			else if (r === 'csg_failed') parts.push(`${label[side]}: gravering mislukt`);
+			else parts.push(`${label[side]}: geometrie niet gevalideerd`);
+		});
+		return parts.length ? parts.join(' ') : null;
+	}, [bottomTextIssue]);
 
 	useEffect(() => {
-		if (!activeCorrections.includes('tekst')) return;
-		setSavedBottomText((prev) => {
-			if (
-				prev &&
-				prev.text === debouncedDraftBottomText.text &&
-				prev.sizeMm === debouncedDraftBottomText.sizeMm
-			) {
-				return prev;
-			}
-			return {
-				text: debouncedDraftBottomText.text,
-				sizeMm: debouncedDraftBottomText.sizeMm,
-			};
-		});
-	}, [activeCorrections, debouncedDraftBottomText]);
+		const timer = setTimeout(() => {
+			setDebouncedDraftBottomText(draftBottomText);
+		}, 250);
+		return () => clearTimeout(timer);
+	}, [draftBottomText]);
 
 	useEffect(() => {
 		if (activeCorrections.includes('tekst')) return;
@@ -1770,7 +1937,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		exitGridMode();
 	}, [selectedInsoleSide, exitGridMode]);
 
-	/** Called by InteractiveBoxGrid during edit — stores the latest draft without forcing a React re-render */
+	/** Called during box-grid edit — stores the latest draft without forcing a React re-render */
 	const handleBoxGridSave = useCallback((side: 'left' | 'right', offsets: BoxGridSavedOffsets) => {
 		pendingBoxGridDraftRef.current = {
 			...pendingBoxGridDraftRef.current,
@@ -1842,6 +2009,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			boxGridPoints,
 			trimlineAdjustments,
 			trimlineHandleProfiles,
+			scanManualAlignments,
 			activeDesignStep,
 			elementsModalSide,
 			workflowStep,
@@ -1865,6 +2033,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		boxGridPoints,
 		trimlineAdjustments,
 		trimlineHandleProfiles,
+		scanManualAlignments,
 		activeDesignStep,
 		elementsModalSide,
 		workflowStep,
@@ -1887,7 +2056,19 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				if (cs.selectedBaseSTL !== undefined) setSelectedBaseSTL(cs.selectedBaseSTL as string | null);
 				if (cs.corrections !== undefined) setCorrections(cs.corrections as OntwerpCorrections);
 				if (cs.activeCorrections !== undefined) setActiveCorrections(cs.activeCorrections as CorrectionKey[]);
-				if (cs.savedBottomText !== undefined) setSavedBottomText(cs.savedBottomText as typeof savedBottomText);
+				if (cs.savedBottomText !== undefined) {
+					const sb = cs.savedBottomText as Partial<SavedBottomTextState> | null;
+					if (sb && typeof sb === 'object') {
+						setSavedBottomText({
+							text: typeof sb.text === 'string' ? sb.text : '',
+							sizeMm: typeof sb.sizeMm === 'number' && Number.isFinite(sb.sizeMm) ? sb.sizeMm : 10,
+							depthMm:
+								typeof sb.depthMm === 'number' && Number.isFinite(sb.depthMm) ? sb.depthMm : 0.6,
+						});
+					} else {
+						setSavedBottomText(null);
+					}
+				}
 				if (cs.step3Left !== undefined) setStep3Left(cs.step3Left as typeof step3Left);
 				if (cs.step3Right !== undefined) setStep3Right(cs.step3Right as typeof step3Right);
 				if (cs.printerSettings !== undefined) setPrinterSettings(cs.printerSettings as PrinterSettings);
@@ -1895,6 +2076,10 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				if (cs.boxGridPoints !== undefined) setBoxGridPoints(cs.boxGridPoints as typeof boxGridPoints);
 				if (cs.trimlineAdjustments !== undefined) setTrimlineAdjustments(cs.trimlineAdjustments as typeof trimlineAdjustments);
 				if (cs.trimlineHandleProfiles !== undefined) setTrimlineHandleProfiles(cs.trimlineHandleProfiles as typeof trimlineHandleProfiles);
+				if (cs.scanManualAlignments !== undefined) {
+					setScanManualAlignments(cs.scanManualAlignments as typeof scanManualAlignments);
+					setPendingScanManualAlignments(cs.scanManualAlignments as typeof pendingScanManualAlignments);
+				}
 				if (cs.activeDesignStep !== undefined) setActiveDesignStep(cs.activeDesignStep as number);
 				if (cs.elementsModalSide !== undefined) setElementsModalSide(cs.elementsModalSide as 'left' | 'right');
 				if (cs.workflowStep !== undefined) setWorkflowStep(cs.workflowStep as WorkflowStep);
@@ -1903,7 +2088,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				if (cs.hardnessProfiles !== undefined) setHardnessProfiles(cs.hardnessProfiles as Record<HardnessKey, { infillPercent: number }> | null);
 			}
 		}
-	// eslint-disable-next-line react-hooks/exhaustive-deps
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [initialDesign]);
 
 	// ── Trigger debounced autosave when local state changes ──
@@ -1916,15 +2101,15 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			return;
 		}
 		debouncedSave();
-	// eslint-disable-next-line react-hooks/exhaustive-deps
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [
 		productionMethod, selectedPairId, selectedLeftScanId, selectedRightScanId,
 		selectedBaseSTL, corrections, activeCorrections, savedBottomText,
 		step3Left, step3Right, printerSettings,
-		boxEnabled, boxGridPoints, trimlineAdjustments, trimlineHandleProfiles, activeDesignStep, elementsModalSide,
+		boxEnabled, boxGridPoints, trimlineAdjustments, trimlineHandleProfiles, scanManualAlignments, activeDesignStep, elementsModalSide,
 		workflowStep, scansActive, showOverlays, hardnessProfiles,
 	]);
-	
+
 	// Normalize scans: footSide from DB is uppercase ('LEFT'/'RIGHT'), normalize to lowercase
 	const scans = useMemo(
 		() =>
@@ -2377,7 +2562,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 						const seeds = deriveSeedFromPickedPoints(
 							updatedSelections,
 							leftArchProfile?.archHeightMm ??
-								normalizeScanArchHeightMm(fg.archHeight * leftWorldToMm),
+							normalizeScanArchHeightMm(fg.archHeight * leftWorldToMm),
 							leftWorldToMm
 						);
 						const leftScanArchMm =
@@ -2733,26 +2918,13 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		[]
 	);
 
-	const transparentBeforeSideViewRef = useRef<boolean | null>(null);
-
-	const handleOverlayView = useCallback(
-		(preset: string) => {
-			const leavingSideView = () => {
-				// Restore transparency if we previously forced it on
-				if (transparentBeforeSideViewRef.current !== null) {
-					setViewSettings((prev) => ({ ...prev, transparent: transparentBeforeSideViewRef.current! }));
-					transparentBeforeSideViewRef.current = null;
-				}
-			};
-
+	const handleOverlayView = useCallback((preset: string) => {
 			if (preset === 'rotate') {
-				leavingSideView();
 				setViewerControlMode('rotate');
 				setNamedViewActive(null);
 				return;
 			}
 			if (preset === 'pan') {
-				leavingSideView();
 				setViewerControlMode('pan');
 				setNamedViewActive(null);
 				return;
@@ -2766,23 +2938,11 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				preset === 'bottom' ||
 				preset === 'iso'
 			) {
-				// Auto-enable transparency for side views (left/right)
-				if (preset === 'left' || preset === 'right') {
-					if (transparentBeforeSideViewRef.current === null) {
-						transparentBeforeSideViewRef.current = viewSettings.transparent;
-					}
-					setViewSettings((prev) => ({ ...prev, transparent: true }));
-				} else {
-					leavingSideView();
-				}
-
 				setViewerViewPreset(preset);
 				setViewerControlMode('pan');
 				setNamedViewActive(preset);
 			}
-		},
-		[viewSettings.transparent]
-	);
+	}, []);
 
 	const renderStepContent = () => {
 		switch (activeDesignStep) {
@@ -2854,38 +3014,38 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									<p className="text-xs uppercase tracking-wide text-ui-text/70">
 										Elementen
 									</p>
-								{/* Side toggle for elements */}
-								<div className="flex items-center gap-1 rounded-lg bg-[rgba(255,255,255,0.03)] p-1">
-									{(['left', 'right'] as const).map((s) => (
-										<button
-											key={s}
-											type="button"
-											onClick={() => setElementsModalSide(s)}
-											className={cn(
-												'flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition',
-												elementsModalSide === s
-													? 'bg-ui-accent text-slate-900'
-													: 'text-ui-text hover:bg-[rgba(255,255,255,0.06)]'
-											)}
-										>
-											{s === 'left' ? 'Links' : 'Rechts'}
-											{' '}
-											<span className="text-[10px] opacity-70">
-												({s === 'left' ? leftPlacedElementCount : rightPlacedElementCount})
-											</span>
-										</button>
-									))}
+									{/* Side toggle for elements */}
+									<div className="flex items-center gap-1 rounded-lg bg-[rgba(255,255,255,0.03)] p-1">
+										{(['left', 'right'] as const).map((s) => (
+											<button
+												key={s}
+												type="button"
+												onClick={() => setElementsModalSide(s)}
+												className={cn(
+													'flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition',
+													elementsModalSide === s
+														? 'bg-ui-accent text-slate-900'
+														: 'text-ui-text hover:bg-[rgba(255,255,255,0.06)]'
+												)}
+											>
+												{s === 'left' ? 'Links' : 'Rechts'}
+												{' '}
+												<span className="text-[10px] opacity-70">
+													({s === 'left' ? leftPlacedElementCount : rightPlacedElementCount})
+												</span>
+											</button>
+										))}
+									</div>
+									<PlacedElementsList side={elementsModalSide} />
+									<Button
+										variant="outline"
+										size="sm"
+										className="w-full"
+										onClick={() => setElementsModalOpen(true)}
+									>
+										+ Element toevoegen
+									</Button>
 								</div>
-								<PlacedElementsList side={elementsModalSide} />
-								<Button
-									variant="outline"
-									size="sm"
-									className="w-full"
-									onClick={() => setElementsModalOpen(true)}
-								>
-									+ Element toevoegen
-								</Button>
-							</div>
 							)}
 						</CardContent>
 					</Card>
@@ -2894,203 +3054,161 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			case 2:
 				return (
 					<Card>
-						<CardContent>
-							<div className="pb-4">
-								<h4 className="text-sm font-semibold text-ui-accent">
-									Algemeen
-								</h4>
-								<div className="mt-3 space-y-2 text-sm">
-									<div className="rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
-										<div className="flex items-center justify-between">
-											<span>Schoenmaat</span>
-											<span className="text-[11px] text-ui-muted">Links / Rechts</span>
+						<CardContent className="space-y-6">
+							<>
+								<div className="pb-4">
+									<h4 className="text-sm font-semibold text-ui-accent">
+										Algemeen
+									</h4>
+									<div className="mt-3 space-y-2 text-sm">
+										<div className="rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
+											<div className="flex items-center justify-between">
+												<span>Schoenmaat</span>
+												<span className="text-[11px] text-ui-muted">Links / Rechts</span>
+											</div>
+											<div className="mt-2 grid grid-cols-2 gap-2">
+												<input
+													type="number"
+													inputMode="decimal"
+													className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
+													value={generalNormalized.shoeSize.left}
+													onChange={(e) =>
+														updateGeneral({
+															shoeSize: {
+																...generalNormalized.shoeSize,
+																left: Number(e.target.value),
+															},
+														})
+													}
+													min={10}
+													max={60}
+													step={0.5}
+												/>
+												<input
+													type="number"
+													inputMode="decimal"
+													className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
+													value={generalNormalized.shoeSize.right}
+													onChange={(e) =>
+														updateGeneral({
+															shoeSize: {
+																...generalNormalized.shoeSize,
+																right: Number(e.target.value),
+															},
+														})
+													}
+													min={10}
+													max={60}
+													step={0.5}
+												/>
+											</div>
 										</div>
-										<div className="mt-2 grid grid-cols-2 gap-2">
-											<input
-												type="number"
-												inputMode="decimal"
-												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
-												value={generalNormalized.shoeSize.left}
-												onChange={(e) =>
-													updateGeneral({
-														shoeSize: {
-															...generalNormalized.shoeSize,
-															left: Number(e.target.value),
-														},
-													})
-												}
-												min={10}
-												max={60}
-												step={0.5}
-											/>
-											<input
-												type="number"
-												inputMode="decimal"
-												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
-												value={generalNormalized.shoeSize.right}
-												onChange={(e) =>
-													updateGeneral({
-														shoeSize: {
-															...generalNormalized.shoeSize,
-															right: Number(e.target.value),
-														},
-													})
-												}
-												min={10}
-												max={60}
-												step={0.5}
-											/>
+										<div className="rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
+											<div className="flex items-center justify-between">
+												<span>Zooldikte</span>
+												<span className="text-[11px] text-ui-muted">Links / Rechts (mm)</span>
+											</div>
+											<div className="mt-2 grid grid-cols-2 gap-2">
+												<input
+													type="number"
+													inputMode="decimal"
+													className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
+													value={generalNormalized.soleThicknessMm.left}
+													onChange={(e) =>
+														updateGeneral({
+															soleThicknessMm: {
+																...generalNormalized.soleThicknessMm,
+																left: Number(e.target.value),
+															},
+														})
+													}
+													min={0.5}
+													max={10}
+													step={0.5}
+												/>
+												<input
+													type="number"
+													inputMode="decimal"
+													className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
+													value={generalNormalized.soleThicknessMm.right}
+													onChange={(e) =>
+														updateGeneral({
+															soleThicknessMm: {
+																...generalNormalized.soleThicknessMm,
+																right: Number(e.target.value),
+															},
+														})
+													}
+													min={0.5}
+													max={10}
+													step={0.5}
+												/>
+											</div>
 										</div>
-									</div>
-									<div className="rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
-										<div className="flex items-center justify-between">
-											<span>Zooldikte</span>
-											<span className="text-[11px] text-ui-muted">Links / Rechts (mm)</span>
-										</div>
-										<div className="mt-2 grid grid-cols-2 gap-2">
-											<input
-												type="number"
-												inputMode="decimal"
-												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
-												value={generalNormalized.soleThicknessMm.left}
-												onChange={(e) =>
-													updateGeneral({
-														soleThicknessMm: {
-															...generalNormalized.soleThicknessMm,
-															left: Number(e.target.value),
-														},
-													})
-												}
-												min={0.5}
-												max={10}
-												step={0.5}
-											/>
-											<input
-												type="number"
-												inputMode="decimal"
-												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
-												value={generalNormalized.soleThicknessMm.right}
-												onChange={(e) =>
-													updateGeneral({
-														soleThicknessMm: {
-															...generalNormalized.soleThicknessMm,
-															right: Number(e.target.value),
-														},
-													})
-												}
-												min={0.5}
-												max={10}
-												step={0.5}
-											/>
-										</div>
-									</div>
-									<div className="rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
-										<div className="flex items-center justify-between">
-											<span>Steunzolen hoogte</span>
-											<span className="text-[11px] text-ui-muted">Links / Rechts (mm)</span>
-										</div>
-										<div className="mt-2 grid grid-cols-2 gap-2">
-											<input
-												type="number"
-												inputMode="decimal"
-												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
-												value={generalNormalized.maxInsoleHeightMm.left}
-												onChange={(e) =>
-													updateGeneral({
-														maxInsoleHeightMm: {
-															...generalNormalized.maxInsoleHeightMm,
-															left: Number(e.target.value),
-														},
-													})
-												}
-												min={1}
-												max={40}
-												step={0.5}
-											/>
-											<input
-												type="number"
-												inputMode="decimal"
-												className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
-												value={generalNormalized.maxInsoleHeightMm.right}
-												onChange={(e) =>
-													updateGeneral({
-														maxInsoleHeightMm: {
-															...generalNormalized.maxInsoleHeightMm,
-															right: Number(e.target.value),
-														},
-													})
-												}
-												min={1}
-												max={40}
-												step={0.5}
-											/>
+										<div className="rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
+											<div className="flex items-center justify-between">
+												<span>Steunzolen hoogte</span>
+												<span className="text-[11px] text-ui-muted">Links / Rechts (mm)</span>
+											</div>
+											<div className="mt-2 grid grid-cols-2 gap-2">
+												<input
+													type="number"
+													inputMode="decimal"
+													className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
+													value={generalNormalized.maxInsoleHeightMm.left}
+													onChange={(e) =>
+														updateGeneral({
+															maxInsoleHeightMm: {
+																...generalNormalized.maxInsoleHeightMm,
+																left: Number(e.target.value),
+															},
+														})
+													}
+													min={1}
+													max={40}
+													step={0.5}
+												/>
+												<input
+													type="number"
+													inputMode="decimal"
+													className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
+													value={generalNormalized.maxInsoleHeightMm.right}
+													onChange={(e) =>
+														updateGeneral({
+															maxInsoleHeightMm: {
+																...generalNormalized.maxInsoleHeightMm,
+																right: Number(e.target.value),
+															},
+														})
+													}
+													min={1}
+													max={40}
+													step={0.5}
+												/>
+											</div>
 										</div>
 									</div>
 								</div>
-							</div>
 
-							<OntwerpPanel
-										corrections={corrections}
-										onCorrectionsChange={handleCorrectionsChange}
-										activeCorrections={activeCorrections}
-										soleWidthValueMm={resolvedTargetForefootWidthMm}
-										onSoleWidthChange={handleSoleWidthChange}
-										tekstEnabled={activeCorrections.includes('tekst')}
-										onTekstToggle={(enabled) => {
-											if (enabled) {
-												toggleCorrection('tekst');
-											} else {
-												setSavedBottomText({
-													text: draftBottomText.text,
-													sizeMm: draftBottomText.sizeMm,
-												});
-												resetBottomTextLoading();
-												setActiveCorrections((prev) => prev.filter((k) => k !== 'tekst'));
-												setTextEditorOpen(false);
-											}
-										}}
-										tekstEditorContent={activeCorrections.includes('tekst') ? (
-											<div className="space-y-3">
-												<label className="flex flex-col gap-1">
-													<span className="text-xs uppercase tracking-wide text-(--ui-text)/70">Tekst</span>
-													<input
-														type="text"
-														className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm text-ui-text"
-														value={draftBottomText.text}
-														onChange={(e) =>
-															setDraftBottomText((p) => ({ ...p, text: e.target.value }))
-														}
-														placeholder="Bijv. naam / ordernummer"
-													/>
-												</label>
-
-												<div className="mt-3 grid grid-cols-1 gap-2">
-													<label className="flex flex-col gap-1">
-														<span className="text-xs uppercase tracking-wide text-(--ui-text)/70">Grootte (mm)</span>
-														<input
-															type="number"
-															inputMode="decimal"
-															className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm text-ui-text"
-															value={draftBottomText.sizeMm}
-															onChange={(e) =>
-																setDraftBottomText((p) => ({
-																	...p,
-																	sizeMm: Math.max(1, Number(e.target.value) || 1),
-																}))
-															}
-															min={1}
-															max={40}
-															step={0.5}
-														/>
-													</label>
-												</div>
-
-												<p className="mt-3 text-xs text-ui-muted">
-													Live preview staat gecentreerd op de onderkant van beide steunzolen.
-												</p>
-											</div>
-										) : null}
-									/>
+								<OntwerpPanel
+									corrections={corrections}
+									onCorrectionsChange={handleCorrectionsChange}
+									activeCorrections={activeCorrections}
+									soleWidthValueMm={resolvedTargetForefootWidthMm}
+									onSoleWidthChange={handleSoleWidthChange}
+									tekstEnabled={activeCorrections.includes('tekst')}
+									onTekstToggle={(enabled) => {
+										if (enabled) {
+											toggleCorrection('tekst');
+										} else {
+											resetBottomTextLoading();
+											setActiveCorrections((prev) => prev.filter((k) => k !== 'tekst'));
+											setTextEditorOpen(false);
+										}
+									}}
+									onTekstEdit={handleTekstEditOpen}
+								/>
+							</>
 						</CardContent>
 					</Card>
 				);
@@ -3762,278 +3880,280 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									baseInsoleType={generalNormalized.baseInsoleType}
 								/>
 							) : (
-							<>
-							<EnhancedSTLViewer
-								ref={viewerRef}
-								leftUrl={selectedBaseInsoleAssets.leftUrl}
-								rightUrl={selectedBaseInsoleAssets.rightUrl}
-								leftOverlayUrl={showOverlays ? leftStlUrl : undefined}
-								rightOverlayUrl={showOverlays ? rightStlUrl : undefined}
-								baseInsoleType={generalNormalized.baseInsoleType}
-								targetForefootWidthMm={resolvedTargetForefootWidthMm}
-								showGrid={true}
-								showBasePreview={false}
-								lockTopView={false}
-								hideScans={false}
-								landmarkPoints={designPlan.points ?? undefined}
-								showGeneratedInsole={false}
-								showZones={activeDesignStep === 3 && step3Current.elementsSplit}
-								showLeft={viewSettings.showLeft}
-								showRight={viewSettings.showRight}
-								transparent={viewSettings.transparent}
-								heatmap={viewSettings.heatmap}
-								clampDebug={viewSettings.clampDebug}
-								showInsoles={viewSettings.showInsoles}
-								showModel={viewSettings.showModel}
-								viewPreset={viewerViewPreset}
-								controlMode={viewerControlMode}
-								analysisEnabled={leftPanelTab === 'analysis'}
-								onProbe={handleAnalysisProbe}
-								corrections={corrections}
-								activeCorrections={activeCorrections}
-								bottomTextOverlay={bottomTextOverlay}
-								textPlacementEnabled={false}
-								selectedSide={activeDesignStep === 3 ? null : selectedInsoleSide}
-								onSelectSide={activeDesignStep === 3 ? undefined : (side) => setSelectedInsoleSide(side)}
-								onDeselectSide={activeDesignStep === 3 ? undefined : () => setSelectedInsoleSide(null)}
-								onZoneClick={activeDesignStep === 3 && step3Current.elementsSplit ? (zone, side) => { setSelectedZone(zone); setStep3Side(side); } : undefined}
-								boxEnabled={boxEnabled}
-								gridEditMode={isSelectedGridModeOn || isElementBoxGridModeOn}
-								heelEdgeThicknessMm={viewerHeelEdgeThicknessMm}
-								savedBoxGridOffsets={boxGridPoints}
-								onBoxGridSave={handleBoxGridSave}
-								leftPlacedElements={effectiveLeftPlacedElements}
-								rightPlacedElements={effectiveRightPlacedElements}
-								evaBlockMode={isEvaMethod}
-								trimlineAdjustments={trimlineAdjustments}
-								trimlineHandleProfiles={trimlineHandleProfiles}
-								trimlineEditSide={trimlineEditSide}
-								onPendingTrimlineChange={(side: 'left' | 'right', adj: TrimlineAdjustments) =>
-									{
-										pendingTrimlineAdjRef.current = {
-											...pendingTrimlineAdjRef.current,
-											[side]: adj,
-										};
-										scheduleTrimlinePanelSync();
-									}
-								}
-								onPendingTrimlineProfileChange={(side, profile) =>
-									{
-										pendingTrimlineHandleProfilesRef.current = {
-											...pendingTrimlineHandleProfilesRef.current,
-											[side]: profile,
-										};
-										scheduleTrimlinePanelSync();
-									}
-								}
-								selectedElementTrimlineEdit={viewerSelectedElementTrimlineEdit}
-								onPendingElementTrimlineChange={(adj) => {
-									pendingElementTrimlineAdjRef.current = adj;
-									scheduleElementTrimlinePanelSync();
-								}}
-								onPendingElementTrimlineProfileChange={(profile) => {
-									pendingElementTrimlineHandleProfileRef.current = profile;
-									scheduleElementTrimlinePanelSync();
-								}}
-								selectedElementBoxEdit={viewerSelectedElementBoxEdit}
-								onElementBoxGridSave={handleElementBoxGridSave}
-								onReady={() => setIsViewerReady(true)}
-									onBottomTextLoadingChange={handleBottomTextLoadingChange}
-								disableInteraction={!scansActive || !!selectedPlacedElement}
-								elementPlacementMode={viewerElementPlacementMode}
-								onElementPlace={selectedPlacedElement ? ({ side, u, v }) => {
-									if (selectedPlacedElement.side !== side) return;
-									updatePlacedElement(selectedPlacedElement.id, { positionU: u, positionV: v });
-									setElementEditMode(null);
-								} : undefined}
-							/>
-							{/* ── Viewer loading overlay ── */}
-							{!isViewerReady && (
-								<div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-gray-900/80 backdrop-blur-sm">
-									{/* Animated insole silhouette */}
-									<div className="relative mb-6">
-										<svg width="80" height="160" viewBox="0 0 80 160" className="animate-insole-shimmer drop-shadow-[0_0_24px_rgba(99,247,214,0.25)]">
-											<path
-												d="M40 8 C22 8 14 28 12 48 C10 68 12 88 16 108 C20 128 28 148 40 152 C52 148 60 128 64 108 C68 88 70 68 68 48 C66 28 58 8 40 8Z"
-												fill="none"
-												stroke="var(--ui-accent)"
-												strokeWidth="1.5"
-												opacity="0.6"
-											/>
-											<path
-												d="M40 16 C26 16 20 32 18 48 C16 64 18 84 22 104 C26 124 32 140 40 144 C48 140 54 124 58 104 C62 84 64 64 62 48 C60 32 54 16 40 16Z"
-												fill="var(--ui-accent)"
-												opacity="0.08"
-											/>
-										</svg>
-										{/* Orbiting dot */}
-										<div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-											<div className="animate-orbit-dot">
-												<div className="h-2 w-2 rounded-full bg-ui-accent shadow-[0_0_8px_rgba(99,247,214,0.6)]" />
+								<>
+									<EnhancedSTLViewer
+										ref={viewerRef}
+										leftUrl={selectedBaseInsoleAssets.leftUrl}
+										rightUrl={selectedBaseInsoleAssets.rightUrl}
+										leftOverlayUrl={showOverlays ? leftStlUrl : undefined}
+										rightOverlayUrl={showOverlays ? rightStlUrl : undefined}
+										baseInsoleType={generalNormalized.baseInsoleType}
+										targetForefootWidthMm={resolvedTargetForefootWidthMm}
+										showGrid={true}
+										showBasePreview={false}
+										lockTopView={false}
+										hideScans={false}
+										landmarkPoints={designPlan.points ?? undefined}
+										showGeneratedInsole={false}
+										showZones={activeDesignStep === 3 && step3Current.elementsSplit}
+										showLeft={viewSettings.showLeft}
+										showRight={viewSettings.showRight}
+										transparent={viewSettings.transparent}
+										heatmap={viewSettings.heatmap}
+										clampDebug={viewSettings.clampDebug}
+										showInsoles={viewSettings.showInsoles}
+										showModel={viewSettings.showModel}
+										viewPreset={viewerViewPreset}
+										controlMode={viewerControlMode}
+										analysisEnabled={leftPanelTab === 'analysis'}
+										onProbe={handleAnalysisProbe}
+										corrections={corrections}
+										activeCorrections={activeCorrections}
+										bottomTextOverlay={bottomTextOverlay}
+										textPlacementEnabled={false}
+										selectedSide={activeDesignStep === 3 ? null : selectedInsoleSide}
+										onSelectSide={activeDesignStep === 3 ? undefined : (side) => setSelectedInsoleSide(side)}
+										onDeselectSide={activeDesignStep === 3 ? undefined : () => setSelectedInsoleSide(null)}
+										onZoneClick={activeDesignStep === 3 && step3Current.elementsSplit ? (zone, side) => { setSelectedZone(zone); setStep3Side(side); } : undefined}
+										boxEnabled={boxEnabled}
+										gridEditMode={isSelectedGridModeOn || isElementBoxGridModeOn}
+										heelEdgeThicknessMm={viewerHeelEdgeThicknessMm}
+										savedBoxGridOffsets={boxGridPoints}
+										onBoxGridSave={handleBoxGridSave}
+										leftPlacedElements={effectiveLeftPlacedElements}
+										rightPlacedElements={effectiveRightPlacedElements}
+										evaBlockMode={isEvaMethod}
+										trimlineAdjustments={trimlineAdjustments}
+										trimlineHandleProfiles={trimlineHandleProfiles}
+										editTrimlineHandleProfiles={editorTrimlineHandleProfiles}
+										trimlineEditSide={trimlineEditSide}
+										scanRotateEditSide={scanRotateEditSide}
+										scanManualAlignments={scanManualAlignments}
+										editorScanManualAlignments={pendingScanManualAlignments}
+										onPendingScanAlignmentChange={(side, alignment) => {
+											const nextAlignment = alignment;
+											pendingScanManualAlignmentsRef.current = {
+												...pendingScanManualAlignmentsRef.current,
+												[side]: nextAlignment,
+											};
+											setPendingScanManualAlignments((prev) => ({
+												...prev,
+												[side]: nextAlignment,
+											}));
+										}}
+										onPendingTrimlineProfileChange={(side, profile) => {
+											const next = cloneTrimlineProfile(profile);
+											pendingTrimlineHandleProfilesRef.current = {
+												...pendingTrimlineHandleProfilesRef.current,
+												[side]: next,
+											};
+											setPendingTrimlineHandleProfiles((prev) => ({ ...prev, [side]: next }));
+											scheduleTrimlinePanelSync();
+										}}
+										selectedElementTrimlineEdit={viewerSelectedElementTrimlineEdit}
+										onPendingElementTrimlineProfileChange={(profile) => {
+											const next = cloneTrimlineProfile(profile);
+											pendingElementTrimlineHandleProfileRef.current = next;
+											setPendingElementTrimlineHandleProfile(next);
+											scheduleElementTrimlinePanelSync();
+										}}
+										selectedElementBoxEdit={viewerSelectedElementBoxEdit}
+										onElementBoxGridSave={handleElementBoxGridSave}
+										onReady={() => setIsViewerReady(true)}
+										onBottomTextLoadingChange={handleBottomTextLoadingChange}
+										onBottomTextValidityChange={handleBottomTextValidityChange}
+										disableInteraction={!scansActive || !!selectedPlacedElement}
+										elementPlacementMode={viewerElementPlacementMode}
+										onElementPlace={selectedPlacedElement ? ({ side, u, v }) => {
+											if (selectedPlacedElement.side !== side) return;
+											updatePlacedElement(selectedPlacedElement.id, { positionU: u, positionV: v });
+											setElementEditMode(null);
+										} : undefined}
+									/>
+									{/* ── Viewer loading overlay ── */}
+									{!isViewerReady && (
+										<div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-gray-900/80 backdrop-blur-sm">
+											{/* Animated insole silhouette */}
+											<div className="relative mb-6">
+												<svg width="80" height="160" viewBox="0 0 80 160" className="animate-insole-shimmer drop-shadow-[0_0_24px_rgba(99,247,214,0.25)]">
+													<path
+														d="M40 8 C22 8 14 28 12 48 C10 68 12 88 16 108 C20 128 28 148 40 152 C52 148 60 128 64 108 C68 88 70 68 68 48 C66 28 58 8 40 8Z"
+														fill="none"
+														stroke="var(--ui-accent)"
+														strokeWidth="1.5"
+														opacity="0.6"
+													/>
+													<path
+														d="M40 16 C26 16 20 32 18 48 C16 64 18 84 22 104 C26 124 32 140 40 144 C48 140 54 124 58 104 C62 84 64 64 62 48 C60 32 54 16 40 16Z"
+														fill="var(--ui-accent)"
+														opacity="0.08"
+													/>
+												</svg>
+												{/* Orbiting dot */}
+												<div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+													<div className="animate-orbit-dot">
+														<div className="h-2 w-2 rounded-full bg-ui-accent shadow-[0_0_8px_rgba(99,247,214,0.6)]" />
+													</div>
+												</div>
+											</div>
+											<p className="animate-fade-in-up text-sm font-medium text-ui-muted">
+												3D model laden…
+											</p>
+											{/* Progress bar */}
+											<div className="mt-3 h-0.5 w-32 overflow-hidden rounded-full bg-ui-border/40">
+												<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
 											</div>
 										</div>
-									</div>
-									<p className="animate-fade-in-up text-sm font-medium text-ui-muted">
-										3D model laden…
-									</p>
-									{/* Progress bar */}
-									<div className="mt-3 h-0.5 w-32 overflow-hidden rounded-full bg-ui-border/40">
-										<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
-									</div>
-								</div>
-							)}
-							{/* ── Fitting / processing overlay ── */}
-							{isFitting && (
-								<div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-900/50 backdrop-blur-[2px]">
-									<div className="animate-fade-in-up flex flex-col items-center gap-3 rounded-2xl border border-ui-border bg-ui-panel/95 px-6 py-5 shadow-xl">
-										<div className="relative h-8 w-8">
-											<div className="absolute inset-0 rounded-full border-2 border-ui-border" />
-											<div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ui-accent" />
-										</div>
-										<p className="text-xs font-semibold text-ui-text">Berekenen… steunzool wordt aangepast</p>
-										<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
-											<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
-										</div>
-									</div>
-								</div>
-							)}
-							{isBottomTextLoading && !isFitting && autoDetectStatus !== 'detecting' && (
-								<div className="absolute inset-0 z-35 flex items-center justify-center bg-gray-900/55 backdrop-blur-[2px]">
-									<div className="animate-fade-in-up flex flex-col items-center gap-3 rounded-2xl border border-ui-border bg-ui-panel/95 px-6 py-5 shadow-xl">
-										<div className="relative h-8 w-8">
-											<div className="absolute inset-0 rounded-full border-2 border-ui-border" />
-											<div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ui-accent" />
-										</div>
-										<p className="text-xs font-semibold text-ui-text">Tekst laden op de steunzool…</p>
-										<p className="text-center text-[11px] text-ui-muted">De onderkant wordt bijgewerkt met de nieuwe tekst op beide steunzolen.</p>
-										<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
-											<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
-										</div>
-									</div>
-								</div>
-							)}
-							{autoDetectStatus === 'detecting' && !isFitting && (
-								<div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-900/40 backdrop-blur-[1px]">
-									<div className="animate-fade-in-up flex flex-col items-center gap-3 rounded-2xl border border-ui-border bg-ui-panel/95 px-6 py-5 shadow-xl">
-										<div className="relative h-8 w-8">
-											<div className="absolute inset-0 rounded-full border-2 border-ui-border" />
-											<div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ui-accent" />
-										</div>
-										<p className="text-xs font-semibold text-ui-text">
-											{autoDetectMessage || 'Landmarks automatisch detecteren...'}
-										</p>
-										<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
-											<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
-										</div>
-									</div>
-								</div>
-							)}
-							{autoDetectStatus === 'success' && !isFitting && (
-								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-emerald-500/30 bg-emerald-950/80 px-4 py-2 text-xs font-semibold text-emerald-300 shadow-lg">
-									✓ {autoDetectMessage}
-								</div>
-							)}
-							{/* ── Export progress overlay ── */}
-							{exportProgress && (
-								<ExportProgressOverlay progress={exportProgress} onDismiss={() => setExportProgress(null)} />
-							)}
-							{autoDetectStatus === 'failed' && !isFitting && (
-								<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-950/80 px-4 py-2 text-xs font-semibold text-amber-300 shadow-lg">
-									<span>⚠</span>
-									<span>{autoDetectMessage}</span>
-									<button
-										type="button"
-										className="ml-1 text-amber-400 hover:text-amber-200"
-										onClick={() => { setAutoDetectStatus('idle'); setAutoDetectMessage(''); }}
-									>
-										✕
-									</button>
-								</div>
-							)}
-							<ViewOverlay
-								tab={leftPanelTab}
-								onTabChange={(nextTab) => {
-									setLeftPanelTab(nextTab);
-									if (nextTab === 'analysis') {
-										setViewerViewPreset('back');
-									}
-								}}
-								viewSettings={viewSettings}
-								onToggle={handleToggleViewSetting}
-								onView={handleOverlayView}
-								activeView={namedViewActive}
-								activeControlMode={viewerControlMode}
-								analysisHeightMm={analysisProbe?.heightMm ?? null}
-								analysisSide={analysisProbe?.side ?? null}
-								className="absolute left-6 top-6 z-20"
-							/>
-							{/* Element action panel – bottom-right corner of canvas */}
-							{selectedPlacedElement && !selectedInsoleSide && (
-								<ElementActionsPanel
-									element={selectedPlacedElement}
-									editMode={elementEditMode}
-									onEditModeChange={handleElementEditModeChange}
-									className="absolute bottom-6 right-6 z-20 w-[280px]"
-								/>
-							)}
-							{selectedPlacedElement && !selectedInsoleSide && elementEditMode === 'move' && (
-								<div className="absolute bottom-6 right-[310px] z-20 ui-overlay-card w-[320px] rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
-									<div className="flex items-center justify-between">
-										<div>
-											<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">Verplaatsen</div>
-											<div className="mt-0.5 text-xs text-(--ui-muted)">Gebruik de pijlen of pijltjestoetsen om het element te verplaatsen</div>
-										</div>
-										<button type="button" onClick={() => setElementEditMode(null)} className="rounded-lg border border-(--ui-border) px-3 py-1.5 text-xs text-(--ui-text)">Annuleren</button>
-									</div>
-									<div className="mt-4 flex justify-center">
-										<div className="grid grid-cols-3 gap-2">
-											<div />
-											<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('up'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Voor">
-												<ArrowUp className="h-4 w-4" />
-											</button>
-											<div />
-											<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('left'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Links">
-												<ArrowLeft className="h-4 w-4" />
-											</button>
-											<div className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.02)] text-[10px] font-semibold uppercase tracking-wide text-(--ui-muted)">Move</div>
-											<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('right'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Rechts">
-												<ArrowRight className="h-4 w-4" />
-											</button>
-											<div />
-											<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('down'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Achter">
-												<ArrowDown className="h-4 w-4" />
-											</button>
-											<div />
-										</div>
-									</div>
-									<div className="mt-3 grid grid-cols-2 gap-2 text-xs text-(--ui-muted)">
-										<div className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.02)] px-3 py-2 text-center">Links / Rechts</div>
-										<div className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.02)] px-3 py-2 text-center">Voor / Achter</div>
-									</div>
-								</div>
-							)}
-							{selectedPlacedElement && !selectedInsoleSide && elementTrimlineEditId === selectedPlacedElement.id && elementEditMode === 'trimline' && (
-								<div className="absolute left-6 bottom-6 z-20 ui-overlay-card w-[320px] rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
-									<div className="flex items-center justify-between">
-										<div>
-											<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">
-												Trimline aanpassen
-											</div>
-											<div className="mt-0.5 text-xs text-(--ui-muted)">
-												{selectedPlacedElement.side === 'left' ? 'Links' : 'Rechts'} — sleep de punten om de rand te wijzigen
+									)}
+									{/* ── Fitting / processing overlay ── */}
+									{isFitting && (
+										<div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-900/50 backdrop-blur-[2px]">
+											<div className="animate-fade-in-up flex flex-col items-center gap-3 rounded-2xl border border-ui-border bg-ui-panel/95 px-6 py-5 shadow-xl">
+												<div className="relative h-8 w-8">
+													<div className="absolute inset-0 rounded-full border-2 border-ui-border" />
+													<div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ui-accent" />
+												</div>
+												<p className="text-xs font-semibold text-ui-text">Berekenen… steunzool wordt aangepast</p>
+												<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
+													<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
+												</div>
 											</div>
 										</div>
-										<button
-											type="button"
-											onClick={() => {
-												const restoredAdj = normalizeElementTrimlineAdjustments(selectedPlacedElement.trimlineAdjustments);
+									)}
+									{isBottomTextLoading && !isFitting && autoDetectStatus !== 'detecting' && (
+										<div className="absolute inset-0 z-35 flex items-center justify-center bg-gray-900/55 backdrop-blur-[2px]">
+											<div className="animate-fade-in-up flex flex-col items-center gap-3 rounded-2xl border border-ui-border bg-ui-panel/95 px-6 py-5 shadow-xl">
+												<div className="relative h-8 w-8">
+													<div className="absolute inset-0 rounded-full border-2 border-ui-border" />
+													<div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ui-accent" />
+												</div>
+												<p className="text-xs font-semibold text-ui-text">Tekst laden op de steunzool…</p>
+												<p className="text-center text-[11px] text-ui-muted">De onderkant wordt bijgewerkt met de nieuwe tekst op beide steunzolen.</p>
+												<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
+													<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
+												</div>
+											</div>
+										</div>
+									)}
+									{autoDetectStatus === 'detecting' && !isFitting && (
+										<div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-900/40 backdrop-blur-[1px]">
+											<div className="animate-fade-in-up flex flex-col items-center gap-3 rounded-2xl border border-ui-border bg-ui-panel/95 px-6 py-5 shadow-xl">
+												<div className="relative h-8 w-8">
+													<div className="absolute inset-0 rounded-full border-2 border-ui-border" />
+													<div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ui-accent" />
+												</div>
+												<p className="text-xs font-semibold text-ui-text">
+													{autoDetectMessage || 'Landmarks automatisch detecteren...'}
+												</p>
+												<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
+													<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
+												</div>
+											</div>
+										</div>
+									)}
+									{autoDetectStatus === 'success' && !isFitting && (
+										<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-emerald-500/30 bg-emerald-950/80 px-4 py-2 text-xs font-semibold text-emerald-300 shadow-lg">
+											✓ {autoDetectMessage}
+										</div>
+									)}
+									{/* ── Export progress overlay ── */}
+									{exportProgress && (
+										<ExportProgressOverlay progress={exportProgress} onDismiss={() => setExportProgress(null)} />
+									)}
+									{autoDetectStatus === 'failed' && !isFitting && (
+										<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-950/80 px-4 py-2 text-xs font-semibold text-amber-300 shadow-lg">
+											<span>⚠</span>
+											<span>{autoDetectMessage}</span>
+											<button
+												type="button"
+												className="ml-1 text-amber-400 hover:text-amber-200"
+												onClick={() => { setAutoDetectStatus('idle'); setAutoDetectMessage(''); }}
+											>
+												✕
+											</button>
+										</div>
+									)}
+									<ViewOverlay
+										tab={leftPanelTab}
+										onTabChange={(nextTab) => {
+											setLeftPanelTab(nextTab);
+											if (nextTab === 'analysis') {
+												setViewerViewPreset('back');
+											}
+										}}
+										viewSettings={viewSettings}
+										onToggle={handleToggleViewSetting}
+										onView={handleOverlayView}
+										activeView={namedViewActive}
+										activeControlMode={viewerControlMode}
+										analysisHeightMm={analysisProbe?.heightMm ?? null}
+										analysisSide={analysisProbe?.side ?? null}
+										className="absolute left-6 top-6 z-20"
+									/>
+									{/* Element action panel – bottom-right corner of canvas */}
+									{selectedPlacedElement && !selectedInsoleSide && (
+										<ElementActionsPanel
+											element={selectedPlacedElement}
+											editMode={elementEditMode}
+											onEditModeChange={handleElementEditModeChange}
+											className="absolute bottom-6 right-6 z-20 w-[280px]"
+										/>
+									)}
+									{selectedPlacedElement && !selectedInsoleSide && elementEditMode === 'move' && (
+										<div className="absolute bottom-6 right-[310px] z-20 ui-overlay-card w-[320px] rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
+											<div className="flex items-center justify-between">
+												<div>
+													<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">Verplaatsen</div>
+													<div className="mt-0.5 text-xs text-(--ui-muted)">Gebruik de pijlen of pijltjestoetsen om het element te verplaatsen</div>
+												</div>
+												<button type="button" onClick={() => setElementEditMode(null)} className="rounded-lg border border-(--ui-border) px-3 py-1.5 text-xs text-(--ui-text)">Annuleren</button>
+											</div>
+											<div className="mt-4 flex justify-center">
+												<div className="grid grid-cols-3 gap-2">
+													<div />
+													<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('up'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Voor">
+														<ArrowUp className="h-4 w-4" />
+													</button>
+													<div />
+													<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('left'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Links">
+														<ArrowLeft className="h-4 w-4" />
+													</button>
+													<div className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.02)] text-[10px] font-semibold uppercase tracking-wide text-(--ui-muted)">Move</div>
+													<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('right'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Rechts">
+														<ArrowRight className="h-4 w-4" />
+													</button>
+													<div />
+													<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('down'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Achter">
+														<ArrowDown className="h-4 w-4" />
+													</button>
+													<div />
+												</div>
+											</div>
+											<div className="mt-3 grid grid-cols-2 gap-2 text-xs text-(--ui-muted)">
+												<div className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.02)] px-3 py-2 text-center">Links / Rechts</div>
+												<div className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.02)] px-3 py-2 text-center">Voor / Achter</div>
+											</div>
+										</div>
+									)}
+									{selectedPlacedElement && !selectedInsoleSide && elementTrimlineEditId === selectedPlacedElement.id && elementEditMode === 'trimline' && (
+										<TrimlineEditCard
+											className="absolute left-6 bottom-6 z-20"
+											title="Trimline aanpassen"
+											subtitle={`${selectedPlacedElement.side === 'left' ? 'Links' : 'Rechts'} — sleep de rand om aan te passen`}
+											saveDisabled={
+												JSON.stringify(normalizeElementTrimlineAdjustments(pendingElementTrimlineAdj)) ===
+												JSON.stringify(
+													normalizeElementTrimlineAdjustments(selectedPlacedElement.trimlineAdjustments),
+												) &&
+												JSON.stringify(pendingElementTrimlineHandleProfile) ===
+												JSON.stringify(selectedPlacedElement.trimlineHandleProfile)
+											}
+											onCancel={() => {
+												const restoredAdj = normalizeElementTrimlineAdjustments(
+													selectedPlacedElement.trimlineAdjustments,
+												);
 												const restoredProfile = selectedPlacedElement.trimlineHandleProfile
-													? {
-														...selectedPlacedElement.trimlineHandleProfile,
-														tValues: [...selectedPlacedElement.trimlineHandleProfile.tValues],
-														rightOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.rightOffsetsMm],
-														leftOffsetsMm: [...selectedPlacedElement.trimlineHandleProfile.leftOffsetsMm],
-													}
+													? cloneTrimlineProfile(selectedPlacedElement.trimlineHandleProfile)
 													: null;
 												pendingElementTrimlineAdjRef.current = restoredAdj;
 												pendingElementTrimlineHandleProfileRef.current = restoredProfile;
@@ -4042,216 +4162,186 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 												setElementTrimlineEditId(null);
 												setElementEditMode(null);
 											}}
-											className="rounded-lg border border-(--ui-border) px-2.5 py-1 text-xs text-(--ui-muted) transition hover:bg-[rgba(255,255,255,0.08)] hover:text-(--ui-text)"
-										>
-											Sluiten
-										</button>
-									</div>
-									<div className="mt-3 rounded-xl border border-(--ui-border) bg-black/10 px-3 py-2.5 text-xs text-(--ui-muted)">
-										Vrije contour: sleep de punten rondom het element precies zoals je de rand wilt hebben.
-										<span className="ml-2 font-mono text-(--ui-text)">{pendingElementTrimlineAdjRef.current.global > 0 ? '+' : ''}{pendingElementTrimlineAdjRef.current.global.toFixed(1)} mm gemiddeld</span>
-									</div>
-									<div className="mt-3 flex gap-2">
-										<button
-											type="button"
-											onClick={() => {
+											onSave={() => {
+												const p = pendingElementTrimlineHandleProfileRef.current;
 												updatePlacedElement(selectedPlacedElement.id, {
-													trimlineAdjustments: normalizeElementTrimlineAdjustments(pendingElementTrimlineAdjRef.current),
-													trimlineHandleProfile: pendingElementTrimlineHandleProfileRef.current
-														? {
-															...pendingElementTrimlineHandleProfileRef.current,
-															tValues: [...pendingElementTrimlineHandleProfileRef.current.tValues],
-															rightOffsetsMm: [...pendingElementTrimlineHandleProfileRef.current.rightOffsetsMm],
-															leftOffsetsMm: [...pendingElementTrimlineHandleProfileRef.current.leftOffsetsMm],
-														}
-														: null,
+													trimlineAdjustments: normalizeElementTrimlineAdjustments(
+														pendingElementTrimlineAdjRef.current,
+													),
+													trimlineHandleProfile: p ? cloneTrimlineProfile(p) : null,
 												});
 												setElementTrimlineEditId(null);
 												setElementEditMode(null);
 											}}
-											className="flex-1 rounded-lg bg-[#56f2d6] px-3 py-2 text-xs font-semibold text-gray-900 transition hover:bg-[#3ddbb8]"
-										>
-											Opslaan
-										</button>
-										{(pendingElementTrimlineAdjRef.current.global !== 0 || !!pendingElementTrimlineHandleProfileRef.current) && (
-											<button
-												type="button"
-												onClick={() => {
-													const resetAdj = normalizeElementTrimlineAdjustments();
-													pendingElementTrimlineAdjRef.current = resetAdj;
-													pendingElementTrimlineHandleProfileRef.current = null;
-													setPendingElementTrimlineAdj(resetAdj);
-													setPendingElementTrimlineHandleProfile(null);
+										/>
+									)}
+									{selectedInsoleSide &&
+										!isSelectedGridModeOn &&
+										!trimlineEditSide &&
+										!scanRotateEditSide && (
+											<GeneratedInsoleOverlay
+												selectedSide={selectedInsoleSide}
+												boxEnabled={boxEnabled}
+												onToggleBox={handleToggleBoxMode}
+												onMirrorToOther={mirrorCorrectionsToOtherSide}
+												onTrimlineEdit={(side) => {
+													setScanRotateEditSide(null);
+													setTrimlineEditSide(side);
+													pendingTrimlineAdjRef.current = { ...trimlineAdjustments };
+													pendingTrimlineHandleProfilesRef.current = { ...trimlineHandleProfiles };
+													setPendingTrimlineAdj({ ...trimlineAdjustments });
+													setPendingTrimlineHandleProfiles({ ...trimlineHandleProfiles });
+													setViewerViewPreset('top');
 												}}
-												className="rounded-lg border border-(--ui-border) px-3 py-2 text-xs text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)]"
-											>
-												Reset
-											</button>
+												onScanRotateEdit={(side) => {
+													setTrimlineEditSide(null);
+													pendingScanManualAlignmentsRef.current = { ...scanManualAlignments };
+													setPendingScanManualAlignments({ ...scanManualAlignments });
+													setScanRotateEditSide(side);
+													setViewerViewPreset('top');
+												}}
+												className="absolute left-6 bottom-6 z-20"
+											/>
 										)}
-									</div>
-								</div>
-							)}
-							{selectedInsoleSide && !isSelectedGridModeOn && !trimlineEditSide && (
-								<GeneratedInsoleOverlay
-									selectedSide={selectedInsoleSide}
-									boxEnabled={boxEnabled}
-									onToggleBox={handleToggleBoxMode}
-									onMirrorToOther={mirrorCorrectionsToOtherSide}
-									onTrimlineEdit={(side) => {
-										setTrimlineEditSide(side);
-										pendingTrimlineAdjRef.current = { ...trimlineAdjustments };
-										pendingTrimlineHandleProfilesRef.current = { ...trimlineHandleProfiles };
-										setPendingTrimlineAdj({ ...trimlineAdjustments });
-										setPendingTrimlineHandleProfiles({ ...trimlineHandleProfiles });
-										setViewerViewPreset('top');
-									}}
-									className="absolute left-6 bottom-6 z-20"
-								/>
-							)}
 
-							{trimlineEditSide && (
-								<div className="absolute left-6 bottom-6 z-20 ui-overlay-card w-[320px] rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
-									<div className="flex items-center justify-between">
-										<div>
-											<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">
-												Trimline aanpassen
-											</div>
-											<div className="mt-0.5 text-xs text-(--ui-muted)">
-												{trimlineEditSide === 'left' ? 'Links' : 'Rechts'} — sleep de punten om de rand te wijzigen
-											</div>
-										</div>
-										<button
-											type="button"
-											onClick={() => {
+									{trimlineEditSide && (
+										<TrimlineEditCard
+											className="absolute left-6 bottom-6 z-20"
+											title="Trimline aanpassen"
+											subtitle={`${trimlineEditSide === 'left' ? 'Links' : 'Rechts'} — sleep de rand om aan te passen`}
+											saveDisabled={
+												JSON.stringify(pendingTrimlineAdj[trimlineEditSide]) ===
+												JSON.stringify(trimlineAdjustments[trimlineEditSide]) &&
+												JSON.stringify(pendingTrimlineHandleProfiles[trimlineEditSide]) ===
+												JSON.stringify(trimlineHandleProfiles[trimlineEditSide])
+											}
+											onCancel={() => {
+												const side = trimlineEditSide;
 												pendingTrimlineAdjRef.current = {
 													...pendingTrimlineAdjRef.current,
-													[trimlineEditSide]: { ...trimlineAdjustments[trimlineEditSide] },
+													[side]: { ...trimlineAdjustments[side] },
 												};
 												pendingTrimlineHandleProfilesRef.current = {
 													...pendingTrimlineHandleProfilesRef.current,
-													[trimlineEditSide]: trimlineHandleProfiles[trimlineEditSide],
+													[side]: trimlineHandleProfiles[side],
 												};
 												setPendingTrimlineAdj({ ...pendingTrimlineAdjRef.current });
 												setPendingTrimlineHandleProfiles({ ...pendingTrimlineHandleProfilesRef.current });
 												setTrimlineEditSide(null);
 											}}
-											className="rounded-lg border border-(--ui-border) px-2.5 py-1 text-xs text-(--ui-muted) transition hover:bg-[rgba(255,255,255,0.08)] hover:text-(--ui-text)"
-										>
-											Sluiten
-										</button>
-									</div>
-									<div className="mt-3 space-y-1.5">
-										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
-											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#ef4444]" />
-											<span>Hiel</span>
-											<span className="ml-auto font-mono">{pendingTrimlineAdjRef.current[trimlineEditSide].heel > 0 ? '+' : ''}{pendingTrimlineAdjRef.current[trimlineEditSide].heel.toFixed(1)} mm</span>
-										</div>
-										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
-											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#22c55e]" />
-											<span>Middenvoet</span>
-											<span className="ml-auto font-mono">{pendingTrimlineAdjRef.current[trimlineEditSide].midfoot > 0 ? '+' : ''}{pendingTrimlineAdjRef.current[trimlineEditSide].midfoot.toFixed(1)} mm</span>
-										</div>
-										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
-											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#3b82f6]" />
-											<span>Voorvoet</span>
-											<span className="ml-auto font-mono">{pendingTrimlineAdjRef.current[trimlineEditSide].forefoot > 0 ? '+' : ''}{pendingTrimlineAdjRef.current[trimlineEditSide].forefoot.toFixed(1)} mm</span>
-										</div>
-										<div className="flex items-center gap-2 text-xs text-(--ui-muted)">
-											<span className="inline-block w-2.5 h-2.5 rounded-full bg-[#f59e0b]" />
-											<span>Teen</span>
-											<span className="ml-auto font-mono">{pendingTrimlineAdjRef.current[trimlineEditSide].toe > 0 ? '+' : ''}{pendingTrimlineAdjRef.current[trimlineEditSide].toe.toFixed(1)} mm</span>
-										</div>
-									</div>
-									<div className="mt-3 flex gap-2">
-										{/* Save — commit pending adjustments to the geometry */}
-										<button
-											type="button"
-											onClick={() => {
+											onSave={() => {
+												const ref = pendingTrimlineHandleProfilesRef.current;
 												setTrimlineAdjustments({ ...pendingTrimlineAdjRef.current });
-												setTrimlineHandleProfiles({ ...pendingTrimlineHandleProfilesRef.current });
+												setTrimlineHandleProfiles({
+													left: ref.left ? cloneTrimlineProfile(ref.left) : null,
+													right: ref.right ? cloneTrimlineProfile(ref.right) : null,
+												});
+												setTrimlineEditSide(null);
 											}}
-											disabled={
-												JSON.stringify(pendingTrimlineAdjRef.current[trimlineEditSide]) ===
-												JSON.stringify(trimlineAdjustments[trimlineEditSide]) &&
-												JSON.stringify(pendingTrimlineHandleProfilesRef.current[trimlineEditSide]) ===
-												JSON.stringify(trimlineHandleProfiles[trimlineEditSide])
-											}
-											className="flex-1 rounded-lg bg-[#56f2d6] px-3 py-2 text-xs font-semibold text-gray-900 transition hover:bg-[#3ddbb8] disabled:opacity-30 disabled:cursor-not-allowed"
-										>
-											Opslaan
-										</button>
-										{Object.values(pendingTrimlineAdjRef.current[trimlineEditSide]).some((v) => v !== 0) && (
-											<button
-												type="button"
-												onClick={() => {
-													const reset = { global: 0, heel: 0, midfoot: 0, forefoot: 0, toe: 0 };
-													pendingTrimlineAdjRef.current = { ...pendingTrimlineAdjRef.current, [trimlineEditSide!]: reset };
-													pendingTrimlineHandleProfilesRef.current = { ...pendingTrimlineHandleProfilesRef.current, [trimlineEditSide!]: null };
-													setTrimlineAdjustments((prev) => ({ ...prev, [trimlineEditSide!]: reset }));
-													setPendingTrimlineAdj((prev) => ({ ...prev, [trimlineEditSide!]: reset }));
-													setTrimlineHandleProfiles((prev) => ({ ...prev, [trimlineEditSide!]: null }));
-													setPendingTrimlineHandleProfiles((prev) => ({ ...prev, [trimlineEditSide!]: null }));
-												}}
-												className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.04)] px-3 py-2 text-xs text-(--ui-muted) transition hover:bg-[rgba(255,255,255,0.08)] hover:text-(--ui-text)"
-											>
-												Reset
-											</button>
-										)}
-									</div>
-								</div>
-							)}
-							{selectedPlacedElement && !selectedInsoleSide && isElementBoxGridModeOn && (
-								<div className="absolute bottom-6 left-6 z-20 w-[min(92vw,360px)] rounded-2xl border border-ui-border bg-ui-panel/92 px-4 py-3 text-ui-text shadow-xl backdrop-blur">
-									<div className="flex flex-col gap-3">
-										<div className="min-w-0">
-											<div className="flex items-center gap-2">
-												<span className="text-[11px] font-semibold uppercase tracking-wide text-ui-muted">Box bewerken</span>
-												<span className="rounded-full bg-ui-accent/15 px-2 py-0.5 text-[11px] font-semibold text-ui-accent">
-													{selectedPlacedElement.side === 'left' ? 'Links' : 'Rechts'}
-												</span>
+										/>
+									)}
+									{scanRotateEditSide && (
+										<ScanRotateEditCard
+											className="absolute left-6 bottom-6 z-20"
+											title="3D scan draaien"
+											subtitle={`${scanRotateEditSide === 'left' ? 'Links' : 'Rechts'} — klik een ankerpunt, sleep om te draaien`}
+											saveDisabled={scanManualAlignmentsEquals(
+												pendingScanManualAlignments[scanRotateEditSide],
+												scanManualAlignments[scanRotateEditSide],
+											)}
+											onCancel={() => {
+												setPendingScanManualAlignments({
+													left: scanManualAlignments.left,
+													right: scanManualAlignments.right,
+												});
+												pendingScanManualAlignmentsRef.current = {
+													left: scanManualAlignments.left,
+													right: scanManualAlignments.right,
+												};
+												setScanRotateEditSide(null);
+											}}
+											onResetToAuto={() => {
+												const side = scanRotateEditSide;
+												const next = {
+													...pendingScanManualAlignmentsRef.current,
+													[side]: null,
+												};
+												pendingScanManualAlignmentsRef.current = next;
+												setPendingScanManualAlignments(next);
+											}}
+											onSave={() => {
+												const snap = pendingScanManualAlignmentsRef.current;
+												setScanManualAlignments({
+													left: snap.left,
+													right: snap.right,
+												});
+												setScanRotateEditSide(null);
+											}}
+										/>
+									)}
+									{textEditorOpen && activeCorrections.includes('tekst') ? (
+										<TextEditCard
+											className="absolute right-6 bottom-6 z-45"
+											draft={draftBottomText}
+											onDraftChange={setDraftBottomText}
+											saveDisabled={textEditSaveDisabled}
+											warning={textEditWarning}
+											onCancel={handleCancelTextEdit}
+											onSave={handleSaveTextEdit}
+										/>
+									) : null}
+									{selectedPlacedElement && !selectedInsoleSide && isElementBoxGridModeOn && (
+										<div className="absolute bottom-6 left-6 z-20 w-[min(92vw,360px)] rounded-2xl border border-ui-border bg-ui-panel/92 px-4 py-3 text-ui-text shadow-xl backdrop-blur">
+											<div className="flex flex-col gap-3">
+												<div className="min-w-0">
+													<div className="flex items-center gap-2">
+														<span className="text-[11px] font-semibold uppercase tracking-wide text-ui-muted">Box bewerken</span>
+														<span className="rounded-full bg-ui-accent/15 px-2 py-0.5 text-[11px] font-semibold text-ui-accent">
+															{selectedPlacedElement.side === 'left' ? 'Links' : 'Rechts'}
+														</span>
+													</div>
+													<p className="mt-1 text-xs leading-relaxed text-ui-muted">
+														Sleep de punten direct op het element om lokaal volume aan te passen. Alleen punten op het element zijn zichtbaar.
+													</p>
+												</div>
+												<div className="flex items-center justify-end gap-2">
+													<Button variant="outline" size="sm" onClick={handleElementBoxCancelAndExit}>
+														Annuleren
+													</Button>
+													<Button size="sm" className="bg-ui-accent text-slate-900 hover:opacity-90" onClick={handleElementBoxSaveAndExit}>
+														Opslaan
+													</Button>
+												</div>
 											</div>
-											<p className="mt-1 text-xs leading-relaxed text-ui-muted">
-												Sleep de punten direct op het element om lokaal volume aan te passen. Alleen punten op het element zijn zichtbaar.
-											</p>
 										</div>
-										<div className="flex items-center justify-end gap-2">
-											<Button variant="outline" size="sm" onClick={handleElementBoxCancelAndExit}>
-												Annuleren
-											</Button>
-											<Button size="sm" className="bg-ui-accent text-slate-900 hover:opacity-90" onClick={handleElementBoxSaveAndExit}>
-												Opslaan
-											</Button>
-										</div>
-									</div>
-								</div>
-							)}
+									)}
 
-							{selectedInsoleSide && isSelectedGridModeOn && (
-								<div className="absolute bottom-6 left-6 z-20 w-[min(92vw,360px)] rounded-2xl border border-ui-border bg-ui-panel/92 px-4 py-3 text-ui-text shadow-xl backdrop-blur">
-									<div className="flex flex-col gap-3">
-										<div className="min-w-0">
-											<div className="flex items-center gap-2">
-												<span className="text-[11px] font-semibold uppercase tracking-wide text-ui-muted">Box bewerken</span>
-												<span className="rounded-full bg-ui-accent/15 px-2 py-0.5 text-[11px] font-semibold text-ui-accent">
-													{selectedInsoleSide === 'left' ? 'Links' : 'Rechts'}
-												</span>
+									{selectedInsoleSide && isSelectedGridModeOn && (
+										<div className="absolute bottom-6 left-6 z-20 w-[min(92vw,360px)] rounded-2xl border border-ui-border bg-ui-panel/92 px-4 py-3 text-ui-text shadow-xl backdrop-blur">
+											<div className="flex flex-col gap-3">
+												<div className="min-w-0">
+													<div className="flex items-center gap-2">
+														<span className="text-[11px] font-semibold uppercase tracking-wide text-ui-muted">Box bewerken</span>
+														<span className="rounded-full bg-ui-accent/15 px-2 py-0.5 text-[11px] font-semibold text-ui-accent">
+															{selectedInsoleSide === 'left' ? 'Links' : 'Rechts'}
+														</span>
+													</div>
+													<p className="mt-1 text-xs leading-relaxed text-ui-muted">
+														Sleep de punten direct op de zool om lokaal volume aan te passen. Alleen punten op de zool zijn zichtbaar.
+													</p>
+												</div>
+												<div className="flex items-center justify-end gap-2">
+													<Button variant="outline" size="sm" onClick={handleBoxGridCancelAndExit}>
+														Annuleren
+													</Button>
+													<Button size="sm" className="bg-ui-accent text-slate-900 hover:opacity-90" onClick={handleBoxGridSaveAndExit}>
+														Opslaan
+													</Button>
+												</div>
 											</div>
-											<p className="mt-1 text-xs leading-relaxed text-ui-muted">
-												Sleep de punten direct op de zool om lokaal volume aan te passen. Alleen punten op de zool zijn zichtbaar.
-											</p>
 										</div>
-										<div className="flex items-center justify-end gap-2">
-											<Button variant="outline" size="sm" onClick={handleBoxGridCancelAndExit}>
-												Annuleren
-											</Button>
-											<Button size="sm" className="bg-ui-accent text-slate-900 hover:opacity-90" onClick={handleBoxGridSaveAndExit}>
-												Opslaan
-											</Button>
-										</div>
-									</div>
-								</div>
-							)}
-							</>
+									)}
+								</>
 							)}
 							{leftPanelTab !== 'analysis' && !selectedInsoleSide && selectedPlacedElement && (
 								<div className="absolute right-4 top-4 z-20 w-[320px]">
@@ -4263,52 +4353,55 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									/>
 								</div>
 							)}
-							{leftPanelTab !== 'analysis' && !selectedInsoleSide && !selectedPlacedElement && (
-								<div className="absolute right-4 top-4 z-20 flex h-[85vh] w-[420px] flex-col rounded-2xl border border-ui-border bg-ui-panel text-ui-text overflow-hidden">
-									<StepRail
-										activeStep={activeDesignStep}
-										onStepChange={(step) => {
-											if (!scansActive && step !== 1) return;
-											setActiveDesignStep(step);
-										}}
-										stepLabels={
-											productionMethod === 'Frezen: EVA'
-												? { 3: 'EVA' }
-												: undefined
-										}
-										visibleSteps={scansActive ? undefined : [1]}
-									/>
+							{leftPanelTab !== 'analysis' &&
+								!selectedInsoleSide &&
+								!selectedPlacedElement &&
+								!(textEditorOpen && activeCorrections.includes('tekst')) && (
+									<div className="absolute right-4 top-4 z-20 flex h-[85vh] w-[420px] flex-col rounded-2xl border border-ui-border bg-ui-panel text-ui-text overflow-hidden">
+										<StepRail
+											activeStep={activeDesignStep}
+											onStepChange={(step) => {
+												if (!scansActive && step !== 1) return;
+												setActiveDesignStep(step);
+											}}
+											stepLabels={
+												productionMethod === 'Frezen: EVA'
+													? { 3: 'EVA' }
+													: undefined
+											}
+											visibleSteps={scansActive ? undefined : [1]}
+										/>
 
-									<div className="flex-1 overflow-y-auto px-4 pb-4 pr-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-[rgba(255,255,255,0.18)]">
-										{renderStepContent()}
-									</div>
-									<div className="border-t border-ui-border px-4 py-3 flex items-center justify-between">
-										{/* Autosave status */}
-										<div className="flex items-center gap-1.5 text-[11px]">
-											{saveStatus === 'saving' && (
-												<>
-													<Loader2 className="h-3 w-3 animate-spin text-ui-muted" />
-													<span className="text-ui-muted">Opslaan...</span>
-												</>
-											)}
-											{saveStatus === 'error' && (
-												<>
-													<AlertCircle className="h-3 w-3 text-red-400" />
-													<span className="text-red-400">Opslaan mislukt</span>
-												</>
-											)}
-											{(saveStatus === 'saved' || saveStatus === 'idle') && lastSavedAt && (
-												<>
-													<Check className="h-3 w-3 text-green-400" />
-													<span className="text-ui-muted">
-														Opgeslagen {lastSavedAt.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}
-													</span>
-												</>
-											)}
+										<div className="flex-1 overflow-y-auto px-4 pb-4 pr-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-[rgba(255,255,255,0.18)]">
+											{renderStepContent()}
+										</div>
+										<div className="border-t border-ui-border px-4 py-3 flex items-center justify-between">
+											{/* Autosave status */}
+											<div className="flex items-center gap-1.5 text-[11px]">
+												{saveStatus === 'saving' && (
+													<>
+														<Loader2 className="h-3 w-3 animate-spin text-ui-muted" />
+														<span className="text-ui-muted">Opslaan...</span>
+													</>
+												)}
+												{saveStatus === 'error' && (
+													<>
+														<AlertCircle className="h-3 w-3 text-red-400" />
+														<span className="text-red-400">Opslaan mislukt</span>
+													</>
+												)}
+												{(saveStatus === 'saved' || saveStatus === 'idle') && lastSavedAt && (
+													<>
+														<Check className="h-3 w-3 text-green-400" />
+														<span className="text-ui-muted">
+															Opgeslagen {lastSavedAt.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}
+														</span>
+													</>
+												)}
+											</div>
 										</div>
 									</div>
-								</div>
-							)}
+								)}
 
 							{/* Grid mode now uses: bottom-left tools + top-right confirm panel */}
 						</div>

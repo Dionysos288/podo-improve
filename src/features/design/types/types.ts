@@ -65,6 +65,12 @@ export type MatchTransform = {
 	scale: number;
 };
 
+/** Manual yaw-only tweak of the foot scan overlay, composed on auto registration matrix */
+export type ScanManualAlignment = {
+	pivot: [number, number, number];
+	yawRad: number;
+};
+
 export const DEFAULT_INSOLE_PARAMETERS: InsoleParameters = {
 	thickness: 3.2,
 	archBoost: 4,

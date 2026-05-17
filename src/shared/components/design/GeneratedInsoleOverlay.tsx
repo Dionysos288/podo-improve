@@ -10,6 +10,7 @@ interface GeneratedInsoleOverlayProps {
 	onToggleBox: (side: InsoleSide) => void;
 	onMirrorToOther: (side: InsoleSide) => void;
 	onTrimlineEdit?: (side: InsoleSide) => void;
+	onScanRotateEdit?: (side: InsoleSide) => void;
 	className?: string;
 }
 
@@ -19,6 +20,7 @@ export function GeneratedInsoleOverlay({
 	onToggleBox,
 	onMirrorToOther,
 	onTrimlineEdit,
+	onScanRotateEdit,
 	className,
 }: GeneratedInsoleOverlayProps) {
 	const isBoxOn = selectedSide === 'left' ? boxEnabled.left : boxEnabled.right;
@@ -66,6 +68,17 @@ export function GeneratedInsoleOverlay({
 					>
 						<span>Trimline aanpassen</span>
 						<span className="text-xs text-(--ui-muted)">Rand bewerken</span>
+					</button>
+				)}
+
+				{onScanRotateEdit && (
+					<button
+						type="button"
+						onClick={() => onScanRotateEdit(selectedSide)}
+						className="flex w-full items-center justify-between rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)]"
+					>
+						<span>3D scan draaien</span>
+						<span className="text-xs text-(--ui-muted)">Uitlijning aanpassen</span>
 					</button>
 				)}
 
