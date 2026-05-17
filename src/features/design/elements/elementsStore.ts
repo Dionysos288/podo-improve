@@ -6,7 +6,10 @@
 import { create } from 'zustand';
 import type { PlacedElement, ElementProfile, ElementFloorMode } from './types';
 import { getElementByKey, ANCHOR_POSITIONS } from './catalog';
-import { getDefaultPlacementForSide, mirrorPlacedElementToSide } from './placement';
+import {
+	getDefaultPlacementForSide,
+	mirrorPlacedElementToSide,
+} from './placement';
 
 interface ElementsState {
 	/** All placed elements (both sides) */
@@ -44,11 +47,15 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 		const item = getElementByKey(libraryKey);
 		if (!item) throw new Error(`Unknown element key: ${libraryKey}`);
 
-		const anchor = item.defaultPosition ?? ANCHOR_POSITIONS[item.anchor] ?? { u: 0.5, v: 0.5 };
-		const defaults = getDefaultPlacementForSide({
-			defaultPosition: anchor,
-			defaultRotationRad: item.defaultRotationRad,
-		}, side);
+		const anchor = item.defaultPosition ??
+			ANCHOR_POSITIONS[item.anchor] ?? { u: 0.5, v: 0.5 };
+		const defaults = getDefaultPlacementForSide(
+			{
+				defaultPosition: anchor,
+				defaultRotationRad: item.defaultRotationRad,
+			},
+			side,
+		);
 
 		const newElement: PlacedElement = {
 			id: genId(),
@@ -80,7 +87,9 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 			let didChange = false;
 			const placedElements = state.placedElements.map((el) => {
 				if (el.id !== id) return el;
-				for (const [key, value] of Object.entries(updates) as Array<[keyof PlacedElement, PlacedElement[keyof PlacedElement]]>) {
+				for (const [key, value] of Object.entries(updates) as Array<
+					[keyof PlacedElement, PlacedElement[keyof PlacedElement]]
+				>) {
 					if (el[key] !== value) {
 						didChange = true;
 						break;
@@ -108,7 +117,9 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 			: source.side;
 
 		const dup: PlacedElement = {
-			...(mirrorSide ? mirrorPlacedElementToSide(source, targetSide) : structuredClone(source)),
+			...(mirrorSide
+				? mirrorPlacedElementToSide(source, targetSide)
+				: structuredClone(source)),
 			id: genId(),
 		};
 
@@ -120,7 +131,7 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 
 	selectElement: (id) =>
 		set((state) =>
-			state.selectedElementId === id ? state : { selectedElementId: id }
+			state.selectedElementId === id ? state : { selectedElementId: id },
 		),
 
 	getElementsForSide: (side) =>

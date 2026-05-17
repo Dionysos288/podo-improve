@@ -10,7 +10,11 @@
 import * as THREE from 'three';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { PlacedElement, ElementProfile } from './types';
-import { getElementByKey, getElementPreferredStlUrl, ELEMENT_COLORS } from './catalog';
+import {
+	getElementByKey,
+	getElementPreferredStlUrl,
+	ELEMENT_COLORS,
+} from './catalog';
 import { getDefaultPlacementForSide } from './placement';
 
 /* ── helpers (same as insoleCorrections.ts) ──── */
@@ -47,7 +51,7 @@ function getGeometryAxes(geometry: THREE.BufferGeometry) {
 function getAxisValue(
 	positions: THREE.BufferAttribute,
 	i: number,
-	axis: string
+	axis: string,
 ): number {
 	if (axis === 'x') return positions.getX(i);
 	if (axis === 'y') return positions.getY(i);
@@ -58,7 +62,7 @@ function setAxisValue(
 	positions: THREE.BufferAttribute,
 	i: number,
 	axis: string,
-	value: number
+	value: number,
 ): void {
 	if (axis === 'x') positions.setX(i, value);
 	else if (axis === 'y') positions.setY(i, value);
@@ -125,10 +129,16 @@ function measurePreparedPolygon(
 	let inside = false;
 	let minDistSq = Infinity;
 	for (const edge of polygon.edges) {
-		if (edge.ay > py !== edge.by > py && px < (edge.dx * (py - edge.ay)) / (edge.by - edge.ay) + edge.ax) {
+		if (
+			edge.ay > py !== edge.by > py &&
+			px < (edge.dx * (py - edge.ay)) / (edge.by - edge.ay) + edge.ax
+		) {
 			inside = !inside;
 		}
-		let t = edge.len2 > 0 ? ((px - edge.ax) * edge.dx + (py - edge.ay) * edge.dy) / edge.len2 : 0;
+		let t =
+			edge.len2 > 0
+				? ((px - edge.ax) * edge.dx + (py - edge.ay) * edge.dy) / edge.len2
+				: 0;
 		t = Math.max(0, Math.min(1, t));
 		const cx = edge.ax + t * edge.dx;
 		const cy = edge.ay + t * edge.dy;
@@ -177,8 +187,8 @@ function distToInsoleEdgeMm(
 	mmToWorld: number,
 ): number {
 	const { minV, maxV } = sampler(Math.max(0, Math.min(1, u)));
-	const distToMin = (v - minV) * widthSpan / Math.max(mmToWorld, 1e-6);
-	const distToMax = (maxV - v) * widthSpan / Math.max(mmToWorld, 1e-6);
+	const distToMin = ((v - minV) * widthSpan) / Math.max(mmToWorld, 1e-6);
+	const distToMax = ((maxV - v) * widthSpan) / Math.max(mmToWorld, 1e-6);
 	return Math.min(distToMin, distToMax);
 }
 
@@ -206,8 +216,10 @@ function clipVertexToInsole(
 	const uClamped = Math.max(0, Math.min(1, sampleU));
 	const { minV, maxV } = sampler(uClamped);
 
-	const distToMinMm = (sampleV - minV) * widthSpan / Math.max(mmToWorld, 1e-6);
-	const distToMaxMm = (maxV - sampleV) * widthSpan / Math.max(mmToWorld, 1e-6);
+	const distToMinMm =
+		((sampleV - minV) * widthSpan) / Math.max(mmToWorld, 1e-6);
+	const distToMaxMm =
+		((maxV - sampleV) * widthSpan) / Math.max(mmToWorld, 1e-6);
 	const distToEdgeMm = Math.min(distToMinMm, distToMaxMm);
 
 	if (distToEdgeMm < 0) {
@@ -224,10 +236,18 @@ function clipVertexToInsole(
 		const t = distToEdgeMm / blendMm;
 		const t3 = t * t * t;
 		const smooth = t3 * (t * (t * 6 - 15) + 10);
-		return { clippedV: sampleV, clippedWorldWidth: worldWidth, heightMultiplier: smooth };
+		return {
+			clippedV: sampleV,
+			clippedWorldWidth: worldWidth,
+			heightMultiplier: smooth,
+		};
 	}
 	// Fully inside
-	return { clippedV: sampleV, clippedWorldWidth: worldWidth, heightMultiplier: 1 };
+	return {
+		clippedV: sampleV,
+		clippedWorldWidth: worldWidth,
+		heightMultiplier: 1,
+	};
 }
 
 /**
@@ -323,7 +343,10 @@ type PlacementContext = {
 	mmToWorld: number;
 };
 
-function getEffectiveMirrorWidth(side: 'left' | 'right', mirrorWidth?: boolean) {
+function getEffectiveMirrorWidth(
+	side: 'left' | 'right',
+	mirrorWidth?: boolean,
+) {
 	return side === 'left' ? !Boolean(mirrorWidth) : Boolean(mirrorWidth);
 }
 
@@ -400,7 +423,12 @@ function buildTopSurfaceHeightSampler({
 				if (heightGrid[gi] > heightMin) continue;
 				let sum = 0;
 				let count = 0;
-				for (const [du, dv] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
+				for (const [du, dv] of [
+					[-1, 0],
+					[1, 0],
+					[0, -1],
+					[0, 1],
+				] as const) {
 					const nu = gu + du;
 					const nv = gv + dv;
 					if (nu < 0 || nu >= gridSize || nv < 0 || nv >= gridSize) continue;
@@ -428,10 +456,12 @@ function buildTopSurfaceHeightSampler({
 		const h10 = heightGrid[gui1 * gridSize + gvi];
 		const h01 = heightGrid[gui * gridSize + gvi1];
 		const h11 = heightGrid[gui1 * gridSize + gvi1];
-		return h00 * (1 - guf) * (1 - gvf)
-			+ h10 * guf * (1 - gvf)
-			+ h01 * (1 - guf) * gvf
-			+ h11 * guf * gvf;
+		return (
+			h00 * (1 - guf) * (1 - gvf) +
+			h10 * guf * (1 - gvf) +
+			h01 * (1 - guf) * gvf +
+			h11 * guf * gvf
+		);
 	};
 }
 
@@ -453,19 +483,25 @@ type CachedInsoleOverlayAnalysis = {
 	upSign: number;
 };
 
-const insoleOverlayAnalysisCache = new WeakMap<THREE.BufferGeometry, CachedInsoleOverlayAnalysis>();
+const insoleOverlayAnalysisCache = new WeakMap<
+	THREE.BufferGeometry,
+	CachedInsoleOverlayAnalysis
+>();
 
 function getPositionVersion(attribute: THREE.BufferAttribute | undefined) {
 	return attribute?.version ?? 0;
 }
 
-function buildCachedInsoleOverlayAnalysis(insoleGeometry: THREE.BufferGeometry): CachedInsoleOverlayAnalysis {
+function buildCachedInsoleOverlayAnalysis(
+	insoleGeometry: THREE.BufferGeometry,
+): CachedInsoleOverlayAnalysis {
 	if (!insoleGeometry.getAttribute('normal')) {
 		insoleGeometry.computeVertexNormals();
 	}
 
 	const axes = getGeometryAxes(insoleGeometry);
-	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } = axes;
+	const { lengthAxis, widthAxis, heightAxis, bbox, lengthSpan, widthSpan } =
+		axes;
 	const lengthMin = getMinForAxis(bbox, lengthAxis);
 	const widthMin = getMinForAxis(bbox, widthAxis);
 	const heightMin = getMinForAxis(bbox, heightAxis);
@@ -473,8 +509,12 @@ function buildCachedInsoleOverlayAnalysis(insoleGeometry: THREE.BufferGeometry):
 	const heightSpan = heightMax - heightMin;
 	const heelAtMin = true;
 
-	const positions = insoleGeometry.getAttribute('position') as THREE.BufferAttribute;
-	const normals = insoleGeometry.getAttribute('normal') as THREE.BufferAttribute;
+	const positions = insoleGeometry.getAttribute(
+		'position',
+	) as THREE.BufferAttribute;
+	const normals = insoleGeometry.getAttribute(
+		'normal',
+	) as THREE.BufferAttribute;
 	const vertexCount = positions.count;
 	const sampleHeight = buildTopSurfaceHeightSampler({
 		positions,
@@ -552,8 +592,16 @@ function buildCachedInsoleOverlayAnalysis(insoleGeometry: THREE.BufferGeometry):
 			let wSum = 2;
 			let minSum = tmpMin[bu] * 2;
 			let maxSum = tmpMax[bu] * 2;
-			if (prevOk) { minSum += tmpMin[bu - 1]; maxSum += tmpMax[bu - 1]; wSum += 1; }
-			if (nextOk) { minSum += tmpMin[bu + 1]; maxSum += tmpMax[bu + 1]; wSum += 1; }
+			if (prevOk) {
+				minSum += tmpMin[bu - 1];
+				maxSum += tmpMax[bu - 1];
+				wSum += 1;
+			}
+			if (nextOk) {
+				minSum += tmpMin[bu + 1];
+				maxSum += tmpMax[bu + 1];
+				wSum += 1;
+			}
 			insoleMinVPerU[bu] = minSum / wSum;
 			insoleMaxVPerU[bu] = maxSum / wSum;
 		}
@@ -587,14 +635,24 @@ function buildCachedInsoleOverlayAnalysis(insoleGeometry: THREE.BufferGeometry):
 			let wSum = 2;
 			let minSum = tmpMin[bv] * 2;
 			let maxSum = tmpMax[bv] * 2;
-			if (prevOk) { minSum += tmpMin[bv - 1]; maxSum += tmpMax[bv - 1]; wSum += 1; }
-			if (nextOk) { minSum += tmpMin[bv + 1]; maxSum += tmpMax[bv + 1]; wSum += 1; }
+			if (prevOk) {
+				minSum += tmpMin[bv - 1];
+				maxSum += tmpMax[bv - 1];
+				wSum += 1;
+			}
+			if (nextOk) {
+				minSum += tmpMin[bv + 1];
+				maxSum += tmpMax[bv + 1];
+				wSum += 1;
+			}
 			insoleMinUPerV[bv] = minSum / wSum;
 			insoleMaxUPerV[bv] = maxSum / wSum;
 		}
 	}
 
-	const sampleInsoleUExtent = (vNorm: number): { minU: number; maxU: number } => {
+	const sampleInsoleUExtent = (
+		vNorm: number,
+	): { minU: number; maxU: number } => {
 		const gv = Math.max(0, Math.min(BGRID - 1.001, vNorm * BGRID));
 		const gvi = Math.floor(gv);
 		const frac = gv - gvi;
@@ -605,7 +663,9 @@ function buildCachedInsoleOverlayAnalysis(insoleGeometry: THREE.BufferGeometry):
 		};
 	};
 
-	const sampleInsoleExtent = (uNorm: number): { minV: number; maxV: number } => {
+	const sampleInsoleExtent = (
+		uNorm: number,
+	): { minV: number; maxV: number } => {
 		const gu = Math.max(0, Math.min(BGRID - 1.001, uNorm * BGRID));
 		const gui = Math.floor(gu);
 		const frac = gu - gui;
@@ -634,12 +694,20 @@ function buildCachedInsoleOverlayAnalysis(insoleGeometry: THREE.BufferGeometry):
 }
 
 function getCachedInsoleOverlayAnalysis(insoleGeometry: THREE.BufferGeometry) {
-	const positions = insoleGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
-	const normals = insoleGeometry.getAttribute('normal') as THREE.BufferAttribute | undefined;
+	const positions = insoleGeometry.getAttribute('position') as
+		| THREE.BufferAttribute
+		| undefined;
+	const normals = insoleGeometry.getAttribute('normal') as
+		| THREE.BufferAttribute
+		| undefined;
 	const positionVersion = getPositionVersion(positions);
 	const normalVersion = getPositionVersion(normals);
 	const cached = insoleOverlayAnalysisCache.get(insoleGeometry);
-	if (cached && cached.positionVersion === positionVersion && cached.normalVersion === normalVersion) {
+	if (
+		cached &&
+		cached.positionVersion === positionVersion &&
+		cached.normalVersion === normalVersion
+	) {
 		return cached;
 	}
 	const next = buildCachedInsoleOverlayAnalysis(insoleGeometry);
@@ -663,8 +731,14 @@ type CachedStlDistanceField = {
 	gridSize: number;
 };
 
-const stlDistanceFieldCache = new WeakMap<THREE.BufferGeometry, Map<string, CachedStlDistanceField>>();
-const preparedOverlayStlGeometryCache = new WeakMap<THREE.BufferGeometry, Map<string, THREE.BufferGeometry>>();
+const stlDistanceFieldCache = new WeakMap<
+	THREE.BufferGeometry,
+	Map<string, CachedStlDistanceField>
+>();
+const preparedOverlayStlGeometryCache = new WeakMap<
+	THREE.BufferGeometry,
+	Map<string, THREE.BufferGeometry>
+>();
 
 function getPreparedOverlayStlGeometry(
 	sourceGeometry: THREE.BufferGeometry,
@@ -719,9 +793,12 @@ function getCachedStlDistanceField(
 
 	const pos = sourceGeometry.getAttribute('position') as THREE.BufferAttribute;
 	const vtxCount = pos.count;
-	let minX = Infinity, maxX = -Infinity;
-	let minY = Infinity, maxY = -Infinity;
-	let minZ = Infinity, maxZ = -Infinity;
+	let minX = Infinity,
+		maxX = -Infinity;
+	let minY = Infinity,
+		maxY = -Infinity;
+	let minZ = Infinity,
+		maxZ = -Infinity;
 	for (let i = 0; i < vtxCount; i++) {
 		const x = pos.getX(i);
 		const y = swapYZ ? pos.getZ(i) : pos.getY(i);
@@ -753,8 +830,14 @@ function getCachedStlDistanceField(
 		const py = swapYZ ? pos.getZ(i) : pos.getY(i);
 		const pz = swapYZ ? pos.getY(i) : pos.getZ(i);
 		if (pz <= baseThresh) continue;
-		const gx = Math.min(gridSize - 1, Math.max(0, Math.floor((px - minX) / cellW)));
-		const gy = Math.min(gridSize - 1, Math.max(0, Math.floor((py - minY) / cellL)));
+		const gx = Math.min(
+			gridSize - 1,
+			Math.max(0, Math.floor((px - minX) / cellW)),
+		);
+		const gy = Math.min(
+			gridSize - 1,
+			Math.max(0, Math.floor((py - minY) / cellL)),
+		);
 		occupied[gy * gridSize + gx] = 1;
 	}
 
@@ -766,12 +849,24 @@ function getCachedStlDistanceField(
 				distGrid[gi] = 0;
 				continue;
 			}
-			let isBoundary = gx === 0 || gx === gridSize - 1 || gy === 0 || gy === gridSize - 1;
+			let isBoundary =
+				gx === 0 || gx === gridSize - 1 || gy === 0 || gy === gridSize - 1;
 			if (!isBoundary) {
-				for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
+				for (const [dx, dy] of [
+					[-1, 0],
+					[1, 0],
+					[0, -1],
+					[0, 1],
+				] as const) {
 					const nx = gx + dx;
 					const ny = gy + dy;
-					if (nx >= 0 && nx < gridSize && ny >= 0 && ny < gridSize && !occupied[ny * gridSize + nx]) {
+					if (
+						nx >= 0 &&
+						nx < gridSize &&
+						ny >= 0 &&
+						ny < gridSize &&
+						!occupied[ny * gridSize + nx]
+					) {
 						isBoundary = true;
 						break;
 					}
@@ -789,7 +884,16 @@ function getCachedStlDistanceField(
 		const cx = queue[qi++];
 		const cy = queue[qi++];
 		const cd = distGrid[cy * gridSize + cx];
-		for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]] as const) {
+		for (const [dx, dy] of [
+			[-1, 0],
+			[1, 0],
+			[0, -1],
+			[0, 1],
+			[-1, -1],
+			[-1, 1],
+			[1, -1],
+			[1, 1],
+		] as const) {
 			const nx = cx + dx;
 			const ny = cy + dy;
 			if (nx < 0 || nx >= gridSize || ny < 0 || ny >= gridSize) continue;
@@ -853,7 +957,9 @@ function trimAdditiveOverlayGeometry({
 	surfaceHeightSampler,
 	epsilon,
 }: TrimAdditiveOverlayGeometryOptions): THREE.BufferGeometry | null {
-	const positions = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+	const positions = geometry.getAttribute('position') as
+		| THREE.BufferAttribute
+		| undefined;
 	if (!positions || positions.count < 3) return null;
 
 	const visibleVertices = new Uint8Array(positions.count);
@@ -903,7 +1009,8 @@ function trimAdditiveOverlayGeometry({
 			const a = index.getX(i);
 			const b = index.getX(i + 1);
 			const c = index.getX(i + 2);
-			if (!visibleVertices[a] && !visibleVertices[b] && !visibleVertices[c]) continue;
+			if (!visibleVertices[a] && !visibleVertices[b] && !visibleVertices[c])
+				continue;
 			if (triangleArea(a, b, c) <= degenerateArea) continue;
 			keptIndices.push(a, b, c);
 		}
@@ -919,31 +1026,43 @@ function trimAdditiveOverlayGeometry({
 		const b = i + 1;
 		const c = i + 2;
 		if (c >= positions.count) break;
-		if (!visibleVertices[a] && !visibleVertices[b] && !visibleVertices[c]) continue;
+		if (!visibleVertices[a] && !visibleVertices[b] && !visibleVertices[c])
+			continue;
 		if (triangleArea(a, b, c) <= degenerateArea) continue;
 		keptPositions.push(
-			positions.getX(a), positions.getY(a), positions.getZ(a),
-			positions.getX(b), positions.getY(b), positions.getZ(b),
-			positions.getX(c), positions.getY(c), positions.getZ(c),
+			positions.getX(a),
+			positions.getY(a),
+			positions.getZ(a),
+			positions.getX(b),
+			positions.getY(b),
+			positions.getZ(b),
+			positions.getX(c),
+			positions.getY(c),
+			positions.getZ(c),
 		);
 	}
 
 	if (keptPositions.length < 9) return null;
 
 	let trimmedGeometry = new THREE.BufferGeometry();
-	trimmedGeometry.setAttribute('position', new THREE.Float32BufferAttribute(keptPositions, 3));
+	trimmedGeometry.setAttribute(
+		'position',
+		new THREE.Float32BufferAttribute(keptPositions, 3),
+	);
 	// Merge coincident vertices so computeVertexNormals produces smooth (shared) normals
 	// instead of flat per-face normals that cause a faceted look.
 	try {
 		trimmedGeometry = mergeVertices(trimmedGeometry, 0.001);
-	} catch { /* keep unmerged if it fails */ }
+	} catch {
+		/* keep unmerged if it fails */
+	}
 	return trimmedGeometry;
 }
 
 function resolveAdaptiveSd25Layout(
 	item: ReturnType<typeof getElementByKey>,
 	el: PlacedElement,
-	context: PlacementContext
+	context: PlacementContext,
 ): ResolvedElementLayout {
 	const {
 		positions,
@@ -988,7 +1107,12 @@ function resolveAdaptiveSd25Layout(
 	let bestBin: (typeof bins)[number] | null = null;
 	let bestScore = -Infinity;
 	for (const bin of bins) {
-		if (bin.count < 8 || !Number.isFinite(bin.minV) || !Number.isFinite(bin.maxV)) continue;
+		if (
+			bin.count < 8 ||
+			!Number.isFinite(bin.minV) ||
+			!Number.isFinite(bin.maxV)
+		)
+			continue;
 		const widthNorm = bin.maxV - bin.minV;
 		if (widthNorm < 0.12) continue;
 		const forefootBias = Math.max(0, 1 - Math.abs(bin.u - 0.79) / 0.12);
@@ -1011,10 +1135,13 @@ function resolveAdaptiveSd25Layout(
 	// Place element centre at ~58% from minV for right (lateral), 42% for left
 	const lateralCenterFactor = el.side === 'right' ? 0.58 : 0.42;
 	const adaptiveU = clamp01(Math.max(0.72, Math.min(0.86, bestBin.u + 0.015)));
-	const adaptiveV = clamp01(bestBin.minV + localWidthNorm * lateralCenterFactor);
+	const adaptiveV = clamp01(
+		bestBin.minV + localWidthNorm * lateralCenterFactor,
+	);
 	const localWidthMm = (localWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
 	const baseWidthMm = Math.max(24, localWidthMm * 0.62);
-	const aspect = (item?.stlSizeMm?.[1] ?? 52) / Math.max(1e-6, item?.stlSizeMm?.[0] ?? 65.8);
+	const aspect =
+		(item?.stlSizeMm?.[1] ?? 52) / Math.max(1e-6, item?.stlSizeMm?.[0] ?? 65.8);
 	const baseLengthMm = Math.max(16, baseWidthMm * aspect * 1.0);
 	const adaptiveRotation = el.side === 'right' ? -0.16 : 0.16;
 
@@ -1030,7 +1157,7 @@ function resolveAdaptiveSd25Layout(
 function resolveAdaptiveSd15Layout(
 	item: ReturnType<typeof getElementByKey>,
 	el: PlacedElement,
-	context: PlacementContext
+	context: PlacementContext,
 ): ResolvedElementLayout {
 	const {
 		positions,
@@ -1078,7 +1205,12 @@ function resolveAdaptiveSd15Layout(
 	let bestBin: (typeof bins)[number] | null = null;
 	let bestScore = -Infinity;
 	for (const bin of bins) {
-		if (bin.count < 8 || !Number.isFinite(bin.minV) || !Number.isFinite(bin.maxV)) continue;
+		if (
+			bin.count < 8 ||
+			!Number.isFinite(bin.minV) ||
+			!Number.isFinite(bin.maxV)
+		)
+			continue;
 		const widthNorm = bin.maxV - bin.minV;
 		if (widthNorm < 0.12) continue;
 		const forefootBias = Math.max(0, 1 - Math.abs(bin.u - 0.78) / 0.14);
@@ -1101,16 +1233,19 @@ function resolveAdaptiveSd15Layout(
 	const insoleMinV = bestBin.minV;
 	const insoleMaxV = bestBin.maxV;
 	const insoleWidthNorm = Math.max(0.2, insoleMaxV - insoleMinV);
-	const insoleWidthAtSliceMm = (insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
+	const insoleWidthAtSliceMm =
+		(insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
 
 	// SD 1-5 spans the entire insole width — scale to 120% so it clearly
 	// overshoots the boundary, then the insole clipper trims excess cleanly.
 	const adaptiveU = clamp01(Math.max(0.72, Math.min(0.85, bestBin.u + 0.01)));
-	const adaptiveV = clamp01(insoleMinV + insoleWidthNorm * 0.50); // centred
-	const baseWidthMm = Math.max(50, insoleWidthAtSliceMm * 1.20);
-	const aspect = (item?.stlSizeMm?.[1] ?? 54.5) / Math.max(1e-6, item?.stlSizeMm?.[0] ?? 87.1);
+	const adaptiveV = clamp01(insoleMinV + insoleWidthNorm * 0.5); // centred
+	const baseWidthMm = Math.max(50, insoleWidthAtSliceMm * 1.2);
+	const aspect =
+		(item?.stlSizeMm?.[1] ?? 54.5) /
+		Math.max(1e-6, item?.stlSizeMm?.[0] ?? 87.1);
 	// SA rechts 1-5 should only cover ~60% of the forefoot length
-	const lengthScale = item?.key === 'sa-rechts-1-5' ? 0.60 : 1.0;
+	const lengthScale = item?.key === 'sa-rechts-1-5' ? 0.6 : 1.0;
 	const baseLengthMm = Math.max(28, baseWidthMm * aspect * lengthScale);
 
 	return {
@@ -1125,7 +1260,7 @@ function resolveAdaptiveSd15Layout(
 function resolveAdaptiveSd1Layout(
 	item: ReturnType<typeof getElementByKey>,
 	el: PlacedElement,
-	context: PlacementContext
+	context: PlacementContext,
 ): ResolvedElementLayout {
 	const {
 		positions,
@@ -1172,7 +1307,12 @@ function resolveAdaptiveSd1Layout(
 	let bestBin: (typeof bins)[number] | null = null;
 	let bestScore = -Infinity;
 	for (const bin of bins) {
-		if (bin.count < 8 || !Number.isFinite(bin.minV) || !Number.isFinite(bin.maxV)) continue;
+		if (
+			bin.count < 8 ||
+			!Number.isFinite(bin.minV) ||
+			!Number.isFinite(bin.maxV)
+		)
+			continue;
 		const widthNorm = bin.maxV - bin.minV;
 		if (widthNorm < 0.12) continue;
 		const forefootBias = Math.max(0, 1 - Math.abs(bin.u - 0.82) / 0.12);
@@ -1201,17 +1341,21 @@ function resolveAdaptiveSd1Layout(
 	// Diep-rond: position at second toe (~25% from edge), others: near edge (10%)
 	// Deep inset variants sit around the second toe (~25% from edge),
 	// while regular met-1 pads stay close to the silhouette.
-	const insetNorm = item?.key === 'diep-rond' || item?.key === 'diep-ovaal' ? 0.25 : 0.10;
-	const adaptiveU = clamp01(Math.max(0.74, Math.min(0.90, bestBin.u + 0.01)));
-	const adaptiveV = el.side === 'right'
-		? clamp01(medialEdge + localWidthNorm * insetNorm)
-		: clamp01(medialEdge - localWidthNorm * insetNorm);
+	const insetNorm =
+		item?.key === 'diep-rond' || item?.key === 'diep-ovaal' ? 0.25 : 0.1;
+	const adaptiveU = clamp01(Math.max(0.74, Math.min(0.9, bestBin.u + 0.01)));
+	const adaptiveV =
+		el.side === 'right'
+			? clamp01(medialEdge + localWidthNorm * insetNorm)
+			: clamp01(medialEdge - localWidthNorm * insetNorm);
 
 	// Size: keep the natural proportions, scale width to ~30% of local forefoot width
 	const baseWidthMm = Math.max(15, localWidthMm * 0.35);
-	const aspect = (item?.stlSizeMm?.[1] ?? 20.3) / Math.max(1e-6, item?.stlSizeMm?.[0] ?? 25.4);
+	const aspect =
+		(item?.stlSizeMm?.[1] ?? 20.3) /
+		Math.max(1e-6, item?.stlSizeMm?.[0] ?? 25.4);
 	// SA Recht 1 should only cover ~60% of the forefoot length
-	const sd1LengthScale = item?.key === 'sa-recht-1' ? 0.60 : 1.0;
+	const sd1LengthScale = item?.key === 'sa-recht-1' ? 0.6 : 1.0;
 	const baseLengthMm = Math.max(12, baseWidthMm * aspect * sd1LengthScale);
 
 	return {
@@ -1282,9 +1426,14 @@ function resolveAdaptiveRctbLayout(
 	let bestBin: (typeof bins)[number] | null = null;
 	let bestScore = -Infinity;
 	for (const bin of bins) {
-		if (bin.count < 8 || !Number.isFinite(bin.minV) || !Number.isFinite(bin.maxV)) continue;
+		if (
+			bin.count < 8 ||
+			!Number.isFinite(bin.minV) ||
+			!Number.isFinite(bin.maxV)
+		)
+			continue;
 		const widthNorm = bin.maxV - bin.minV;
-		if (widthNorm < 0.10) continue;
+		if (widthNorm < 0.1) continue;
 		const midfootBias = Math.max(0, 1 - Math.abs(bin.u - 0.45) / 0.18);
 		const score = widthNorm * (0.5 + midfootBias);
 		if (score > bestScore) {
@@ -1305,13 +1454,16 @@ function resolveAdaptiveRctbLayout(
 	const insoleMinV = bestBin.minV;
 	const insoleMaxV = bestBin.maxV;
 	const insoleWidthNorm = Math.max(0.2, insoleMaxV - insoleMinV);
-	const insoleWidthAtSliceMm = (insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
+	const insoleWidthAtSliceMm =
+		(insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
 
 	const adaptiveU = clamp01(Math.max(0.35, Math.min(0.55, bestBin.u)));
 	// vCenterBias shifts the element medially (>0.5) or laterally (<0.5)
 	const adaptiveV = clamp01(insoleMinV + insoleWidthNorm * opts.vCenterBias);
 	const baseWidthMm = Math.max(40, insoleWidthAtSliceMm * opts.widthFactor);
-	const aspect = (item?.stlSizeMm?.[1] ?? 82.4) / Math.max(1e-6, item?.stlSizeMm?.[0] ?? 86.6);
+	const aspect =
+		(item?.stlSizeMm?.[1] ?? 82.4) /
+		Math.max(1e-6, item?.stlSizeMm?.[0] ?? 86.6);
 	const baseLengthMm = Math.max(25, baseWidthMm * aspect * opts.lengthFactor);
 
 	return {
@@ -1325,12 +1477,15 @@ function resolveAdaptiveRctbLayout(
 
 // All RCTB variants share the same footprint — differences come from vertex
 // deformation, not from scaling.  Width overshoots 120% for clean insole clipping.
-const RCTB_PARAMS: Record<string, { widthFactor: number; lengthFactor: number; vCenterBias: number }> = {
-	'rctb-3':        { widthFactor: 1.20, lengthFactor: 0.70, vCenterBias: 0.50 },
-	'rctb-2':        { widthFactor: 1.20, lengthFactor: 0.70, vCenterBias: 0.50 },
-	'rctb-1':        { widthFactor: 1.20, lengthFactor: 0.70, vCenterBias: 0.50 },
-	'rctb-pronatie': { widthFactor: 1.20, lengthFactor: 0.70, vCenterBias: 0.50 },
-	'peloitte-2':    { widthFactor: 0.55, lengthFactor: 0.90, vCenterBias: 0.50 },
+const RCTB_PARAMS: Record<
+	string,
+	{ widthFactor: number; lengthFactor: number; vCenterBias: number }
+> = {
+	'rctb-3': { widthFactor: 1.2, lengthFactor: 0.7, vCenterBias: 0.5 },
+	'rctb-2': { widthFactor: 1.2, lengthFactor: 0.7, vCenterBias: 0.5 },
+	'rctb-1': { widthFactor: 1.2, lengthFactor: 0.7, vCenterBias: 0.5 },
+	'rctb-pronatie': { widthFactor: 1.2, lengthFactor: 0.7, vCenterBias: 0.5 },
+	'peloitte-2': { widthFactor: 0.55, lengthFactor: 0.9, vCenterBias: 0.5 },
 };
 
 // ── RCTB per-variant vertex deformation ─────────────────────────────────────
@@ -1342,8 +1497,15 @@ const RCTB_PARAMS: Record<string, { widthFactor: number; lengthFactor: number; v
 // They return ADDITIONAL height in mm at that point.
 
 /** Smooth radial bump centred at (cx,cy) with standard deviation sigma */
-function gaussianBump(x: number, y: number, cx: number, cy: number, sigma: number): number {
-	const dx = x - cx, dy = y - cy;
+function gaussianBump(
+	x: number,
+	y: number,
+	cx: number,
+	cy: number,
+	sigma: number,
+): number {
+	const dx = x - cx,
+		dy = y - cy;
 	return Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma));
 }
 
@@ -1355,25 +1517,25 @@ const RCTB_DEFORM: Record<string, RctbDeformFn> = {
 
 	// RCTB 2 — moderate enhancement: raised central arch + top-right boost
 	'rctb-2': (nu, nv) => {
-		const archRaise  = gaussianBump(nu, nv, 0.50, 0.50, 0.30) * 0.8;
+		const archRaise = gaussianBump(nu, nv, 0.5, 0.5, 0.3) * 0.8;
 		const upperBoost = gaussianBump(nu, nv, 0.65, 0.62, 0.22) * 0.5;
 		return archRaise + upperBoost;
 	},
 
 	// RCTB 1 — strong enhancement: higher arch, spread, lateral→medial slope
 	'rctb-1': (nu, nv) => {
-		const archRaise  = gaussianBump(nu, nv, 0.50, 0.48, 0.32) * 1.5;
+		const archRaise = gaussianBump(nu, nv, 0.5, 0.48, 0.32) * 1.5;
 		const upperRight = gaussianBump(nu, nv, 0.72, 0.55, 0.25) * 1.0;
-		const slope      = nu * 0.5; // gradual lateral → medial slope
+		const slope = nu * 0.5; // gradual lateral → medial slope
 		return archRaise + upperRight + slope;
 	},
 
 	// RCTB Pronatie — strong asymmetric medial raise for pronation correction
 	'rctb-pronatie': (nu, nv, side) => {
 		// Medial side: higher nu for right foot, lower nu for left
-		const medialNu   = side === 'right' ? nu : (1 - nu);
+		const medialNu = side === 'right' ? nu : 1 - nu;
 		const medialRaise = medialNu * medialNu * 2.2;
-		const centerBoost = gaussianBump(nu, nv, 0.50, 0.50, 0.32) * 0.5;
+		const centerBoost = gaussianBump(nu, nv, 0.5, 0.5, 0.32) * 0.5;
 		return medialRaise + centerBoost;
 	},
 };
@@ -1436,9 +1598,14 @@ function resolveAdaptiveSpsaVlakLayout(
 	let bestBin: (typeof bins)[number] | null = null;
 	let bestScore = -Infinity;
 	for (const bin of bins) {
-		if (bin.count < 8 || !Number.isFinite(bin.minV) || !Number.isFinite(bin.maxV)) continue;
+		if (
+			bin.count < 8 ||
+			!Number.isFinite(bin.minV) ||
+			!Number.isFinite(bin.maxV)
+		)
+			continue;
 		const widthNorm = bin.maxV - bin.minV;
-		if (widthNorm < 0.10) continue;
+		if (widthNorm < 0.1) continue;
 		const heelArchBias = Math.max(0, 1 - Math.abs(bin.u - 0.28) / 0.25);
 		const score = widthNorm * (0.5 + heelArchBias);
 		if (score > bestScore) {
@@ -1458,27 +1625,29 @@ function resolveAdaptiveSpsaVlakLayout(
 	const insoleMinV = bestBin.minV;
 	const insoleMaxV = bestBin.maxV;
 	const insoleWidthNorm = Math.max(0.2, insoleMaxV - insoleMinV);
-	const insoleWidthAtSliceMm = (insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
+	const insoleWidthAtSliceMm =
+		(insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
 	const insoleLengthMm = lengthSpan / Math.max(mmToWorld, 1e-6);
 
 	// Centre at U ≈ 0.26 (biased toward heel so the mesh overshoots the heel tip
 	// and the contour clipper can trim it flush)
-	const adaptiveU = clamp01(Math.max(0.20, Math.min(0.32, bestBin.u)));
+	const adaptiveU = clamp01(Math.max(0.2, Math.min(0.32, bestBin.u)));
 
 	// Position on the lateral half – centre close to the lateral edge (5th toe
 	// side) so the element is flush against it.  Boundary clipping trims overshoot.
 	// Right foot: lateral = high V (maxV).  Left foot: lateral = low V (minV).
 	const lateralEdge = el.side === 'right' ? insoleMaxV : insoleMinV;
 	const insetFraction = 0.22;
-	const adaptiveV = el.side === 'right'
-		? clamp01(lateralEdge - insoleWidthNorm * insetFraction)
-		: clamp01(lateralEdge + insoleWidthNorm * insetFraction);
+	const adaptiveV =
+		el.side === 'right'
+			? clamp01(lateralEdge - insoleWidthNorm * insetFraction)
+			: clamp01(lateralEdge + insoleWidthNorm * insetFraction);
 
 	// Width: 120% overshoot of insole width for clean edge clipping
-	const baseWidthMm = Math.max(40, insoleWidthAtSliceMm * 1.20);
+	const baseWidthMm = Math.max(40, insoleWidthAtSliceMm * 1.2);
 	// Length: ~80% of total insole length — generous overshoot past the heel tip
 	// so the contour clipper has material to trim flush with no gaps
-	const baseLengthMm = Math.max(80, insoleLengthMm * 0.80);
+	const baseLengthMm = Math.max(80, insoleLengthMm * 0.8);
 
 	return {
 		positionU: clamp01(adaptiveU + deltaU),
@@ -1544,9 +1713,14 @@ function resolveAdaptivePpsaLayout(
 	let bestBin: (typeof bins)[number] | null = null;
 	let bestScore = -Infinity;
 	for (const bin of bins) {
-		if (bin.count < 8 || !Number.isFinite(bin.minV) || !Number.isFinite(bin.maxV)) continue;
+		if (
+			bin.count < 8 ||
+			!Number.isFinite(bin.minV) ||
+			!Number.isFinite(bin.maxV)
+		)
+			continue;
 		const widthNorm = bin.maxV - bin.minV;
-		if (widthNorm < 0.10) continue;
+		if (widthNorm < 0.1) continue;
 		const heelArchBias = Math.max(0, 1 - Math.abs(bin.u - 0.28) / 0.25);
 		const score = widthNorm * (0.5 + heelArchBias);
 		if (score > bestScore) {
@@ -1566,22 +1740,24 @@ function resolveAdaptivePpsaLayout(
 	const insoleMinV = bestBin.minV;
 	const insoleMaxV = bestBin.maxV;
 	const insoleWidthNorm = Math.max(0.2, insoleMaxV - insoleMinV);
-	const insoleWidthAtSliceMm = (insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
+	const insoleWidthAtSliceMm =
+		(insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
 	const insoleLengthMm = lengthSpan / Math.max(mmToWorld, 1e-6);
 
-	const adaptiveU = clamp01(Math.max(0.20, Math.min(0.32, bestBin.u)));
+	const adaptiveU = clamp01(Math.max(0.2, Math.min(0.32, bestBin.u)));
 
 	// Position on the medial half – centre close to the medial edge (1st toe
 	// / arch side).  Boundary clipping trims overshoot.
 	// Right foot: medial = low V (minV).  Left foot: medial = high V (maxV).
 	const medialEdge = el.side === 'right' ? insoleMinV : insoleMaxV;
 	const insetFraction = 0.22;
-	const adaptiveV = el.side === 'right'
-		? clamp01(medialEdge + insoleWidthNorm * insetFraction)
-		: clamp01(medialEdge - insoleWidthNorm * insetFraction);
+	const adaptiveV =
+		el.side === 'right'
+			? clamp01(medialEdge + insoleWidthNorm * insetFraction)
+			: clamp01(medialEdge - insoleWidthNorm * insetFraction);
 
-	const baseWidthMm = Math.max(40, insoleWidthAtSliceMm * 1.20);
-	const baseLengthMm = Math.max(80, insoleLengthMm * 0.80);
+	const baseWidthMm = Math.max(40, insoleWidthAtSliceMm * 1.2);
+	const baseLengthMm = Math.max(80, insoleLengthMm * 0.8);
 
 	return {
 		positionU: clamp01(adaptiveU + deltaU),
@@ -1636,7 +1812,7 @@ function resolveAdaptiveScBolLayout(
 		const widthVal = getAxisValue(positions, i, widthAxis);
 		const rawU = (lengthVal - lengthMin) / Math.max(lengthSpan, 1e-6);
 		const u = heelAtMin ? rawU : 1 - rawU;
-		if (u < 0.02 || u > 0.50) continue;
+		if (u < 0.02 || u > 0.5) continue;
 		const v = (widthVal - widthMin) / Math.max(widthSpan, 1e-6);
 		const binIndex = Math.max(0, Math.min(BINS - 1, Math.floor(u * BINS)));
 		const bin = bins[binIndex];
@@ -1649,10 +1825,15 @@ function resolveAdaptiveScBolLayout(
 	let bestBin: (typeof bins)[number] | null = null;
 	let bestScore = -Infinity;
 	for (const bin of bins) {
-		if (bin.count < 8 || !Number.isFinite(bin.minV) || !Number.isFinite(bin.maxV)) continue;
+		if (
+			bin.count < 8 ||
+			!Number.isFinite(bin.minV) ||
+			!Number.isFinite(bin.maxV)
+		)
+			continue;
 		const widthNorm = bin.maxV - bin.minV;
-		if (widthNorm < 0.10) continue;
-		const heelBias = Math.max(0, 1 - Math.abs(bin.u - 0.20) / 0.20);
+		if (widthNorm < 0.1) continue;
+		const heelBias = Math.max(0, 1 - Math.abs(bin.u - 0.2) / 0.2);
 		const score = widthNorm * (0.5 + heelBias);
 		if (score > bestScore) {
 			bestScore = score;
@@ -1671,16 +1852,17 @@ function resolveAdaptiveScBolLayout(
 	const insoleMinV = bestBin.minV;
 	const insoleMaxV = bestBin.maxV;
 	const insoleWidthNorm = Math.max(0.2, insoleMaxV - insoleMinV);
-	const insoleWidthAtSliceMm = (insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
+	const insoleWidthAtSliceMm =
+		(insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
 	const insoleLengthMm = lengthSpan / Math.max(mmToWorld, 1e-6);
 
 	// Centre the bowl very low (U ≈ 0.08) so the mesh generously overshoots
 	// the heel tip and the contour clipper trims it flush — no gap at the base
-	const adaptiveU = clamp01(Math.max(0.06, Math.min(0.12, bestBin.u - 0.10)));
-	const adaptiveV = clamp01(insoleMinV + insoleWidthNorm * 0.50);
+	const adaptiveU = clamp01(Math.max(0.06, Math.min(0.12, bestBin.u - 0.1)));
+	const adaptiveV = clamp01(insoleMinV + insoleWidthNorm * 0.5);
 
 	// Width: 130% overshoot so the contour clipper trims both side edges
-	const baseWidthMm = Math.max(50, insoleWidthAtSliceMm * 1.30);
+	const baseWidthMm = Math.max(50, insoleWidthAtSliceMm * 1.3);
 	// Length: ~27% of total insole length — just the heel cup
 	const baseLengthMm = Math.max(40, insoleLengthMm * 0.27);
 
@@ -1711,17 +1893,17 @@ const SC_BOL_SLOPE: Record<string, ScBolSlopeFn> = {
 	'sc-bol': () => 1,
 
 	// PPSI — medial side stays high, lateral side gets cut at the toe edge
-	'ppsi': (nu, nv, side) => {
+	ppsi: (nu, nv, side) => {
 		// For right foot: nu=0 = medial.  Lateral fraction increases with nu.
-		const lateralFrac = side === 'right' ? nu : (1 - nu);
+		const lateralFrac = side === 'right' ? nu : 1 - nu;
 		// Slope only affects the upper portion (toe-side edge, nv > 0.3)
 		const nvInfluence = Math.max(0, (nv - 0.3) / 0.7);
 		return Math.max(0, 1 - lateralFrac * nvInfluence);
 	},
 
 	// SPSI — lateral side stays high, medial side gets cut at the toe edge
-	'spsi': (nu, nv, side) => {
-		const medialFrac = side === 'right' ? (1 - nu) : nu;
+	spsi: (nu, nv, side) => {
+		const medialFrac = side === 'right' ? 1 - nu : nu;
 		const nvInfluence = Math.max(0, (nv - 0.3) / 0.7);
 		return Math.max(0, 1 - medialFrac * nvInfluence);
 	},
@@ -1771,7 +1953,7 @@ function resolveAdaptiveHaiVlak2Layout(
 		const widthVal = getAxisValue(positions, i, widthAxis);
 		const rawU = (lengthVal - lengthMin) / Math.max(lengthSpan, 1e-6);
 		const u = heelAtMin ? rawU : 1 - rawU;
-		if (u < 0.20 || u > 0.60) continue;
+		if (u < 0.2 || u > 0.6) continue;
 		const v = (widthVal - widthMin) / Math.max(widthSpan, 1e-6);
 		const binIndex = Math.max(0, Math.min(BINS - 1, Math.floor(u * BINS)));
 		const bin = bins[binIndex];
@@ -1784,10 +1966,15 @@ function resolveAdaptiveHaiVlak2Layout(
 	let bestBin: (typeof bins)[number] | null = null;
 	let bestScore = -Infinity;
 	for (const bin of bins) {
-		if (bin.count < 8 || !Number.isFinite(bin.minV) || !Number.isFinite(bin.maxV)) continue;
+		if (
+			bin.count < 8 ||
+			!Number.isFinite(bin.minV) ||
+			!Number.isFinite(bin.maxV)
+		)
+			continue;
 		const widthNorm = bin.maxV - bin.minV;
-		if (widthNorm < 0.10) continue;
-		const archBias = Math.max(0, 1 - Math.abs(bin.u - 0.42) / 0.20);
+		if (widthNorm < 0.1) continue;
+		const archBias = Math.max(0, 1 - Math.abs(bin.u - 0.42) / 0.2);
 		const score = widthNorm * (0.5 + archBias);
 		if (score > bestScore) {
 			bestScore = score;
@@ -1806,7 +1993,8 @@ function resolveAdaptiveHaiVlak2Layout(
 	const insoleMinV = bestBin.minV;
 	const insoleMaxV = bestBin.maxV;
 	const insoleWidthNorm = Math.max(0.2, insoleMaxV - insoleMinV);
-	const insoleWidthAtSliceMm = (insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
+	const insoleWidthAtSliceMm =
+		(insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
 	const insoleLengthMm = lengthSpan / Math.max(mmToWorld, 1e-6);
 
 	// Centre at the arch (U ≈ 0.42)
@@ -1816,9 +2004,10 @@ function resolveAdaptiveHaiVlak2Layout(
 	// Right foot: medial = low V (minV).  Left foot: medial = high V (maxV).
 	const medialEdge = el.side === 'right' ? insoleMinV : insoleMaxV;
 	const insetFraction = 0.05;
-	const adaptiveV = el.side === 'right'
-		? clamp01(medialEdge + insoleWidthNorm * insetFraction)
-		: clamp01(medialEdge - insoleWidthNorm * insetFraction);
+	const adaptiveV =
+		el.side === 'right'
+			? clamp01(medialEdge + insoleWidthNorm * insetFraction)
+			: clamp01(medialEdge - insoleWidthNorm * insetFraction);
 
 	// Width: ~46% of insole width with overshoot for clipping
 	const baseWidthMm = Math.max(22, insoleWidthAtSliceMm * 0.46);
@@ -1837,7 +2026,7 @@ function resolveAdaptiveHaiVlak2Layout(
 function resolveElementLayout(
 	item: ReturnType<typeof getElementByKey>,
 	el: PlacedElement,
-	context: PlacementContext
+	context: PlacementContext,
 ): ResolvedElementLayout {
 	if (item?.key === 'sd-2-5') {
 		return resolveAdaptiveSd25Layout(item, el, context);
@@ -1845,7 +2034,12 @@ function resolveElementLayout(
 	if (item?.key === 'sd-1-5' || item?.key === 'sa-rechts-1-5') {
 		return resolveAdaptiveSd15Layout(item, el, context);
 	}
-	if (item?.key === 'sd-1' || item?.key === 'sa-recht-1' || item?.key === 'diep-rond' || item?.key === 'diep-ovaal') {
+	if (
+		item?.key === 'sd-1' ||
+		item?.key === 'sa-recht-1' ||
+		item?.key === 'diep-rond' ||
+		item?.key === 'diep-ovaal'
+	) {
 		return resolveAdaptiveSd1Layout(item, el, context);
 	}
 	if (item?.key === 'spsa-vlak') {
@@ -1876,7 +2070,7 @@ function getElementFootprintUv(
 	item: ReturnType<typeof getElementByKey>,
 	el: PlacedElement,
 	metrics: { lengthSpan: number; widthSpan: number; mmToWorld: number },
-	resolved?: ResolvedElementLayout
+	resolved?: ResolvedElementLayout,
 ) {
 	const { lengthSpan, widthSpan, mmToWorld } = metrics;
 	const widthMm = resolved?.targetWidthMm ?? item?.stlSizeMm?.[0];
@@ -1908,7 +2102,7 @@ export function applyElements(
 	elements: PlacedElement[],
 	options?: {
 		mmToWorld?: number;
-	}
+	},
 ): void {
 	if (!elements || elements.length === 0) return;
 
@@ -1951,14 +2145,28 @@ export function applyElements(
 			positionV: resolved.positionV,
 			rotationRad: resolved.rotationRad,
 		};
-		const effectiveMirrorWidth = getEffectiveMirrorWidth(el.side, resolved.mirrorWidth);
+		const effectiveMirrorWidth = getEffectiveMirrorWidth(
+			el.side,
+			resolved.mirrorWidth,
+		);
 		const outline = item?.outline ?? [[0, 0] as [number, number]];
-		const { elementSizeU, elementSizeV } = getElementFootprintUv(item, el, {
-			lengthSpan,
-			widthSpan,
-			mmToWorld,
-		}, resolved);
-		const transformed = transformOutline(outline, resolvedElement, elementSizeU, elementSizeV, effectiveMirrorWidth);
+		const { elementSizeU, elementSizeV } = getElementFootprintUv(
+			item,
+			el,
+			{
+				lengthSpan,
+				widthSpan,
+				mmToWorld,
+			},
+			resolved,
+		);
+		const transformed = transformOutline(
+			outline,
+			resolvedElement,
+			elementSizeU,
+			elementSizeV,
+			effectiveMirrorWidth,
+		);
 		const polygon = preparePolygon(transformed);
 
 		// Bounding box for early reject
@@ -1978,9 +2186,10 @@ export function applyElements(
 		const blendV = (el.blendMm * mmToWorld) / widthSpan;
 		const blendNorm = Math.max(blendU, blendV);
 		const heightWorld = el.heightMm * mmToWorld;
-		const baseSurfaceHeight = heightWorld > 0 && el.floorMode !== 'sole'
-			? sampleSurfaceHeight(resolved.positionU, resolved.positionV)
-			: undefined;
+		const baseSurfaceHeight =
+			heightWorld > 0 && el.floorMode !== 'sole'
+				? sampleSurfaceHeight(resolved.positionU, resolved.positionV)
+				: undefined;
 
 		return {
 			el,
@@ -2017,7 +2226,13 @@ export function applyElements(
 		// (e.g. big toe edge) curve down steeply and have low heightNorm.
 		let hasInset = false;
 		for (const p of prepared) {
-			if (p.heightWorld < 0 && u >= p.bboxMinU && u <= p.bboxMaxU && v >= p.bboxMinV && v <= p.bboxMaxV) {
+			if (
+				p.heightWorld < 0 &&
+				u >= p.bboxMinU &&
+				u <= p.bboxMaxU &&
+				v >= p.bboxMinV &&
+				v <= p.bboxMaxV
+			) {
 				hasInset = true;
 				break;
 			}
@@ -2051,13 +2266,19 @@ export function applyElements(
 				// Outside: taper off in blend zone
 				if (edgeDist < p.blendNorm && p.blendNorm > 0.001) {
 					const normEdgeDist = edgeDist / p.blendNorm;
-					weight = profileMultiplier(p.profile, 1 - 0.0) * (1 - smoothstep(0, 1, normEdgeDist));
+					weight =
+						profileMultiplier(p.profile, 1 - 0.0) *
+						(1 - smoothstep(0, 1, normEdgeDist));
 				} else {
 					continue;
 				}
 			}
 
-			if (p.heightWorld > 0 && p.el.floorMode !== 'sole' && p.baseSurfaceHeight !== undefined) {
+			if (
+				p.heightWorld > 0 &&
+				p.el.floorMode !== 'sole' &&
+				p.baseSurfaceHeight !== undefined
+			) {
 				const desiredTopHeight = p.baseSurfaceHeight + p.heightWorld * weight;
 				const currentTargetHeight = heightVal + totalDisplacement;
 				if (desiredTopHeight > currentTargetHeight) {
@@ -2074,7 +2295,7 @@ export function applyElements(
 				positions,
 				i,
 				heightAxis,
-				currentHeight + totalDisplacement * topWeight
+				currentHeight + totalDisplacement * topWeight,
 			);
 		}
 	}
@@ -2107,7 +2328,7 @@ export function buildElementOverlayGeometries(
 		mmToWorld?: number;
 		/** Pre-loaded STL geometries keyed by URL (from catalog stlUrl) */
 		stlGeometries?: Map<string, THREE.BufferGeometry>;
-	}
+	},
 ): ElementOverlayData[] {
 	if (!elements || elements.length === 0) return [];
 
@@ -2128,27 +2349,40 @@ export function buildElementOverlayGeometries(
 		sampleInsoleUExtent,
 	} = overlayAnalysis;
 	const { lengthAxis, widthAxis, heightAxis, lengthSpan, widthSpan } = axes;
-	const positions = insoleGeometry.getAttribute('position') as THREE.BufferAttribute;
+	const positions = insoleGeometry.getAttribute(
+		'position',
+	) as THREE.BufferAttribute;
 	const vertexCount = positions.count;
 	// Map UV + height to 3D world-space position
-	const uvToWorld = (u: number, v: number, h: number): [number, number, number] => {
-		const rawU = heelAtMin ? u : 1-u;
+	const uvToWorld = (
+		u: number,
+		v: number,
+		h: number,
+	): [number, number, number] => {
+		const rawU = heelAtMin ? u : 1 - u;
 		const lw = lengthMin + rawU * lengthSpan;
 		const ww = widthMin + v * widthSpan;
 		const c: Record<string, number> = { x: 0, y: 0, z: 0 };
-		c[lengthAxis] = lw; c[widthAxis] = ww; c[heightAxis] = h;
+		c[lengthAxis] = lw;
+		c[widthAxis] = ww;
+		c[heightAxis] = h;
 		return [c.x, c.y, c.z];
 	};
 
-	const mmToWorld    = options?.mmToWorld ?? 1;
+	const mmToWorld = options?.mmToWorld ?? 1;
 	const stlGeometries = options?.stlGeometries;
 	const SURFACE_EPSILON = 0.08 * mmToWorld;
 	const INSET_OVERLAY_EPSILON = SURFACE_EPSILON * 0.35;
 
-	const buildInsetSurfaceOverlay = (outline: [number, number][]): THREE.BufferGeometry | null => {
+	const buildInsetSurfaceOverlay = (
+		outline: [number, number][],
+	): THREE.BufferGeometry | null => {
 		if (outline.length < 3) return null;
 
-		let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+		let minU = Infinity,
+			maxU = -Infinity,
+			minV = Infinity,
+			maxV = -Infinity;
 		for (const [u, v] of outline) {
 			if (u < minU) minU = u;
 			if (u > maxU) maxU = u;
@@ -2165,7 +2399,9 @@ export function buildElementOverlayGeometries(
 		const edgePad = Math.max(stepU, stepV) * 0.9;
 
 		const verts: number[] = [];
-		const indexGrid = Array.from({ length: gridU + 1 }, () => Array<number>(gridV + 1).fill(-1));
+		const indexGrid = Array.from({ length: gridU + 1 }, () =>
+			Array<number>(gridV + 1).fill(-1),
+		);
 
 		for (let gu = 0; gu <= gridU; gu++) {
 			for (let gv = 0; gv <= gridV; gv++) {
@@ -2208,7 +2444,10 @@ export function buildElementOverlayGeometries(
 	): THREE.BufferGeometry | null => {
 		if (outline.length < 3) return null;
 
-		let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+		let minU = Infinity,
+			maxU = -Infinity,
+			minV = Infinity,
+			maxV = -Infinity;
 		for (const [u, v] of outline) {
 			if (u < minU) minU = u;
 			if (u > maxU) maxU = u;
@@ -2225,7 +2464,9 @@ export function buildElementOverlayGeometries(
 		const edgePad = Math.max(stepU, stepV) * 0.9;
 
 		const verts: number[] = [];
-		const indexGrid = Array.from({ length: gridU + 1 }, () => Array<number>(gridV + 1).fill(-1));
+		const indexGrid = Array.from({ length: gridU + 1 }, () =>
+			Array<number>(gridV + 1).fill(-1),
+		);
 
 		for (let gu = 0; gu <= gridU; gu++) {
 			for (let gv = 0; gv <= gridV; gv++) {
@@ -2305,15 +2546,22 @@ export function buildElementOverlayGeometries(
 		const preferredStlUrl = getElementPreferredStlUrl(item);
 		const resolved = resolveElementLayout(item, el, placementContext);
 		const isInset = el.heightMm < 0;
-		const baseSurfaceHeight = !isInset && el.floorMode !== 'sole'
-			? sampleHeight(resolved.positionU, resolved.positionV)
-			: undefined;
+		const baseSurfaceHeight =
+			!isInset && el.floorMode !== 'sole'
+				? sampleHeight(resolved.positionU, resolved.positionV)
+				: undefined;
 
 		// ── STL-based overlay (preferred when stlUrl is available) ──
 		if (preferredStlUrl && stlGeometries?.has(preferredStlUrl) && !isInset) {
 			const srcGeom = stlGeometries.get(preferredStlUrl)!;
-			const cachedDistanceField = getCachedStlDistanceField(srcGeom, Boolean(item.stlSwapYZ));
-			let geom = getPreparedOverlayStlGeometry(srcGeom, Boolean(item.stlSwapYZ)).clone();
+			const cachedDistanceField = getCachedStlDistanceField(
+				srcGeom,
+				Boolean(item.stlSwapYZ),
+			);
+			let geom = getPreparedOverlayStlGeometry(
+				srcGeom,
+				Boolean(item.stlSwapYZ),
+			).clone();
 
 			// The STL is in mm, centred at origin in X, Y starts at 0.
 			// We need to:
@@ -2339,29 +2587,45 @@ export function buildElementOverlayGeometries(
 				gridSize,
 			} = cachedDistanceField;
 
-			const targetWidthMm = (resolved.targetWidthMm ?? item.stlSizeMm?.[0] ?? sourceWidthMm) * el.scaleV;
-			const targetLengthMm = (resolved.targetLengthMm ?? item.stlSizeMm?.[1] ?? sourceLengthMm) * el.scaleU;
+			const targetWidthMm =
+				(resolved.targetWidthMm ?? item.stlSizeMm?.[0] ?? sourceWidthMm) *
+				el.scaleV;
+			const targetLengthMm =
+				(resolved.targetLengthMm ?? item.stlSizeMm?.[1] ?? sourceLengthMm) *
+				el.scaleU;
 			const targetHeightMm = Math.max(0.2, Math.abs(el.heightMm));
 
 			let scaleWidth = (targetWidthMm * mmToWorld) / sourceWidthMm;
-			if (getEffectiveMirrorWidth(el.side, resolved.mirrorWidth)) scaleWidth = -scaleWidth;
+			if (getEffectiveMirrorWidth(el.side, resolved.mirrorWidth))
+				scaleWidth = -scaleWidth;
 			const scaleLength = (targetLengthMm * mmToWorld) / sourceLengthMm;
 			const scaleHeight = (targetHeightMm * mmToWorld) / sourceHeightMm;
 
 			// Wider blend zone (at least 8mm) for a gentle slope from the insole surface
 			const blendMm = Math.max(8, el.blendMm * 1.6);
 			const sampleEdgeFactor = (stlX: number, stlY: number): number => {
-				const gx = Math.min(gridSize - 1, Math.max(0, (stlX - stlMinX) / cellW));
-				const gy = Math.min(gridSize - 1, Math.max(0, (stlY - stlMinY) / cellL));
+				const gx = Math.min(
+					gridSize - 1,
+					Math.max(0, (stlX - stlMinX) / cellW),
+				);
+				const gy = Math.min(
+					gridSize - 1,
+					Math.max(0, (stlY - stlMinY) / cellL),
+				);
 				// Bilinear sample
 				const gxi = Math.min(gridSize - 2, Math.floor(gx));
 				const gyi = Math.min(gridSize - 2, Math.floor(gy));
-				const fx = gx - gxi, fy = gy - gyi;
+				const fx = gx - gxi,
+					fy = gy - gyi;
 				const d00 = distGrid[gyi * gridSize + gxi];
 				const d10 = distGrid[gyi * gridSize + gxi + 1];
 				const d01 = distGrid[(gyi + 1) * gridSize + gxi];
 				const d11 = distGrid[(gyi + 1) * gridSize + gxi + 1];
-				const dCells = d00 * (1 - fx) * (1 - fy) + d10 * fx * (1 - fy) + d01 * (1 - fx) * fy + d11 * fx * fy;
+				const dCells =
+					d00 * (1 - fx) * (1 - fy) +
+					d10 * fx * (1 - fy) +
+					d01 * (1 - fx) * fy +
+					d11 * fx * fy;
 				const dMm = dCells * cellSizeMm;
 				if (dMm >= blendMm) return 1.0;
 				const t = dMm / blendMm;
@@ -2402,7 +2666,10 @@ export function buildElementOverlayGeometries(
 					const nv = (rawY - stlMinY) / sourceLengthMm;
 					// Only deform the top surface — scale by relative Z height
 					// so the bottom face stays flat on the insole
-					const heightFrac = Math.max(0, (pos.getZ(i) - stlBaseZ) / sourceHeightMm);
+					const heightFrac = Math.max(
+						0,
+						(pos.getZ(i) - stlBaseZ) / sourceHeightMm,
+					);
 					const extraMm = deformFn(nu, nv, el.side);
 					rawLocalHeight += extraMm * mmToWorld * heightFrac;
 				}
@@ -2433,15 +2700,21 @@ export function buildElementOverlayGeometries(
 				const ry = localWidth * sin + localLength * cos;
 				let worldWidth = centreWidthWorld + rx;
 				let worldLength = centreLengthWorld + ry;
-				const rawSampleU = (worldLength - lengthMin) / Math.max(lengthSpan, 1e-6);
+				const rawSampleU =
+					(worldLength - lengthMin) / Math.max(lengthSpan, 1e-6);
 				let sampleUValue = heelAtMin ? rawSampleU : 1 - rawSampleU;
 				let sampleVValue = (worldWidth - widthMin) / Math.max(widthSpan, 1e-6);
 				const sampleUClamped = Math.max(0, Math.min(1, sampleUValue));
 
 				// ── Clip to insole boundary: V direction (width edges) ──
 				const clip = clipVertexToInsole(
-					sampleUClamped, sampleVValue, worldWidth,
-					sampleInsoleExtent, widthMin, widthSpan, mmToWorld,
+					sampleUClamped,
+					sampleVValue,
+					worldWidth,
+					sampleInsoleExtent,
+					widthMin,
+					widthSpan,
+					mmToWorld,
 				);
 				sampleVValue = clip.clippedV;
 				worldWidth = clip.clippedWorldWidth;
@@ -2449,14 +2722,22 @@ export function buildElementOverlayGeometries(
 
 				// ── Clip to insole boundary: U direction (heel/toe contour) ──
 				const vForUClip = Math.max(0, Math.min(1, sampleVValue));
-				const { minU: insoleMinUAtV, maxU: insoleMaxUAtV } = sampleInsoleUExtent(vForUClip);
-				const distToHeelMm = (sampleUValue - insoleMinUAtV) * lengthSpan / Math.max(mmToWorld, 1e-6);
-				const distToToeMm  = (insoleMaxUAtV - sampleUValue) * lengthSpan / Math.max(mmToWorld, 1e-6);
+				const { minU: insoleMinUAtV, maxU: insoleMaxUAtV } =
+					sampleInsoleUExtent(vForUClip);
+				const distToHeelMm =
+					((sampleUValue - insoleMinUAtV) * lengthSpan) /
+					Math.max(mmToWorld, 1e-6);
+				const distToToeMm =
+					((insoleMaxUAtV - sampleUValue) * lengthSpan) /
+					Math.max(mmToWorld, 1e-6);
 				const distToUEdgeMm = Math.min(distToHeelMm, distToToeMm);
 				if (distToUEdgeMm < 0) {
 					// Outside the insole — snap U to nearest edge and zero height
 					localHeight = 0;
-					const clampedU = Math.max(insoleMinUAtV, Math.min(insoleMaxUAtV, sampleUValue));
+					const clampedU = Math.max(
+						insoleMinUAtV,
+						Math.min(insoleMaxUAtV, sampleUValue),
+					);
 					sampleUValue = clampedU;
 					const clampedRawU = heelAtMin ? clampedU : 1 - clampedU;
 					worldLength = lengthMin + clampedRawU * lengthSpan;
@@ -2480,8 +2761,10 @@ export function buildElementOverlayGeometries(
 				c[heightAxis] = isInset
 					? surfaceH - localHeight + SURFACE_EPSILON * 0.5
 					: (el.floorMode === 'sole'
-						? surfaceH
-						: (baseSurfaceHeight ?? surfaceH)) + localHeight + SURFACE_EPSILON;
+							? surfaceH
+							: (baseSurfaceHeight ?? surfaceH)) +
+						localHeight +
+						SURFACE_EPSILON;
 
 				pos.setXYZ(i, c.x, c.y, c.z);
 			}
@@ -2508,7 +2791,9 @@ export function buildElementOverlayGeometries(
 			// Re-merge vertices after transform + optional trim to ensure smooth normals
 			try {
 				geom = mergeVertices(geom, 0.001);
-			} catch { /* keep as-is */ }
+			} catch {
+				/* keep as-is */
+			}
 			geom.computeVertexNormals();
 			geom.computeBoundingBox();
 
@@ -2533,13 +2818,27 @@ export function buildElementOverlayGeometries(
 			positionV: resolved.positionV,
 			rotationRad: resolved.rotationRad,
 		};
-		const effectiveMirrorWidth = getEffectiveMirrorWidth(el.side, resolved.mirrorWidth);
-		const { elementSizeU, elementSizeV } = getElementFootprintUv(item, el, {
-			lengthSpan,
-			widthSpan,
-			mmToWorld,
-		}, resolved);
-		const rawOutline = transformOutline(item.outline, resolvedElement, elementSizeU, elementSizeV, effectiveMirrorWidth);
+		const effectiveMirrorWidth = getEffectiveMirrorWidth(
+			el.side,
+			resolved.mirrorWidth,
+		);
+		const { elementSizeU, elementSizeV } = getElementFootprintUv(
+			item,
+			el,
+			{
+				lengthSpan,
+				widthSpan,
+				mmToWorld,
+			},
+			resolved,
+		);
+		const rawOutline = transformOutline(
+			item.outline,
+			resolvedElement,
+			elementSizeU,
+			elementSizeV,
+			effectiveMirrorWidth,
+		);
 		// Clip outline to insole boundary so no procedural polygon overflows
 		const outline = clipOutlineToInsole(rawOutline, sampleInsoleExtent);
 
@@ -2557,8 +2856,13 @@ export function buildElementOverlayGeometries(
 		}
 
 		if (el.floorMode !== 'sole') {
-			const overlayBaseHeight = baseSurfaceHeight ?? sampleHeight(resolved.positionU, resolved.positionV);
-			const trimmedGeom = buildTrimmedAdditiveSurfaceOverlay(outline, overlayBaseHeight);
+			const overlayBaseHeight =
+				baseSurfaceHeight ??
+				sampleHeight(resolved.positionU, resolved.positionV);
+			const trimmedGeom = buildTrimmedAdditiveSurfaceOverlay(
+				outline,
+				overlayBaseHeight,
+			);
 			if (!trimmedGeom) continue;
 
 			result.push({
@@ -2586,9 +2890,12 @@ export function buildElementOverlayGeometries(
 		// Build world-space vertices, each snapped to insole surface + lift
 		const verts: number[] = [];
 		for (const [u, v] of outline) {
-			const h = el.floorMode === 'sole'
-				? sampleHeight(u, v) + SURFACE_EPSILON
-				: (baseSurfaceHeight ?? sampleHeight(resolved.positionU, resolved.positionV)) + SURFACE_EPSILON;
+			const h =
+				el.floorMode === 'sole'
+					? sampleHeight(u, v) + SURFACE_EPSILON
+					: (baseSurfaceHeight ??
+							sampleHeight(resolved.positionU, resolved.positionV)) +
+						SURFACE_EPSILON;
 			verts.push(...uvToWorld(u, v, h));
 		}
 
@@ -2622,7 +2929,7 @@ export function applyElementColors(
 	options?: {
 		mmToWorld?: number;
 		baseColor?: string;
-	}
+	},
 ): void {
 	const positions = geometry.getAttribute('position') as THREE.BufferAttribute;
 	const vertexCount = positions.count;
@@ -2643,7 +2950,8 @@ export function applyElementColors(
 	}
 
 	const geometryAnalysis = getCachedInsoleOverlayAnalysis(geometry);
-	const { axes, lengthMin, widthMin, heightMin, heightSpan, heelAtMin } = geometryAnalysis;
+	const { axes, lengthMin, widthMin, heightMin, heightSpan, heelAtMin } =
+		geometryAnalysis;
 	const { lengthAxis, widthAxis, heightAxis, lengthSpan, widthSpan } = axes;
 
 	// Precompute transformed outlines + bounding boxes
@@ -2667,20 +2975,44 @@ export function applyElementColors(
 			positionV: resolved.positionV,
 			rotationRad: resolved.rotationRad,
 		};
-		const effectiveMirrorWidth = getEffectiveMirrorWidth(el.side, resolved.mirrorWidth);
-		const outline = item?.outline ?? ([[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]] as [number, number][]);
-		const { elementSizeU, elementSizeV } = getElementFootprintUv(item, el, {
-			lengthSpan,
-			widthSpan,
-			mmToWorld: options?.mmToWorld ?? 1,
-		}, resolved);
-		const transformed = transformOutline(outline, resolvedElement, elementSizeU, elementSizeV, effectiveMirrorWidth);
+		const effectiveMirrorWidth = getEffectiveMirrorWidth(
+			el.side,
+			resolved.mirrorWidth,
+		);
+		const outline =
+			item?.outline ??
+			([
+				[0.1, 0.1],
+				[0.9, 0.1],
+				[0.9, 0.9],
+				[0.1, 0.9],
+			] as [number, number][]);
+		const { elementSizeU, elementSizeV } = getElementFootprintUv(
+			item,
+			el,
+			{
+				lengthSpan,
+				widthSpan,
+				mmToWorld: options?.mmToWorld ?? 1,
+			},
+			resolved,
+		);
+		const transformed = transformOutline(
+			outline,
+			resolvedElement,
+			elementSizeU,
+			elementSizeV,
+			effectiveMirrorWidth,
+		);
 		const polygon = preparePolygon(transformed);
 		const colorHex = item ? ELEMENT_COLORS[item.color] : '#999';
 		const col = new THREE.Color(colorHex);
 
 		// Bounding box for fast per-vertex reject
-		let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+		let minU = Infinity,
+			maxU = -Infinity,
+			minV = Infinity,
+			maxV = -Infinity;
 		for (const [u, v] of transformed) {
 			if (u < minU) minU = u;
 			if (u > maxU) maxU = u;
@@ -2689,12 +3021,22 @@ export function applyElementColors(
 		}
 		// Small UV margin for soft edge taper
 		const edgeMargin = 0.012;
-		return { polygon, color: col, minU: minU - edgeMargin, maxU: maxU + edgeMargin, minV: minV - edgeMargin, maxV: maxV + edgeMargin, edgeMargin };
+		return {
+			polygon,
+			color: col,
+			minU: minU - edgeMargin,
+			maxU: maxU + edgeMargin,
+			minV: minV - edgeMargin,
+			maxV: maxV + edgeMargin,
+			edgeMargin,
+		};
 	});
 
 	// Use vertex normals to detect top surface (normal points in +heightAxis direction).
 	// First detect which sign is "up" by averaging normals of the top-altitude vertices.
-	const normals = geometry.getAttribute('normal') as THREE.BufferAttribute | undefined;
+	const normals = geometry.getAttribute('normal') as
+		| THREE.BufferAttribute
+		| undefined;
 	const normalIdx = heightAxis === 'x' ? 0 : heightAxis === 'y' ? 1 : 2;
 
 	const getHeightNormalRaw = (i: number): number => {
@@ -2705,7 +3047,8 @@ export function applyElementColors(
 	};
 
 	// Determine "up" sign: average normal component for the top-20% height vertices
-	let normalSignSum = 0, normalSignCount = 0;
+	let normalSignSum = 0,
+		normalSignCount = 0;
 	const topThreshAbs = heightMin + heightSpan * 0.8;
 	for (let i = 0; i < vertexCount; i++) {
 		const hv = getAxisValue(positions, i, heightAxis);
@@ -2715,7 +3058,8 @@ export function applyElementColors(
 		}
 	}
 	// upSign = +1 if top surface normals are positive, -1 if they're negative
-	const upSign = normalSignCount > 0 && normalSignSum / normalSignCount < 0 ? -1 : 1;
+	const upSign =
+		normalSignCount > 0 && normalSignSum / normalSignCount < 0 ? -1 : 1;
 
 	const getHeightNormal = (i: number): number => getHeightNormalRaw(i) * upSign;
 

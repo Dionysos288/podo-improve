@@ -364,8 +364,8 @@ function boxOffsetsAreNontrivial(offsets: BoxGridSavedOffsets | null | undefined
 		typeof entry === 'number'
 			? Math.abs(entry) > 1e-3
 			: Math.abs(entry.du ?? 0) > 1e-3 ||
-					Math.abs(entry.dv ?? 0) > 1e-3 ||
-					Math.abs(entry.dh ?? 0) > 1e-3,
+			Math.abs(entry.dv ?? 0) > 1e-3 ||
+			Math.abs(entry.dh ?? 0) > 1e-3,
 	);
 }
 
@@ -1204,7 +1204,7 @@ function smoothInsoleWalls(
 				sz2 += pos[nb * 3 + 2];
 			}
 			const inv = 1 / nbs.size;
-			tmp[v * 3]     = pos[v * 3]     + alpha * (sx * inv - pos[v * 3]);
+			tmp[v * 3] = pos[v * 3] + alpha * (sx * inv - pos[v * 3]);
 			tmp[v * 3 + 1] = pos[v * 3 + 1] + alpha * (sy * inv - pos[v * 3 + 1]);
 			tmp[v * 3 + 2] = pos[v * 3 + 2] + alpha * (sz2 * inv - pos[v * 3 + 2]);
 		}
@@ -2715,20 +2715,17 @@ function STLMesh({
 		const bbox = cloned.boundingBox;
 		const posAttr = cloned.getAttribute('position') as THREE.BufferAttribute | undefined;
 		if (bbox && posAttr && applyGeneral) {
-			const size = bbox.getSize(new THREE.Vector3());
+			const size = new THREE.Vector3();
+			bbox.getSize(size);
 			const axes: Array<'x' | 'y' | 'z'> = ['x', 'y', 'z'];
 			const sizes = { x: size.x, y: size.y, z: size.z };
 			axes.sort((a, b) => sizes[a] - sizes[b]);
 			const lengthAxis = axes[2];
 			const widthAxis = axes[1];
-			const currentTotalWidthWorld = Math.max(
-				1e-6,
-				widthAxis === 'x' ? size.x : widthAxis === 'y' ? size.y : size.z
-			);
 
-			const minLen = lengthAxis === 'x' ? bbox.min.x : lengthAxis === 'y' ? bbox.min.y : bbox.min.z;
-			const maxLen = lengthAxis === 'x' ? bbox.max.x : lengthAxis === 'y' ? bbox.max.y : bbox.max.z;
-			const lenSpan = Math.max(1e-6, maxLen - minLen);
+			let minLen = lengthAxis === 'x' ? bbox.min.x : lengthAxis === 'y' ? bbox.min.y : bbox.min.z;
+			let maxLen = lengthAxis === 'x' ? bbox.max.x : lengthAxis === 'y' ? bbox.max.y : bbox.max.z;
+			let lenSpan = Math.max(1e-6, maxLen - minLen);
 
 			// 1) Length fitting:
 			// - default: shoe size heel-anchored stretch/compress
@@ -2751,15 +2748,6 @@ function STLMesh({
 			const lengthScale = targetTrimLength
 				? Math.max(0.8, Math.min(1.35, (targetTrimLength / lenSpan) * relativeShoeSizeScale))
 				: shoeSizeScale;
-			const requestedTotalWidthScale =
-				typeof targetForefootWidthMm === 'number' &&
-				Number.isFinite(targetForefootWidthMm) &&
-				targetForefootWidthMm > 0
-					? Math.max(
-						0.75,
-						Math.min(1.5, (targetForefootWidthMm * nextMmToWorld) / currentTotalWidthWorld)
-					)
-					: 1;
 
 			// Determine heel end via "wider end" heuristic (consistent with corrections mapper)
 			const slice = Math.max(lenSpan * 0.08, 1e-6);
@@ -2815,6 +2803,49 @@ function STLMesh({
 				}
 				posAttr.needsUpdate = true;
 			}
+
+			cloned.computeBoundingBox();
+			const bb = cloned.boundingBox;
+			if (bb) {
+				bb.getSize(size);
+				minLen = lengthAxis === 'x' ? bb.min.x : lengthAxis === 'y' ? bb.min.y : bb.min.z;
+				maxLen = lengthAxis === 'x' ? bb.max.x : lengthAxis === 'y' ? bb.max.y : bb.max.z;
+				lenSpan = Math.max(1e-6, maxLen - minLen);
+				const currentTotalWidthWorld = Math.max(
+					1e-6,
+					widthAxis === 'x' ? size.x : widthAxis === 'y' ? size.y : size.z
+				);
+
+				let forefootMinW = Number.POSITIVE_INFINITY;
+				let forefootMaxW = Number.NEGATIVE_INFINITY;
+				let forefootCount = 0;
+				for (let i = 0; i < posAttr.count; i++) {
+					const x = posAttr.getX(i);
+					const y = posAttr.getY(i);
+					const z = posAttr.getZ(i);
+					const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
+					const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
+					const tAlong = Math.max(0, Math.min(1, heelDist / lenSpan));
+					if (tAlong < 0.55 || tAlong > 0.96) continue;
+					const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
+					forefootMinW = Math.min(forefootMinW, wVal);
+					forefootMaxW = Math.max(forefootMaxW, wVal);
+					forefootCount++;
+				}
+				const forefootReferenceWidthWorld =
+					forefootCount > 20 && forefootMaxW > forefootMinW
+						? Math.max(1e-6, forefootMaxW - forefootMinW)
+						: currentTotalWidthWorld;
+
+				const requestedTotalWidthScale =
+					typeof targetForefootWidthMm === 'number' &&
+						Number.isFinite(targetForefootWidthMm) &&
+						targetForefootWidthMm > 0
+						? Math.max(
+							0.75,
+							Math.min(1.5, (targetForefootWidthMm * nextMmToWorld) / forefootReferenceWidthWorld)
+						)
+						: 1;
 
 			// 2) Auto width fitting from scan profile +2mm trimline envelope.
 			if (targetTrimlineProfile && targetTrimlineProfile.halfWidthsWorld.length > 1) {
@@ -2910,10 +2941,10 @@ function STLMesh({
 				const binHits = new Uint16Array(bins);
 				const centerW =
 					widthAxis === 'x'
-						? (bbox.min.x + bbox.max.x) * 0.5
+						? (bb.min.x + bb.max.x) * 0.5
 						: widthAxis === 'y'
-							? (bbox.min.y + bbox.max.y) * 0.5
-							: (bbox.min.z + bbox.max.z) * 0.5;
+							? (bb.min.y + bb.max.y) * 0.5
+							: (bb.min.z + bb.max.z) * 0.5;
 
 				for (let i = 0; i < posAttr.count; i++) {
 					const x = posAttr.getX(i);
@@ -2959,47 +2990,7 @@ function STLMesh({
 					return smoothedCurrent[i0] + (smoothedCurrent[i1] - smoothedCurrent[i0]) * (x - i0);
 				};
 
-				const sourceForeHalf = Math.max(
-					1e-6,
-					sampleCurrentHalfWidth(0.72),
-					sampleCurrentHalfWidth(0.82),
-					sampleCurrentHalfWidth(0.92)
-				);
-				const targetForeHalf = Math.max(
-					1e-6,
-					sampleTrimHalfWidth(0.72),
-					sampleTrimHalfWidth(0.82),
-					sampleTrimHalfWidth(0.92)
-				);
-				const globalScale = Math.max(0.9, Math.min(1.22, targetForeHalf / sourceForeHalf));
-
-				const sourceHeelHalf = Math.max(
-					1e-6,
-					sampleCurrentHalfWidth(0.02),
-					sampleCurrentHalfWidth(0.08),
-					sampleCurrentHalfWidth(0.14)
-				);
-				const targetHeelHalf = Math.max(
-					1e-6,
-					sampleTrimHalfWidth(0.02),
-					sampleTrimHalfWidth(0.08),
-					sampleTrimHalfWidth(0.14)
-				);
-				const heelScale = Math.max(0.9, Math.min(1.24, targetHeelHalf / sourceHeelHalf));
-
-				const sourceToePadHalf = Math.max(
-					1e-6,
-					sampleCurrentHalfWidth(0.9),
-					sampleCurrentHalfWidth(0.95),
-					sampleCurrentHalfWidth(0.99)
-				);
-				const targetToePadHalf = Math.max(
-					1e-6,
-					sampleTrimHalfWidth(0.9),
-					sampleTrimHalfWidth(0.95),
-					sampleTrimHalfWidth(0.99)
-				);
-				const toeScale = Math.max(0.9, Math.min(1.26, targetToePadHalf / sourceToePadHalf));
+				const uniformWidthScale = requestedTotalWidthScale;
 				const toeShoulderHalf = Math.max(
 					1e-6,
 					sampleCurrentHalfWidth(0.75),
@@ -3044,30 +3035,10 @@ function STLMesh({
 					const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
 					const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
 					const tLen = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
-					const sourceHalfW = Math.max(1e-6, sampleCurrentHalfWidth(tLen));
 					const targetHalfW = Math.max(1e-6, sampleTrimHalfWidth(tLen));
-					const rawLocalScale = Math.max(0.88, Math.min(1.24, targetHalfW / sourceHalfW));
-					const smoothstep = (edge0: number, edge1: number, v: number) => {
-						const t = Math.max(0, Math.min(1, (v - edge0) / Math.max(1e-6, edge1 - edge0)));
-						return t * t * (3 - 2 * t);
-					};
-					const heelBlend = 1 - smoothstep(0.1, 0.28, tLen);
-					const toeBlend = smoothstep(0.78, 0.98, tLen);
-					const scaleDelta =
-						(globalScale - 1) * 0.45 +
-						(rawLocalScale - 1) * 0.35 +
-						(heelScale - 1) * heelBlend * 0.2 +
-						(toeScale - 1) * toeBlend * 0.3;
-					const localScale = 1 + scaleDelta;
-					const blend = smoothstep(0.04, 0.99, tLen);
-					const noShrinkToe = smoothstep(0.72, 0.98, tLen);
-					const noShrinkHeel = 1 - smoothstep(0.04, 0.22, tLen);
-					const noShrinkBlend = Math.max(noShrinkToe, noShrinkHeel);
-					const minScale = 1 - (1 - noShrinkBlend) * 0.03;
-					const finalScale = Math.max(minScale, Math.min(1.3, 1 + (localScale - 1) * blend));
 
 					const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
-					const wScaled = centerW + (wVal - centerW) * finalScale;
+					const wScaled = centerW + (wVal - centerW) * uniformWidthScale;
 					const wRelief = applyToeAndMedialRelief(wScaled, tLen);
 					const wTemplated = applyToeCapTemplate(wRelief, tLen);
 					const maxAllowedHalf = targetHalfW + (1.5 * nextMmToWorld);
@@ -3166,13 +3137,13 @@ function STLMesh({
 				targetForefootWidthMm > 0
 			) {
 				const targetWidthWorld = targetForefootWidthMm * nextMmToWorld;
-				const widthScale = Math.max(0.75, Math.min(1.5, targetWidthWorld / currentTotalWidthWorld));
-				const toeShoulderHalf = Math.max(1e-6, currentTotalWidthWorld * 0.5);
+				const widthScale = Math.max(0.75, Math.min(1.5, targetWidthWorld / forefootReferenceWidthWorld));
+				const toeShoulderHalf = Math.max(1e-6, forefootReferenceWidthWorld * 0.5);
 				const toeTipMinHalf = toeShoulderHalf * 0.38;
 				const toeTipMaxHalf = toeShoulderHalf * 0.88;
 
 				if (Number.isFinite(widthScale) && Math.abs(widthScale - 1) > 1e-3) {
-					const centerW = widthAxis === 'x' ? (bbox.min.x + bbox.max.x) * 0.5 : widthAxis === 'y' ? (bbox.min.y + bbox.max.y) * 0.5 : (bbox.min.z + bbox.max.z) * 0.5;
+					const centerW = widthAxis === 'x' ? (bb.min.x + bb.max.x) * 0.5 : widthAxis === 'y' ? (bb.min.y + bb.max.y) * 0.5 : (bb.min.z + bb.max.z) * 0.5;
 					const halfW = Math.max(
 						1e-6,
 						(widthAxis === 'x'
@@ -3224,10 +3195,6 @@ function STLMesh({
 						const correctedAbs = filledAbs + (Math.min(maxHalf, filledAbs) - filledAbs) * clampStrength;
 						return centerW + sign * correctedAbs;
 					};
-					const smoothstep = (edge0: number, edge1: number, v: number) => {
-						const t = Math.max(0, Math.min(1, (v - edge0) / Math.max(1e-6, edge1 - edge0)));
-						return t * t * (3 - 2 * t);
-					};
 
 					for (let i = 0; i < posAttr.count; i++) {
 						const x = posAttr.getX(i);
@@ -3270,10 +3237,10 @@ function STLMesh({
 			) {
 				const centerW =
 					widthAxis === 'x'
-						? (bbox.min.x + bbox.max.x) * 0.5
+						? (bb.min.x + bb.max.x) * 0.5
 						: widthAxis === 'y'
-							? (bbox.min.y + bbox.max.y) * 0.5
-							: (bbox.min.z + bbox.max.z) * 0.5;
+							? (bb.min.y + bb.max.y) * 0.5
+							: (bb.min.z + bb.max.z) * 0.5;
 				const bins = 96;
 				const currentHalfW = new Float32Array(bins).fill(0);
 				const binHits = new Uint16Array(bins);
@@ -3428,6 +3395,7 @@ function STLMesh({
 				}
 				posAttr.needsUpdate = true;
 			}
+			}
 
 			// Sole thickness + rim height are applied later as a fast post-step so slider edits blend smoothly.
 		}
@@ -3475,6 +3443,8 @@ function STLMesh({
 		seededShoeSize,
 		applyGeneral,
 		flipLongAxis,
+		meshRole,
+		side,
 		targetForefootWidthMm,
 		targetTrimlineProfile,
 		trimlineOffsetMm,
@@ -3609,7 +3579,7 @@ function STLMesh({
 		});
 
 		return () => { cancelled = true; };
-	// eslint-disable-next-line react-hooks/exhaustive-deps
+
 	}, [elementStlUrlsKey, placedElements, preloadElementStlLoadUrls]);
 
 	useEffect(() => {
@@ -4779,157 +4749,136 @@ function STLMesh({
 	const insoleSideInspection =
 		sideInspectionActive && meshRole === 'insole' && !pointPickMode && !evaBlockMode;
 	const transparentUser = Boolean(transparentMode);
-	const vertexColorDiagnostics =
-		Boolean(showZones) || Boolean(heatmap) || Boolean(clampDebug) || Boolean(deviationMap);
-	const useInspectionFlatMaterial =
-		insoleSideInspection && !transparentUser && !vertexColorDiagnostics;
 	const transparentGeometry = transparentUser || insoleSideInspection;
 	const effectiveOpacity = transparentUser
 		? (opacity ?? 0.35)
 		: insoleSideInspection
-			? useInspectionFlatMaterial
-				? 0.17
-				: 0.3
+			? 0.3
 			: (opacity ?? 1);
 
 	return (
 		<>
-		<mesh
-			ref={meshRef}
-			geometry={geometry}
-			position={position}
-			renderOrder={insoleSideInspection ? 0 : undefined}
-			onPointerDown={interactive ? (event) => {
-				if (!textPlacementEnabled || !onTextPlace) return;
-				if (pointPickMode || gridEditMode) return;
-				const text = (textPlacementText || '').trim();
-				if (!text) return;
-				event.stopPropagation();
+			<mesh
+				ref={meshRef}
+				geometry={geometry}
+				position={position}
+				onPointerDown={interactive ? (event) => {
+					if (!textPlacementEnabled || !onTextPlace) return;
+					if (pointPickMode || gridEditMode) return;
+					const text = (textPlacementText || '').trim();
+					if (!text) return;
+					event.stopPropagation();
 
-				const point = event.point.clone();
-				const faceNormal = event.face?.normal
-					? event.face.normal.clone()
-					: new THREE.Vector3(0, 0, 1);
-				const normalMatrix = new THREE.Matrix3().getNormalMatrix(
-					(event.object as THREE.Object3D).matrixWorld
-				);
-				const worldNormal = faceNormal.applyMatrix3(normalMatrix).normalize();
-
-				onTextPlace({
-					side,
-					point: [point.x, point.y, point.z],
-					normal: [worldNormal.x, worldNormal.y, worldNormal.z],
-				});
-			} : undefined}
-			onPointerMove={interactive ? (event) => {
-				if (!probeEnabled || !onProbe) return;
-				if (pointPickMode || gridEditMode) return;
-				const baseline = baselineZ;
-				if (baseline == null) return;
-				pendingProbeInputRef.current = {
-					x: event.point.x,
-					y: event.point.y,
-					z: event.point.z,
-					side,
-					baseline,
-					mmToWorld: mmToWorld || 1,
-				};
-				if (probeRafRef.current != null) return;
-				probeRafRef.current = window.requestAnimationFrame(() => {
-					probeRafRef.current = null;
-					const next = pendingProbeInputRef.current;
-					const mesh = meshRef.current;
-					if (!next || !mesh) return;
-					let topZ = next.z;
-					const worldBox = probeWorldBoxRef.current.setFromObject(mesh);
-					const rayOrigin = probeRayOriginRef.current.set(
-						next.x,
-						next.y,
-						worldBox.max.z + Math.max(5, 10 * next.mmToWorld)
+					const point = event.point.clone();
+					const faceNormal = event.face?.normal
+						? event.face.normal.clone()
+						: new THREE.Vector3(0, 0, 1);
+					const normalMatrix = new THREE.Matrix3().getNormalMatrix(
+						(event.object as THREE.Object3D).matrixWorld
 					);
-					const ray = probeRaycasterRef.current;
-					ray.near = 0;
-					ray.far = Math.max(20, (worldBox.max.z - worldBox.min.z) + 20);
-					ray.set(rayOrigin, probeRayDirectionRef.current);
-					const hits = ray.intersectObject(mesh, false);
-					if (hits.length > 0) {
-						topZ = hits[0].point.z;
-					}
-					const heightMm = (topZ - next.baseline) / next.mmToWorld;
-					const last = lastProbePayloadRef.current;
-					if (
-						last &&
-						last.side === next.side &&
-						last.x === next.x &&
-						last.y === next.y &&
-						last.z === next.z &&
-						last.heightMm === heightMm
-					) {
+					const worldNormal = faceNormal.applyMatrix3(normalMatrix).normalize();
+
+					onTextPlace({
+						side,
+						point: [point.x, point.y, point.z],
+						normal: [worldNormal.x, worldNormal.y, worldNormal.z],
+					});
+				} : undefined}
+				onPointerMove={interactive ? (event) => {
+					if (!probeEnabled || !onProbe) return;
+					if (pointPickMode || gridEditMode) return;
+					const baseline = baselineZ;
+					if (baseline == null) return;
+					pendingProbeInputRef.current = {
+						x: event.point.x,
+						y: event.point.y,
+						z: event.point.z,
+						side,
+						baseline,
+						mmToWorld: mmToWorld || 1,
+					};
+					if (probeRafRef.current != null) return;
+					probeRafRef.current = window.requestAnimationFrame(() => {
+						probeRafRef.current = null;
+						const next = pendingProbeInputRef.current;
+						const mesh = meshRef.current;
+						if (!next || !mesh) return;
+						let topZ = next.z;
+						const worldBox = probeWorldBoxRef.current.setFromObject(mesh);
+						const rayOrigin = probeRayOriginRef.current.set(
+							next.x,
+							next.y,
+							worldBox.max.z + Math.max(5, 10 * next.mmToWorld)
+						);
+						const ray = probeRaycasterRef.current;
+						ray.near = 0;
+						ray.far = Math.max(20, (worldBox.max.z - worldBox.min.z) + 20);
+						ray.set(rayOrigin, probeRayDirectionRef.current);
+						const hits = ray.intersectObject(mesh, false);
+						if (hits.length > 0) {
+							topZ = hits[0].point.z;
+						}
+						const heightMm = (topZ - next.baseline) / next.mmToWorld;
+						const last = lastProbePayloadRef.current;
+						if (
+							last &&
+							last.side === next.side &&
+							last.x === next.x &&
+							last.y === next.y &&
+							last.z === next.z &&
+							last.heightMm === heightMm
+						) {
+							return;
+						}
+						lastProbePayloadRef.current = {
+							x: next.x,
+							y: next.y,
+							z: next.z,
+							heightMm,
+							side: next.side,
+						};
+						const point = probePointRef.current.set(next.x, next.y, next.z);
+						onProbe({
+							point: point.clone(),
+							heightMm,
+							side: next.side,
+						});
+					});
+				} : undefined}
+				onClick={interactive ? (event) => {
+					event.stopPropagation();
+					if (textPlacementEnabled) return;
+					if (elementPlacementMode && elementPlacementMode.side === side && onElementPlace && geometry) {
+						const localPt = event.point.clone();
+						if (meshRef.current) meshRef.current.worldToLocal(localPt);
+						const uv = getInsoleUvFromLocalPoint(geometry, localPt);
+						onElementPlace({ side, u: uv.u, v: uv.v });
 						return;
 					}
-					lastProbePayloadRef.current = {
-						x: next.x,
-						y: next.y,
-						z: next.z,
-						heightMm,
-						side: next.side,
-					};
-					const point = probePointRef.current.set(next.x, next.y, next.z);
-					onProbe({
-						point: point.clone(),
-						heightMm,
-						side: next.side,
-					});
-				});
-			} : undefined}
-			onClick={interactive ? (event) => {
-				event.stopPropagation();
-				if (textPlacementEnabled) return;
-				if (elementPlacementMode && elementPlacementMode.side === side && onElementPlace && geometry) {
-					const localPt = event.point.clone();
-					if (meshRef.current) meshRef.current.worldToLocal(localPt);
-					const uv = getInsoleUvFromLocalPoint(geometry, localPt);
-					onElementPlace({ side, u: uv.u, v: uv.v });
-					return;
-				}
-				if (pointPickMode && onPickPoint) {
-					onPickPoint(event.point.clone());
-					return;
-				}
-				if (onZoneClick && geometry) {
-					const localPt = event.point.clone();
-					if (meshRef.current) {
-						meshRef.current.worldToLocal(localPt);
+					if (pointPickMode && onPickPoint) {
+						onPickPoint(event.point.clone());
+						return;
 					}
-					geometry.computeBoundingBox();
-					const bbox = geometry.boundingBox!;
-					const minY = bbox.min.y;
-					const maxY = bbox.max.y;
-					const rangeY = maxY - minY || 1;
-					const relY = (localPt.y - minY) / rangeY;
-					const zone: 'front' | 'middle' | 'back' = relY > 0.55 ? 'front' : relY > 0.25 ? 'middle' : 'back';
-					onZoneClick(zone, side);
-					return;
-				}
-				if (onSelect) {
-					onSelect(side);
-				}
-			} : undefined}
-		>
-			{useInspectionFlatMaterial ? (
-				<meshBasicMaterial
-					key="side-inspection-flat"
-					color="#a8b6c4"
-					side={THREE.DoubleSide}
-					transparent={transparentGeometry}
-					opacity={effectiveOpacity}
-					depthWrite={false}
-					toneMapped={false}
-					polygonOffset
-					polygonOffsetFactor={1}
-					polygonOffsetUnits={1}
-				/>
-			) : (
+					if (onZoneClick && geometry) {
+						const localPt = event.point.clone();
+						if (meshRef.current) {
+							meshRef.current.worldToLocal(localPt);
+						}
+						geometry.computeBoundingBox();
+						const bbox = geometry.boundingBox!;
+						const minY = bbox.min.y;
+						const maxY = bbox.max.y;
+						const rangeY = maxY - minY || 1;
+						const relY = (localPt.y - minY) / rangeY;
+						const zone: 'front' | 'middle' | 'back' = relY > 0.55 ? 'front' : relY > 0.25 ? 'middle' : 'back';
+						onZoneClick(zone, side);
+						return;
+					}
+					if (onSelect) {
+						onSelect(side);
+					}
+				} : undefined}
+			>
 				<meshStandardMaterial
 					key={(showZones || heatmap || clampDebug || deviationMap) ? 'colored' : 'normal'}
 					color={showZones ? '#ffffff' : pointPickMode ? '#d9b5a1' : color}
@@ -4941,160 +4890,156 @@ function STLMesh({
 					flatShading={false}
 					transparent={transparentGeometry}
 					opacity={effectiveOpacity}
-					envMapIntensity={
-						insoleSideInspection && vertexColorDiagnostics ? 0.35 : 1
-					}
 				/>
-			)}
 
-			{/* Selection highlight — hide during box/lattice edit so the mesh reads clearly */}
-			{selected && !(showBoxGrid && gridEditMode) && (
-				<>
-					<mesh geometry={geometry}>
+				{/* Selection highlight — hide during box/lattice edit so the mesh reads clearly */}
+				{selected && !(showBoxGrid && gridEditMode) && (
+					<>
+						<mesh geometry={geometry}>
+							<meshStandardMaterial
+								color="#22c55e"
+								emissive="#16a34a"
+								emissiveIntensity={0.15}
+								side={THREE.DoubleSide}
+								shadowSide={THREE.DoubleSide}
+								transparent
+								opacity={0.22}
+								depthWrite={false}
+								polygonOffset
+								polygonOffsetFactor={-2}
+								polygonOffsetUnits={-2}
+							/>
+						</mesh>
+					</>
+				)}
+
+				{/* EVA block — contour-following walls + bottom cap */}
+				{evaBlockMode && evaBlock && (
+					<mesh geometry={evaBlock.geometry}>
 						<meshStandardMaterial
-							color="#22c55e"
-							emissive="#16a34a"
-							emissiveIntensity={0.15}
+							color={showZones ? '#ffffff' : pointPickMode ? '#d9b5a1' : color}
 							side={THREE.DoubleSide}
-							shadowSide={THREE.DoubleSide}
-							transparent
-							opacity={0.22}
-							depthWrite={false}
-							polygonOffset
-							polygonOffsetFactor={-2}
-							polygonOffsetUnits={-2}
+							roughness={0.4}
+							metalness={0.0}
+							flatShading={false}
 						/>
 					</mesh>
-				</>
-			)}
+				)}
 
-			{/* EVA block — contour-following walls + bottom cap */}
-			{evaBlockMode && evaBlock && (
-				<mesh geometry={evaBlock.geometry}>
-					<meshStandardMaterial
-						color={showZones ? '#ffffff' : pointPickMode ? '#d9b5a1' : color}
-						side={THREE.DoubleSide}
-						roughness={0.4}
-						metalness={0.0}
-						flatShading={false}
+				{/* Interactive Box grid overlay */}
+				{showBoxGrid && gridEditMode && geometry && latticeEditKit && (
+					<BoxLatticeEditor
+						latticeKit={latticeEditKit}
+						mmToWorld={mmToWorld || 1}
+						active
+						savedOffsets={savedBoxGridOffsets}
+						onSave={onBoxGridSave}
+						onOffsetsLiveChange={(vecs: LatticeOffsetVec[]) => {
+							if (!geometry || !latticeEditKit || !boxPreviewGeometryRef.current) return;
+							const mw = mmToWorld || 1;
+							const working = boxPreviewGeometryRef.current;
+							const basePos = boxPreviewBasePositionsRef.current;
+							if (!basePos) return;
+							pendingBoxGridOffsetsRef.current = latticeVecsToSavePayload(
+								BOX_GRID_COLS,
+								BOX_GRID_ROWS,
+								BOX_GRID_LAYERS,
+								vecs,
+							);
+							restoreGeometryPositions(working, basePos);
+							const positions = working.getAttribute('position') as THREE.BufferAttribute;
+							const arr = positions.array as Float32Array;
+							applyLatticeDeformation(
+								arr,
+								basePos,
+								vecs,
+								latticeEditKit.influences,
+								latticeEditKit.frame,
+								mw,
+							);
+							positions.needsUpdate = true;
+							copyGeometryPositionsFast(geometry, working);
+							if (showZones) applyZoneColors(geometry);
+							else if (heatmap) applyHeightmapColors(geometry);
+							else if (deviationMap) applyDeviationColors(geometry);
+							else geometry.deleteAttribute('color');
+							invalidateRef.current();
+						}}
+						onDragEnd={() => {
+							if (!geometry) return;
+							geometry.computeVertexNormals();
+							geometry.computeBoundingSphere();
+							invalidateRef.current();
+						}}
 					/>
-				</mesh>
-			)}
+				)}
 
-			{/* Interactive Box grid overlay */}
-			{showBoxGrid && gridEditMode && geometry && latticeEditKit && (
-				<BoxLatticeEditor
-					latticeKit={latticeEditKit}
-					mmToWorld={mmToWorld || 1}
-					active
-					savedOffsets={savedBoxGridOffsets}
-					onSave={onBoxGridSave}
-					onOffsetsLiveChange={(vecs: LatticeOffsetVec[]) => {
-						if (!geometry || !latticeEditKit || !boxPreviewGeometryRef.current) return;
-						const mw = mmToWorld || 1;
-						const working = boxPreviewGeometryRef.current;
-						const basePos = boxPreviewBasePositionsRef.current;
-						if (!basePos) return;
-						pendingBoxGridOffsetsRef.current = latticeVecsToSavePayload(
-							BOX_GRID_COLS,
-							BOX_GRID_ROWS,
-							BOX_GRID_LAYERS,
-							vecs,
+				{/* Element overlay meshes — solid coloured pads sitting on the insole surface */}
+				{elementOverlays.map(overlay => (
+					<mesh key={overlay.elementId} geometry={overlay.geometry} frustumCulled={false} renderOrder={4}>
+						<meshStandardMaterial
+							color={overlay.colorHex}
+							roughness={0.45}
+							metalness={0.0}
+							side={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
+							shadowSide={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
+							polygonOffset
+							polygonOffsetFactor={overlay.isInset ? -1 : -3}
+							polygonOffsetUnits={overlay.isInset ? -1 : -3}
+						/>
+					</mesh>
+				))}
+				{selectedElementBoxEdit &&
+					selectedElementBoxEdit.side === side &&
+					elementLatticeEditKit &&
+					(() => {
+						const editingOverlay = elementOverlayById.get(selectedElementBoxEdit.elementId);
+						if (!editingOverlay) return null;
+						const kit = elementLatticeEditKit;
+						return (
+							<BoxLatticeEditor
+								latticeKit={kit}
+								mmToWorld={mmToWorld || 1}
+								active
+								savedOffsets={selectedElementBoxEdit.savedOffsets}
+								onSave={onElementBoxGridSave}
+								onOffsetsLiveChange={(vecs: LatticeOffsetVec[]) => {
+									if (!elementBoxPreviewGeometryRef.current) return;
+									const mw = mmToWorld || 1;
+									const working = elementBoxPreviewGeometryRef.current;
+									const basePos = elementBoxPreviewBasePositionsRef.current;
+									if (!basePos) return;
+									restoreGeometryPositions(working, basePos);
+									const positions = working.getAttribute('position') as THREE.BufferAttribute;
+									const arr = positions.array as Float32Array;
+									applyLatticeDeformation(arr, basePos, vecs, kit.influences, kit.frame, mw);
+									positions.needsUpdate = true;
+									copyGeometryPositionsFast(editingOverlay.geometry, working);
+									invalidateRef.current();
+								}}
+								onDragEnd={() => {
+									editingOverlay.geometry.computeVertexNormals();
+									editingOverlay.geometry.computeBoundingSphere();
+									invalidateRef.current();
+								}}
+							/>
 						);
-						restoreGeometryPositions(working, basePos);
-						const positions = working.getAttribute('position') as THREE.BufferAttribute;
-						const arr = positions.array as Float32Array;
-						applyLatticeDeformation(
-							arr,
-							basePos,
-							vecs,
-							latticeEditKit.influences,
-							latticeEditKit.frame,
-							mw,
-						);
-						positions.needsUpdate = true;
-						copyGeometryPositionsFast(geometry, working);
-						if (showZones) applyZoneColors(geometry);
-						else if (heatmap) applyHeightmapColors(geometry);
-						else if (deviationMap) applyDeviationColors(geometry);
-						else geometry.deleteAttribute('color');
-						invalidateRef.current();
-					}}
-					onDragEnd={() => {
-						if (!geometry) return;
-						geometry.computeVertexNormals();
-						geometry.computeBoundingSphere();
-						invalidateRef.current();
-					}}
-				/>
-			)}
-
-			{/* Element overlay meshes — solid coloured pads sitting on the insole surface */}
-			{elementOverlays.map(overlay => (
-				<mesh key={overlay.elementId} geometry={overlay.geometry} frustumCulled={false} renderOrder={4}>
-					<meshStandardMaterial
-						color={overlay.colorHex}
-						roughness={0.45}
-						metalness={0.0}
-						side={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
-						shadowSide={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
-						polygonOffset
-						polygonOffsetFactor={overlay.isInset ? -1 : -3}
-						polygonOffsetUnits={overlay.isInset ? -1 : -3}
-					/>
-				</mesh>
-			))}
-			{selectedElementBoxEdit &&
-				selectedElementBoxEdit.side === side &&
-				elementLatticeEditKit &&
-				(() => {
-					const editingOverlay = elementOverlayById.get(selectedElementBoxEdit.elementId);
+					})()}
+				{selectedElementTrimlineEdit && selectedElementTrimlineEdit.side === side && (() => {
+					const editingOverlay = elementOverlayById.get(selectedElementTrimlineEdit.elementId);
 					if (!editingOverlay) return null;
-					const kit = elementLatticeEditKit;
 					return (
-						<BoxLatticeEditor
-							latticeKit={kit}
-							mmToWorld={mmToWorld || 1}
+						<InteractiveTrimline
+							insoleGeometry={editingOverlay.geometry}
+							onPendingProfileChange={(profile) => onPendingElementTrimlineProfileChange?.(profile)}
+							profile={selectedElementTrimlineEdit.profile}
+							mmToWorld={mmToWorld || MM_TO_WORLD}
 							active
-							savedOffsets={selectedElementBoxEdit.savedOffsets}
-							onSave={onElementBoxGridSave}
-							onOffsetsLiveChange={(vecs: LatticeOffsetVec[]) => {
-								if (!elementBoxPreviewGeometryRef.current) return;
-								const mw = mmToWorld || 1;
-								const working = elementBoxPreviewGeometryRef.current;
-								const basePos = elementBoxPreviewBasePositionsRef.current;
-								if (!basePos) return;
-								restoreGeometryPositions(working, basePos);
-								const positions = working.getAttribute('position') as THREE.BufferAttribute;
-								const arr = positions.array as Float32Array;
-								applyLatticeDeformation(arr, basePos, vecs, kit.influences, kit.frame, mw);
-								positions.needsUpdate = true;
-								copyGeometryPositionsFast(editingOverlay.geometry, working);
-								invalidateRef.current();
-							}}
-							onDragEnd={() => {
-								editingOverlay.geometry.computeVertexNormals();
-								editingOverlay.geometry.computeBoundingSphere();
-								invalidateRef.current();
-							}}
+							onDragActiveChange={onTrimDragActiveChange}
 						/>
 					);
 				})()}
-			{selectedElementTrimlineEdit && selectedElementTrimlineEdit.side === side && (() => {
-				const editingOverlay = elementOverlayById.get(selectedElementTrimlineEdit.elementId);
-				if (!editingOverlay) return null;
-				return (
-					<InteractiveTrimline
-						insoleGeometry={editingOverlay.geometry}
-						onPendingProfileChange={(profile) => onPendingElementTrimlineProfileChange?.(profile)}
-						profile={selectedElementTrimlineEdit.profile}
-						mmToWorld={mmToWorld || MM_TO_WORLD}
-						active
-						onDragActiveChange={onTrimDragActiveChange}
-					/>
-				);
-			})()}
-		</mesh>
+			</mesh>
 			{insoleSideInspection ? (
 				<SideInspectionLayers geometry={geometry} meshRef={meshRef} enabled />
 			) : null}
@@ -6007,7 +5952,7 @@ export const EnhancedSTLViewer = forwardRef<
 							const off = i * 3;
 							const vals = [arr[off], arr[off + 1], arr[off + 2]];
 							// Map: longestIdx → X, middleIdx → Y, thinnestIdx → Z
-							tmp[off]     = vals[longestIdx];
+							tmp[off] = vals[longestIdx];
 							tmp[off + 1] = vals[middleIdx];
 							tmp[off + 2] = vals[thinnestIdx];
 						}

@@ -1,9 +1,9 @@
 'use client';
 
+import { Line } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import * as THREE from 'three';
-import { SideInspectionContourLine } from '@/src/features/design/components/SideInspectionContourLine';
 import { buildSideInspectionProfile } from '@/src/features/design/utils/sideInspectionProfile';
 
 export type SideInspectionLayersProps = {
@@ -100,11 +100,10 @@ export function SideInspectionLayers({ geometry, meshRef, enabled }: SideInspect
 			{fillGeometry ? (
 				<mesh geometry={fillGeometry} renderOrder={2}>
 					<meshBasicMaterial
-						color="#8899ae"
+						color="#4fd1c5"
 						transparent
-						opacity={0.11}
+						opacity={0.17}
 						depthWrite={false}
-						toneMapped={false}
 						side={THREE.DoubleSide}
 						polygonOffset
 						polygonOffsetFactor={1}
@@ -113,20 +112,10 @@ export function SideInspectionLayers({ geometry, meshRef, enabled }: SideInspect
 				</mesh>
 			) : null}
 			{bottom.length > 1 ? (
-				<SideInspectionContourLine
-					points={bottom}
-					color="#e8eef5"
-					lineWidthWorld={0.00135}
-					renderOrder={6}
-				/>
+				<Line points={bottom} color="#94a3b8" lineWidth={2} renderOrder={4} />
 			) : null}
 			{top.length > 1 ? (
-				<SideInspectionContourLine
-					points={top}
-					color="#5fe8dc"
-					lineWidthWorld={0.00155}
-					renderOrder={7}
-				/>
+				<Line points={top} color="#56f2d6" lineWidth={2.5} renderOrder={4} />
 			) : null}
 		</group>
 	);

@@ -114,6 +114,9 @@ type SavedBottomTextState = { text: string; sizeMm: number; depthMm: number };
 
 type ElementEditMode = 'move' | 'scale' | 'trimline' | 'box' | null;
 const ELEMENT_MOVE_STEP_UV = 0.01;
+const ELEMENT_SCALE_STEP = 0.06;
+const ELEMENT_SCALE_MIN = 0.2;
+const ELEMENT_SCALE_MAX = 4;
 
 function normalizeElementTrimlineAdjustments(
 	source?: TrimlineAdjustments | null,
@@ -1456,6 +1459,34 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			});
 		});
 	}, [selectedPlacedElement, updatePlacedElement]);
+	const adjustSelectedElementScale = useCallback(
+		(axis: 'uniform' | 'u' | 'v', direction: 1 | -1) => {
+			const id = selectedPlacedElement?.id;
+			if (!id) return;
+			const factor = 1 + direction * ELEMENT_SCALE_STEP;
+			const clampScale = (v: number) =>
+				Math.min(ELEMENT_SCALE_MAX, Math.max(ELEMENT_SCALE_MIN, v));
+			flushSync(() => {
+				const el = useElementsStore.getState().placedElements.find((e) => e.id === id);
+				if (!el) return;
+				if (axis === 'uniform') {
+					updatePlacedElement(id, {
+						scaleU: clampScale(el.scaleU * factor),
+						scaleV: clampScale(el.scaleV * factor),
+					});
+				} else if (axis === 'u') {
+					updatePlacedElement(id, {
+						scaleU: clampScale(el.scaleU * factor),
+					});
+				} else {
+					updatePlacedElement(id, {
+						scaleV: clampScale(el.scaleV * factor),
+					});
+				}
+			});
+		},
+		[selectedPlacedElement?.id, updatePlacedElement],
+	);
 	useEffect(() => {
 		if (!selectedPlacedElement) {
 			setElementEditMode(null);
@@ -1499,6 +1530,28 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		window.addEventListener('keydown', handleKeyDown);
 		return () => window.removeEventListener('keydown', handleKeyDown);
 	}, [elementEditMode, nudgeSelectedElement, selectedPlacedElement]);
+	useEffect(() => {
+		if (!selectedPlacedElement || elementEditMode !== 'scale') return;
+
+		const handleKeyDown = (event: KeyboardEvent) => {
+			const target = event.target as HTMLElement | null;
+			const tag = target?.tagName;
+			if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
+				return;
+			}
+
+			if (event.key === '+' || event.key === '=') {
+				event.preventDefault();
+				adjustSelectedElementScale('uniform', 1);
+			} else if (event.key === '-' || event.key === '_') {
+				event.preventDefault();
+				adjustSelectedElementScale('uniform', -1);
+			}
+		};
+
+		window.addEventListener('keydown', handleKeyDown);
+		return () => window.removeEventListener('keydown', handleKeyDown);
+	}, [adjustSelectedElementScale, elementEditMode, selectedPlacedElement]);
 
 	useEffect(() => {
 		if (workflowStep !== 'base' || !isViewerReady) return;
@@ -4132,6 +4185,111 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 											<div className="mt-3 grid grid-cols-2 gap-2 text-xs text-(--ui-muted)">
 												<div className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.02)] px-3 py-2 text-center">Links / Rechts</div>
 												<div className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.02)] px-3 py-2 text-center">Voor / Achter</div>
+											</div>
+										</div>
+									)}
+									{selectedPlacedElement && !selectedInsoleSide && elementEditMode === 'scale' && (
+										<div className="absolute bottom-6 right-[310px] z-20 ui-overlay-card w-[320px] rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
+											<div className="flex items-center justify-between gap-2">
+												<div>
+													<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">Schalen</div>
+													<div className="mt-0.5 text-xs text-(--ui-muted)">
+														Gebruik de knoppen of de + en − toetsen (gelijke vergroting)
+													</div>
+												</div>
+												<button
+													type="button"
+													onClick={() => setElementEditMode(null)}
+													className="shrink-0 rounded-lg border border-(--ui-border) px-3 py-1.5 text-xs text-(--ui-text)"
+												>
+													Annuleren
+												</button>
+											</div>
+											<div className="mt-4 space-y-3">
+												<div className="flex items-center justify-between gap-3">
+													<span className="text-xs font-medium text-(--ui-text)">Alles</span>
+													<div className="flex gap-2">
+														<button
+															type="button"
+															onPointerDown={(e) => {
+																e.preventDefault();
+																adjustSelectedElementScale('uniform', -1);
+															}}
+															className="flex h-10 min-w-10 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-lg font-semibold text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]"
+															aria-label="Kleiner"
+														>
+															−
+														</button>
+														<button
+															type="button"
+															onPointerDown={(e) => {
+																e.preventDefault();
+																adjustSelectedElementScale('uniform', 1);
+															}}
+															className="flex h-10 min-w-10 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-lg font-semibold text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]"
+															aria-label="Groter"
+														>
+															+
+														</button>
+													</div>
+												</div>
+												<div className="flex items-center justify-between gap-3">
+													<span className="text-xs font-medium text-(--ui-text)">Dwars</span>
+													<div className="flex gap-2">
+														<button
+															type="button"
+															onPointerDown={(e) => {
+																e.preventDefault();
+																adjustSelectedElementScale('u', -1);
+															}}
+															className="flex h-10 min-w-10 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-lg font-semibold text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]"
+															aria-label="Smaller dwars"
+														>
+															−
+														</button>
+														<button
+															type="button"
+															onPointerDown={(e) => {
+																e.preventDefault();
+																adjustSelectedElementScale('u', 1);
+															}}
+															className="flex h-10 min-w-10 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-lg font-semibold text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]"
+															aria-label="Breder dwars"
+														>
+															+
+														</button>
+													</div>
+												</div>
+												<div className="flex items-center justify-between gap-3">
+													<span className="text-xs font-medium text-(--ui-text)">Langs voet</span>
+													<div className="flex gap-2">
+														<button
+															type="button"
+															onPointerDown={(e) => {
+																e.preventDefault();
+																adjustSelectedElementScale('v', -1);
+															}}
+															className="flex h-10 min-w-10 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-lg font-semibold text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]"
+															aria-label="Korter langs"
+														>
+															−
+														</button>
+														<button
+															type="button"
+															onPointerDown={(e) => {
+																e.preventDefault();
+																adjustSelectedElementScale('v', 1);
+															}}
+															className="flex h-10 min-w-10 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-lg font-semibold text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]"
+															aria-label="Langer langs"
+														>
+															+
+														</button>
+													</div>
+												</div>
+											</div>
+											<div className="mt-3 rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.02)] px-3 py-2 text-center text-xs tabular-nums text-(--ui-muted)">
+												dwars {selectedPlacedElement.scaleU.toFixed(2)} × langs {selectedPlacedElement.scaleV.toFixed(2)}
 											</div>
 										</div>
 									)}

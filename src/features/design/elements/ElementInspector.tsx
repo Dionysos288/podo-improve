@@ -52,99 +52,99 @@ export function ElementInspector({ element, standalone, onClose, editMode: _edit
 	// Settings rows only — no title (standalone wrapper has its own header)
 	const settingsContent = (
 		<div className="space-y-2.5">
-				{/* Profile selector (if multiple profiles) */}
-				{!isStandalone && item && item.profiles.length > 1 && (
-					<div className="flex items-center justify-between">
-						<span className="text-sm text-ui-muted">Profiel</span>
-						<div className="flex gap-1">
-							{item.profiles.map((p) => (
-								<button
-									key={p}
-									type="button"
-									onClick={() => update({ profile: p })}
-									className={cn(
-										'rounded-lg px-2.5 py-1 text-xs font-semibold transition',
-										element.profile === p
-											? 'bg-ui-accent text-slate-900'
-											: 'text-ui-text hover:bg-[rgba(255,255,255,0.06)]'
-									)}
-								>
-									{p === 'bol' ? 'Bol' : p === 'vlak' ? 'Vlak' : p === 'hol' ? 'Hol' : 'Vloeiend'}
-								</button>
-							))}
-						</div>
-					</div>
-				)}
-
-				{/* Hoogte */}
+			{/* Profile selector (if multiple profiles) */}
+			{!isStandalone && item && item.profiles.length > 1 && (
 				<div className="flex items-center justify-between">
-					<span className="text-sm text-ui-muted">Hoogte</span>
-					<div className="flex items-center gap-1.5">
-						<input
-							type="number"
-							inputMode="decimal"
-							className="w-16 rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-2.5 py-1.5 text-right text-sm font-medium text-ui-text"
-							value={Math.abs(element.heightMm)}
-							onChange={(e) => {
-								const val = Number(e.target.value) || 0;
-								update({
-									heightMm:
-										element.heightMm >= 0
-											? Math.max(0.5, val)
-											: -Math.max(0.5, val),
-								});
-							}}
-							min={0.5}
-							max={item ? Math.abs(item.heightRange[1]) : 10}
-							step={0.5}
-						/>
-						<span className="text-xs text-ui-muted">mm</span>
-					</div>
-				</div>
-
-				{/* Vloeren */}
-				<div className="flex items-center justify-between">
-					<span className="text-sm text-ui-muted">Vloeren</span>
-					<select
-						value={isStandalone ? standaloneFloorMode : element.floorMode}
-						onChange={(e) => update({ floorMode: e.target.value as ElementFloorMode })}
-						className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-2.5 py-1.5 text-right text-sm text-ui-text appearance-none pr-7 cursor-pointer"
-						style={{
-							backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%23999' viewBox='0 0 16 16'%3E%3Cpath d='M4.646 5.646a.5.5 0 01.708 0L8 8.293l2.646-2.647a.5.5 0 01.708.708l-3 3a.5.5 0 01-.708 0l-3-3a.5.5 0 010-.708z'/%3E%3C/svg%3E")`,
-							backgroundRepeat: 'no-repeat',
-							backgroundPosition: 'right 8px center',
-						}}
-					>
-						<option value="sole">Op zool vloeien</option>
-						{!isStandalone && <option value="scan">Op scan vloeren</option>}
-						<option value="free">{isStandalone ? 'Niet vloeien' : 'Vrij'}</option>
-					</select>
-				</div>
-
-				{/* Opsplitsen */}
-				{!isStandalone && (
-					<div className="flex items-center justify-between">
-						<span className="text-sm text-ui-muted">Opsplitsen</span>
-						<button
-							type="button"
-							onClick={() => update({ split: !element.split })}
-							className={cn(
-								'relative h-6 w-11 rounded-full transition-colors',
-								element.split
-									? 'bg-ui-accent'
-									: 'bg-[rgba(255,255,255,0.12)]'
-							)}
-						>
-							<span
+					<span className="text-sm text-ui-muted">Profiel</span>
+					<div className="flex gap-1">
+						{item.profiles.map((p) => (
+							<button
+								key={p}
+								type="button"
+								onClick={() => update({ profile: p })}
 								className={cn(
-									'absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform',
-									element.split && 'translate-x-5'
+									'rounded-lg px-2.5 py-1 text-xs font-semibold transition',
+									element.profile === p
+										? 'bg-ui-accent text-slate-900'
+										: 'text-ui-text hover:bg-[rgba(255,255,255,0.06)]'
 								)}
-							/>
-						</button>
+							>
+								{p === 'bol' ? 'Bol' : p === 'vlak' ? 'Vlak' : p === 'hol' ? 'Hol' : 'Vloeiend'}
+							</button>
+						))}
 					</div>
-				)}
+				</div>
+			)}
+
+			{/* Hoogte */}
+			<div className="flex items-center justify-between">
+				<span className="text-sm text-ui-muted">Hoogte</span>
+				<div className="flex items-center gap-1.5">
+					<input
+						type="number"
+						inputMode="decimal"
+						className="w-16 rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-2.5 py-1.5 text-right text-sm font-medium text-ui-text"
+						value={Math.abs(element.heightMm)}
+						onChange={(e) => {
+							const val = Number(e.target.value) || 0;
+							update({
+								heightMm:
+									element.heightMm >= 0
+										? Math.max(0.5, val)
+										: -Math.max(0.5, val),
+							});
+						}}
+						min={0.5}
+						max={item ? Math.abs(item.heightRange[1]) : 10}
+						step={0.5}
+					/>
+					<span className="text-xs text-ui-muted">mm</span>
+				</div>
 			</div>
+
+			{/* Vloeren */}
+			<div className="flex items-center justify-between">
+				<span className="text-sm text-ui-muted">Vloeren</span>
+				<select
+					value={isStandalone ? standaloneFloorMode : element.floorMode}
+					onChange={(e) => update({ floorMode: e.target.value as ElementFloorMode })}
+					className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-2.5 py-1.5 text-right text-sm text-ui-text appearance-none pr-7 cursor-pointer"
+					style={{
+						backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%23999' viewBox='0 0 16 16'%3E%3Cpath d='M4.646 5.646a.5.5 0 01.708 0L8 8.293l2.646-2.647a.5.5 0 01.708.708l-3 3a.5.5 0 01-.708 0l-3-3a.5.5 0 010-.708z'/%3E%3C/svg%3E")`,
+						backgroundRepeat: 'no-repeat',
+						backgroundPosition: 'right 8px center',
+					}}
+				>
+					<option value="sole">Op zool vloeien</option>
+					{!isStandalone && <option value="scan">Op scan vloeren</option>}
+					<option value="free">{isStandalone ? 'Niet vloeien' : 'Vrij'}</option>
+				</select>
+			</div>
+
+			{/* Opsplitsen */}
+			{!isStandalone && (
+				<div className="flex items-center justify-between">
+					<span className="text-sm text-ui-muted">Opsplitsen</span>
+					<button
+						type="button"
+						onClick={() => update({ split: !element.split })}
+						className={cn(
+							'relative h-6 w-11 rounded-full transition-colors',
+							element.split
+								? 'bg-ui-accent'
+								: 'bg-[rgba(255,255,255,0.12)]'
+						)}
+					>
+						<span
+							className={cn(
+								'absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform',
+								element.split && 'translate-x-5'
+							)}
+						/>
+					</button>
+				</div>
+			)}
+		</div>
 	);
 
 	// Full content block with name header — used in non-standalone (embedded) mode

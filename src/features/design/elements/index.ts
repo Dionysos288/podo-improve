@@ -27,7 +27,11 @@ export {
 	mirrorTrimlineHandleProfileAcrossWidth,
 	mirrorPlacedElementToSide,
 } from './placement';
-export { applyElements, applyElementColors, buildElementOverlayGeometries } from './applyElements';
+export {
+	applyElements,
+	applyElementColors,
+	buildElementOverlayGeometries,
+} from './applyElements';
 export type { ElementOverlayData } from './applyElements';
 export { ElementsModal } from './ElementsModal';
 export { ElementInspector } from './ElementInspector';

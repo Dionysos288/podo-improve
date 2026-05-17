@@ -92,7 +92,8 @@ function migrateLoadedElement(raw: Record<string, unknown>) {
 	const looksLikeV1 =
 		approx(raw.positionU, 0.73) &&
 		(approx(raw.positionV, 0.38) || approx(raw.positionV, 0.62)) &&
-		(approx(raw.rotationRad, -0.42, 0.06) || approx(raw.rotationRad, 0.42, 0.06));
+		(approx(raw.rotationRad, -0.42, 0.06) ||
+			approx(raw.rotationRad, 0.42, 0.06));
 
 	if (looksLikeV1) {
 		return {
@@ -109,13 +110,12 @@ function migrateLoadedElement(raw: Record<string, unknown>) {
 
 	// V2 legacy defaults (second iteration with too-small 0.74/0.8 scales)
 	const looksLikeV2 =
-		approx(raw.scaleU, 0.74, 0.03) &&
-		approx(raw.scaleV, 0.8, 0.03);
+		approx(raw.scaleU, 0.74, 0.03) && approx(raw.scaleV, 0.8, 0.03);
 
 	if (looksLikeV2) {
 		return {
 			...raw,
-			positionV: side === 'right' ? 0.50 : 0.50,
+			positionV: side === 'right' ? 0.5 : 0.5,
 			scaleU: 1.0,
 			scaleV: 1.0,
 		};
@@ -129,7 +129,7 @@ function migrateLoadedElement(raw: Record<string, unknown>) {
 	if (looksLikeV3) {
 		return {
 			...raw,
-			positionV: side === 'right' ? 0.50 : 0.50,
+			positionV: side === 'right' ? 0.5 : 0.5,
 		};
 	}
 
@@ -152,9 +152,11 @@ export type ClientSettingsGetter = () => Record<string, unknown>;
 export function useDesignAutosave(
 	projectId: string,
 	initialDesignId?: string | null,
-	clientSettingsGetterRef?: React.RefObject<ClientSettingsGetter | null>
+	clientSettingsGetterRef?: React.RefObject<ClientSettingsGetter | null>,
 ) {
-	const [designId, setDesignId] = useState<string | null>(initialDesignId ?? null);
+	const [designId, setDesignId] = useState<string | null>(
+		initialDesignId ?? null,
+	);
 	const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
 	const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
 	const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -162,7 +164,9 @@ export function useDesignAutosave(
 	const isSavingRef = useRef(false);
 	const designIdRef = useRef(designId);
 	const isCreatingRef = useRef(false);
-	const persistedDesignRefsRef = useRef<PersistedDesignRefs>(getPersistedDesignRefs());
+	const persistedDesignRefsRef = useRef<PersistedDesignRefs>(
+		getPersistedDesignRefs(),
+	);
 	const placedElementsRef = useRef(useElementsStore.getState().placedElements);
 
 	// Keep ref in sync
@@ -232,7 +236,7 @@ export function useDesignAutosave(
 				isCreatingRef.current = false;
 			}
 		},
-		[projectId]
+		[projectId],
 	);
 
 	/**
@@ -293,7 +297,7 @@ export function useDesignAutosave(
 				isSavingRef.current = false;
 			}
 		},
-		[projectId, createDesignRecord]
+		[projectId, createDesignRecord],
 	);
 
 	/**
@@ -316,7 +320,9 @@ export function useDesignAutosave(
 	useEffect(() => {
 		const unsubDesign = useDesignStore.subscribe(() => {
 			const nextRefs = getPersistedDesignRefs();
-			if (!persistedDesignRefsChanged(persistedDesignRefsRef.current, nextRefs)) {
+			if (
+				!persistedDesignRefsChanged(persistedDesignRefsRef.current, nextRefs)
+			) {
 				return;
 			}
 			persistedDesignRefsRef.current = nextRefs;
@@ -402,13 +408,17 @@ export function useDesignAutosave(
 			const landmarks = design.landmarks as Record<string, unknown> | null;
 			if (landmarks) {
 				if (landmarks.threePointLandmarks !== undefined) {
-					designStore.setThreePointLandmarks(landmarks.threePointLandmarks as never);
+					designStore.setThreePointLandmarks(
+						landmarks.threePointLandmarks as never,
+					);
 				}
 				if (landmarks.derivedLandmarks !== undefined) {
 					designStore.setDerivedLandmarks(landmarks.derivedLandmarks as never);
 				}
 				if (landmarks.completeLandmarks !== undefined) {
-					designStore.setCompleteLandmarks(landmarks.completeLandmarks as never);
+					designStore.setCompleteLandmarks(
+						landmarks.completeLandmarks as never,
+					);
 				}
 				if (landmarks.landmarks !== undefined) {
 					designStore.setLandmarks(landmarks.landmarks as never);
@@ -447,7 +457,11 @@ export function useDesignAutosave(
 				for (const el of elements) {
 					const migratedElement = migrateLoadedElement(el);
 					// Migrate old floorMode values ('sole'|'scan'|'free') → 'vloeien'
-					if (migratedElement.floorMode && migratedElement.floorMode !== 'vloeien' && migratedElement.floorMode !== 'niet-vloeien') {
+					if (
+						migratedElement.floorMode &&
+						migratedElement.floorMode !== 'vloeien' &&
+						migratedElement.floorMode !== 'niet-vloeien'
+					) {
 						migratedElement.floorMode = 'vloeien';
 					}
 					// Directly populate placedElements rather than going through addElement
@@ -465,7 +479,7 @@ export function useDesignAutosave(
 			// Return clientSettings so the caller can hydrate its local useState
 			return (design.clientSettings as Record<string, unknown>) ?? null;
 		},
-		[buildSnapshot]
+		[buildSnapshot],
 	);
 
 	/**

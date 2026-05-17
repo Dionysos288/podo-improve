@@ -6,7 +6,7 @@ export type SideInspectionProfileBuffers = {
 	fillGeometry: THREE.BufferGeometry;
 };
 
-const DEFAULT_BINS = 256;
+const DEFAULT_BINS = 200;
 
 function snapOrthonormalBasis(
 	cameraPosition: THREE.Vector3,
@@ -32,7 +32,7 @@ function snapOrthonormalBasis(
 	return { forward, up, lateral };
 }
 
-function smoothEnvelope(arr: Float32Array, hit: Uint8Array, n: number, passes = 4): void {
+function smoothEnvelope(arr: Float32Array, hit: Uint8Array, n: number, passes = 2): void {
 	const tmp = new Float32Array(n);
 	for (let p = 0; p < passes; p++) {
 		tmp.set(arr);
@@ -47,25 +47,6 @@ function smoothEnvelope(arr: Float32Array, hit: Uint8Array, n: number, passes = 
 				}
 			}
 			if (c) arr[i] = s / c;
-		}
-	}
-}
-
-/** Limits bin-to-bin slope so tessellation noise does not jag the silhouette. */
-function slopeLimitEnvelope(values: Float32Array, hit: Uint8Array, n: number, maxStep: number): void {
-	const iterations = 4;
-	for (let iter = 0; iter < iterations; iter++) {
-		for (let i = 1; i < n; i++) {
-			if (!hit[i] || !hit[i - 1]) continue;
-			const lo = values[i - 1]! - maxStep;
-			const hi = values[i - 1]! + maxStep;
-			values[i] = THREE.MathUtils.clamp(values[i]!, lo, hi);
-		}
-		for (let i = n - 2; i >= 0; i--) {
-			if (!hit[i] || !hit[i + 1]) continue;
-			const lo = values[i + 1]! - maxStep;
-			const hi = values[i + 1]! + maxStep;
-			values[i] = THREE.MathUtils.clamp(values[i]!, lo, hi);
 		}
 	}
 }
@@ -178,31 +159,19 @@ export function buildSideInspectionProfile(
 	smoothEnvelope(bottom, hit, bins);
 	smoothEnvelope(top, hit, bins);
 
-	const maxSlopeStep = du * 3.5;
-	slopeLimitEnvelope(bottom, hit, bins, maxSlopeStep);
-	slopeLimitEnvelope(top, hit, bins, maxSlopeStep);
-	smoothEnvelope(bottom, hit, bins, 2);
-	smoothEnvelope(top, hit, bins, 2);
-
-	const topPtsSparse: THREE.Vector3[] = [];
-	const botPtsSparse: THREE.Vector3[] = [];
+	const topPts: THREE.Vector3[] = [];
+	const botPts: THREE.Vector3[] = [];
 	const scratch = new THREE.Vector3();
 	for (let i = 0; i < bins; i++) {
 		if (!hit[i]) continue;
 		const uC = uMin + (i + 0.5) * du;
-		botPtsSparse.push(worldFromUV(origin, lateral, up, uC, bottom[i]!, scratch.clone()));
-		topPtsSparse.push(worldFromUV(origin, lateral, up, uC, top[i]!, scratch.clone()));
+		botPts.push(worldFromUV(origin, lateral, up, uC, bottom[i]!, scratch.clone()));
+		topPts.push(worldFromUV(origin, lateral, up, uC, top[i]!, scratch.clone()));
 	}
 
-	if (topPtsSparse.length < 2 || botPtsSparse.length < 2) {
+	if (topPts.length < 2 || botPts.length < 2) {
 		return null;
 	}
-
-	const divisions = Math.min(480, Math.max(bins * 3, 72)) - 1;
-	const curveBot = new THREE.CatmullRomCurve3(botPtsSparse, false, 'centripetal');
-	const curveTop = new THREE.CatmullRomCurve3(topPtsSparse, false, 'centripetal');
-	const botPts = curveBot.getPoints(divisions);
-	const topPts = curveTop.getPoints(divisions);
 
 	const verts: number[] = [];
 	const indices: number[] = [];
@@ -212,11 +181,28 @@ export function buildSideInspectionProfile(
 		return vIdx++;
 	};
 
-	for (let i = 0; i < botPts.length - 1; i++) {
-		const i00 = pushVert(botPts[i]!.clone());
-		const i01 = pushVert(botPts[i + 1]!.clone());
-		const i10 = pushVert(topPts[i]!.clone());
-		const i11 = pushVert(topPts[i + 1]!.clone());
+	const p00 = new THREE.Vector3();
+	const p01 = new THREE.Vector3();
+	const p10 = new THREE.Vector3();
+	const p11 = new THREE.Vector3();
+	for (let i = 0; i < bins - 1; i++) {
+		if (!hit[i] || !hit[i + 1]) continue;
+		const u0 = uMin + i * du;
+		const u1 = uMin + (i + 1) * du;
+		const b0 = bottom[i]!;
+		const b1 = bottom[i + 1]!;
+		const t0 = top[i]!;
+		const t1 = top[i + 1]!;
+
+		worldFromUV(origin, lateral, up, u0, b0, p00);
+		worldFromUV(origin, lateral, up, u1, b1, p01);
+		worldFromUV(origin, lateral, up, u0, t0, p10);
+		worldFromUV(origin, lateral, up, u1, t1, p11);
+
+		const i00 = pushVert(p00);
+		const i01 = pushVert(p01);
+		const i10 = pushVert(p10);
+		const i11 = pushVert(p11);
 		indices.push(i00, i01, i11, i00, i11, i10);
 	}
 
