@@ -4,6 +4,7 @@
  * ──────────────────────────────────────────────
  */
 import { create } from 'zustand';
+import type { HardnessKey } from '@/src/features/printers/types/printers';
 import type { PlacedElement, ElementProfile, ElementFloorMode } from './types';
 import { getElementByKey, ANCHOR_POSITIONS } from './catalog';
 import {
@@ -67,6 +68,7 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 			trimOffsetMm: 0,
 			floorMode: 'sole',
 			split: false,
+			printHardness: 'normal' satisfies HardnessKey,
 			positionU: defaults.positionU,
 			positionV: defaults.positionV,
 			rotationRad: defaults.rotationRad,

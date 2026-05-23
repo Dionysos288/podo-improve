@@ -2,6 +2,13 @@ import * as THREE from 'three';
 import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpPanel';
 import type { CorrectionKey } from '@/src/shared/components/design/correctionsCatalog';
 import type { TrimlineHandleProfile } from '@/src/shared/components/design/TrimlineEditOverlay';
+import {
+	createHeelToToeMapper,
+	getGeometryAxes,
+	getAxisValue,
+	setAxisValue,
+	getMinForAxis,
+} from '@/src/features/design/utils/geometryAxes';
 
 /**
  * Smooth interpolation function for creating smooth transitions
@@ -9,151 +16,6 @@ import type { TrimlineHandleProfile } from '@/src/shared/components/design/Triml
 function smoothstep(edge0: number, edge1: number, x: number): number {
 	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
 	return t * t * (3 - 2 * t);
-}
-
-/**
- * Get the axis information from geometry bounding box
- */
-function getGeometryAxes(geometry: THREE.BufferGeometry): {
-	lengthAxis: string;
-	widthAxis: string;
-	heightAxis: string;
-	bbox: THREE.Box3;
-	lengthSpan: number;
-	widthSpan: number;
-	heightSpan: number;
-} {
-	geometry.computeBoundingBox();
-	const bbox = geometry.boundingBox!;
-	
-	const sizeX = bbox.max.x - bbox.min.x;
-	const sizeY = bbox.max.y - bbox.min.y;
-	const sizeZ = bbox.max.z - bbox.min.z;
-	
-	// For insoles: longest = length (heel-to-toe), middle = width, shortest = height
-	const sizes = [
-		{ axis: 'x', size: sizeX },
-		{ axis: 'y', size: sizeY },
-		{ axis: 'z', size: sizeZ },
-	].sort((a, b) => b.size - a.size);
-	
-	return {
-		lengthAxis: sizes[0].axis,
-		widthAxis: sizes[1].axis,
-		heightAxis: sizes[2].axis,
-		bbox,
-		lengthSpan: sizes[0].size,
-		widthSpan: sizes[1].size,
-		heightSpan: sizes[2].size,
-	};
-}
-
-/**
- * Get position value based on axis
- */
-function getAxisValue(positions: THREE.BufferAttribute, i: number, axis: string): number {
-	if (axis === 'x') return positions.getX(i);
-	if (axis === 'y') return positions.getY(i);
-	return positions.getZ(i);
-}
-
-/**
- * Set position value based on axis
- */
-function setAxisValue(positions: THREE.BufferAttribute, i: number, axis: string, value: number): void {
-	if (axis === 'x') positions.setX(i, value);
-	else if (axis === 'y') positions.setY(i, value);
-	else positions.setZ(i, value);
-}
-
-/**
- * Get min value of bbox for axis
- */
-function getMinForAxis(bbox: THREE.Box3, axis: string): number {
-	if (axis === 'x') return bbox.min.x;
-	if (axis === 'y') return bbox.min.y;
-	return bbox.min.z;
-}
-
-/**
- * Get max value of bbox for axis
- */
-function getMaxForAxis(bbox: THREE.Box3, axis: string): number {
-	if (axis === 'x') return bbox.max.x;
-	if (axis === 'y') return bbox.max.y;
-	return bbox.max.z;
-}
-
-/**
- * Insoles often arrive with an arbitrary axis direction (length can run min->max or max->min).
- * Many corrections are defined in heel-to-toe terms, so we infer which end is the heel.
- *
- * Heuristic: the heel is the narrower end of the insole, while the forefoot
- * (ball of foot / metatarsal area) is the wider end.
- */
-function createHeelToToeMapper(params: {
-	positions: THREE.BufferAttribute;
-	lengthAxis: string;
-	widthAxis: string;
-	bbox: THREE.Box3;
-	lengthSpan: number;
-}): {
-	heelAtMin: boolean;
-	getT: (lengthVal: number) => number; // 0 = heel, 1 = toe
-} {
-	const { positions, lengthAxis, widthAxis, bbox, lengthSpan } = params;
-
-	const minLength = getMinForAxis(bbox, lengthAxis);
-	const maxLength = getMaxForAxis(bbox, lengthAxis);
-
-	// Sample ~8% of length at each end.
-	const slice = Math.max(lengthSpan * 0.08, 1e-6);
-
-	let minEndMinWidth = Number.POSITIVE_INFINITY;
-	let minEndMaxWidth = Number.NEGATIVE_INFINITY;
-	let minEndCount = 0;
-
-	let maxEndMinWidth = Number.POSITIVE_INFINITY;
-	let maxEndMaxWidth = Number.NEGATIVE_INFINITY;
-	let maxEndCount = 0;
-
-	for (let i = 0; i < positions.count; i++) {
-		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const widthVal = getAxisValue(positions, i, widthAxis);
-
-		if (lengthVal <= minLength + slice) {
-			minEndMinWidth = Math.min(minEndMinWidth, widthVal);
-			minEndMaxWidth = Math.max(minEndMaxWidth, widthVal);
-			minEndCount++;
-		}
-
-		if (lengthVal >= maxLength - slice) {
-			maxEndMinWidth = Math.min(maxEndMinWidth, widthVal);
-			maxEndMaxWidth = Math.max(maxEndMaxWidth, widthVal);
-			maxEndCount++;
-		}
-	}
-
-	const minEndWidthSpan =
-		minEndCount > 10 ? Math.max(0, minEndMaxWidth - minEndMinWidth) : Number.POSITIVE_INFINITY;
-	const maxEndWidthSpan =
-		maxEndCount > 10 ? Math.max(0, maxEndMaxWidth - maxEndMinWidth) : Number.POSITIVE_INFINITY;
-
-	// If heuristic fails (e.g. degenerate geometry), default to heel at min.
-	// The heel is the narrower end; the forefoot (ball area) is wider.
-	const heelAtMin =
-		Number.isFinite(minEndWidthSpan) && Number.isFinite(maxEndWidthSpan)
-			? minEndWidthSpan <= maxEndWidthSpan
-			: true;
-
-	return {
-		heelAtMin,
-		getT: (lengthVal: number) => {
-			const raw = (lengthVal - minLength) / lengthSpan; // 0 at min, 1 at max
-			const clamped = Math.max(0, Math.min(1, raw));
-			return heelAtMin ? clamped : 1 - clamped;
-		},
-	};
 }
 
 /**

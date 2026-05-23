@@ -74,12 +74,19 @@ import type {
 } from '@/src/features/design/components/EnhancedSTLViewer';
 import type { BoxGridSavedOffsets, LatticeOffsetVec } from '@/src/features/design/types/boxGrid';
 import type { HardnessKey, PrinterSettings as OrgPrinterSettings } from '@/src/features/printers/types/printers';
+import { usePrintInteraction } from '@/src/features/design/print/usePrintInteraction';
+import { PrintPreparationPanel } from '@/src/shared/components/design/PrintPreparationPanel';
+import {
+	PrintContextPanel,
+	type PrintSidebarContextMode,
+} from '@/src/shared/components/design/PrintContextPanel';
 import {
 	useElementsStore,
 	ElementsModal,
 	ElementInspector,
 	ElementActionsPanel,
 	PlacedElementsList,
+	getElementByKey,
 	mirrorBoxGridOffsetsAcrossWidth,
 	mirrorPlacedElementToSide,
 	mirrorTrimlineHandleProfileAcrossWidth,
@@ -1146,6 +1153,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const [step3Right, setStep3Right] = useState<SideHardness>({ ...DEFAULT_SIDE_HARDNESS });
 	const [step3Side, setStep3Side] = useState<'left' | 'right'>('left');
 	const [selectedZone, setSelectedZone] = useState<'front' | 'middle' | 'back' | null>(null);
+	const printInteraction = usePrintInteraction();
 
 	// Derive hardness profiles from org printer settings (no need for client-side fetch)
 	const orgHardnessProfiles = useMemo(() => {
@@ -3283,7 +3291,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 					);
 				}
 
-				/* ── Print panel (existing behaviour) ── */
+				/* ── Print panel ── */
 				const s = step3Current;
 
 				const getZoneHardness = (zone: 'front' | 'middle' | 'back') => {
@@ -3299,258 +3307,90 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 					setStep3Current((prev) => ({ ...prev, [zone]: h }));
 				};
 
-				const zoneColor = (zone: 'front' | 'middle' | 'back') => {
-					const h = getZoneHardness(zone);
-					return HARDNESS_OPTIONS.find((o) => o.key === h)?.color ?? '#29B6F6';
-				};
-
-				const zoneLabel = (zone: 'front' | 'middle' | 'back') => {
-					if (zone === 'front') return 'Voorvoet';
-					if (zone === 'middle') return 'Middenvoet';
-					return 'Achtervoet';
-				};
-
-				const activeZone = s.elementsSplit ? selectedZone : null;
-				const activeHardness = activeZone
-					? getZoneHardness(activeZone)
-					: s.overall;
-
 				const sideLabel = step3Side === 'left' ? 'Links' : 'Rechts';
+				const activeZone =
+					s.elementsSplit && selectedZone ? selectedZone : null;
+				const step3FocusedElement =
+					selectedPlacedElement?.side === step3Side ? selectedPlacedElement : null;
+
+				let contextMode: PrintSidebarContextMode;
+				if (step3FocusedElement) contextMode = 'element';
+				else if (s.elementsSplit && selectedZone) contextMode = 'zone';
+				else if (s.elementsSplit) contextMode = 'hint_split';
+				else contextMode = 'whole';
+
+				const activeHardness: HardnessKey = step3FocusedElement
+					? (step3FocusedElement.printHardness ?? 'normal')
+					: activeZone
+						? getZoneHardness(activeZone)
+						: s.overall;
+
+				const elemCatalogItem = step3FocusedElement
+					? getElementByKey(step3FocusedElement.libraryKey)
+					: null;
+				const elementSubtitle = step3FocusedElement
+					? elemCatalogItem?.label ?? step3FocusedElement.libraryKey
+					: undefined;
 
 				return (
 					<Card>
 						<CardContent className="space-y-5">
-							{/* ── Left / Right side toggle ── */}
-							<div className="flex rounded-lg border border-ui-border overflow-hidden">
-								{(['left', 'right'] as const).map((side) => (
-									<button
-										key={side}
-										type="button"
-										onClick={() => { setStep3Side(side); setSelectedZone(null); }}
-										className={cn(
-											'flex-1 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors',
-											step3Side === side
-												? 'bg-ui-accent text-slate-900'
-												: 'bg-transparent text-ui-text hover:bg-white/5'
-										)}
-									>
-										{side === 'left' ? 'Links' : 'Rechts'}
-									</button>
-								))}
-							</div>
+							<PrintPreparationPanel
+								step3Side={step3Side}
+								onStep3Side={(side) => {
+									setStep3Side(side);
+									setSelectedZone(null);
+									printInteraction.resetHover();
+									if (selectedPlacedElement?.side !== side) {
+										selectPlacedElement(null);
+									}
+								}}
+								elementsVloeien={s.elementsVloeien}
+								onToggleVloeien={() =>
+									setStep3Current((prev) => ({
+										...prev,
+										elementsVloeien: !prev.elementsVloeien,
+									}))
+								}
+								heelEdgeThicknessMm={s.heelEdgeThicknessMm}
+								onHeelEdgeChange={(v) =>
+									setStep3Current((prev) => ({ ...prev, heelEdgeThicknessMm: v }))
+								}
+								elementsSplit={s.elementsSplit}
+								onToggleSplit={() => {
+									setStep3Current((prev) => ({
+										...prev,
+										elementsSplit: !prev.elementsSplit,
+									}));
+									setSelectedZone(null);
+									printInteraction.onWholeInsoleToggleSplitOff();
+								}}
+								sideLabel={sideLabel}
+							/>
 
-							{/* ── Elementen vloeien ── */}
-							<div className="space-y-2">
-								<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2.5">
-									<div className="flex flex-col">
-										<span className="text-sm text-ui-text">Elementen</span>
-										<span className="text-xs text-ui-muted">vloeien</span>
-									</div>
-									<button
-										type="button"
-										role="switch"
-										aria-checked={s.elementsVloeien}
-										onClick={() => setStep3Current((prev) => ({ ...prev, elementsVloeien: !prev.elementsVloeien }))}
-										className={cn(
-											'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-											s.elementsVloeien ? 'bg-ui-accent' : 'bg-ui-border'
-										)}
-									>
-										<span
-											className={cn(
-												'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
-												s.elementsVloeien ? 'translate-x-4' : 'translate-x-0'
-											)}
-										/>
-									</button>
-								</div>
-							</div>
-
-							{/* ── Hielrand dikte ── */}
-							<div className="space-y-1.5">
-								<span className="text-xs font-medium uppercase tracking-wide text-(--ui-text)/70">
-									Hielrand dikte ({sideLabel})
-								</span>
-								<div className="flex items-center gap-2">
-									<input
-										type="number"
-										min={0}
-										max={10}
-										step={0.1}
-										value={s.heelEdgeThicknessMm}
-										onChange={(e) => {
-											const v = parseFloat(e.target.value);
-											if (!Number.isNaN(v)) setStep3Current((prev) => ({ ...prev, heelEdgeThicknessMm: v }));
-										}}
-										className="w-20 rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-sm text-ui-text text-center focus:outline-none focus:border-ui-accent"
-									/>
-									<span className="text-xs text-ui-muted">mm</span>
-								</div>
-							</div>
-
-							{/* ── Elementen splitsen ── */}
-							<div className="space-y-2">
-								<div className="flex items-center justify-between">
-									<span className="text-xs font-medium uppercase tracking-wide text-(--ui-text)/70">
-										Elementen splitsen
-									</span>
-									<button
-										type="button"
-										role="switch"
-										aria-checked={s.elementsSplit}
-										onClick={() => {
-											setStep3Current((prev) => ({ ...prev, elementsSplit: !prev.elementsSplit }));
-											setSelectedZone(null);
-										}}
-										className={cn(
-											'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-											s.elementsSplit ? 'bg-ui-accent' : 'bg-ui-border'
-										)}
-									>
-										<span
-											className={cn(
-												'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
-												s.elementsSplit ? 'translate-x-4' : 'translate-x-0'
-											)}
-										/>
-									</button>
-								</div>
-							</div>
-
-							{/* ── Sole zone visualisation ── */}
-							<div className="space-y-2">
-								<span className="text-xs font-medium uppercase tracking-wide text-(--ui-text)/70">
-									{s.elementsSplit ? 'Zones' : 'Hardheid'}
-								</span>
-								{s.elementsSplit && (
-									<p className="text-xs text-ui-muted">
-										Klik op de {sideLabel.toLowerCase()} zool in de 3D viewer om een zone te selecteren.
-									</p>
-								)}
-
-								{/* SVG sole shape with clickable zones */}
-								<div className="flex justify-center">
-									<svg
-										viewBox="0 0 120 300"
-										className="w-32 select-none"
-										xmlns="http://www.w3.org/2000/svg"
-									>
-										{/* Forefoot zone */}
-										<path
-											d="M30,100 C30,100 15,60 20,30 C25,10 40,2 60,2 C80,2 95,10 100,30 C105,60 90,100 90,100 Z"
-											fill={zoneColor('front')}
-											opacity={!s.elementsSplit || activeZone === 'front' ? 0.85 : 0.45}
-											stroke={activeZone === 'front' ? '#fff' : 'rgba(255,255,255,0.2)'}
-											strokeWidth={activeZone === 'front' ? 2.5 : 1}
-											className="cursor-pointer transition-all"
-											onClick={() => s.elementsSplit && setSelectedZone('front')}
-										/>
-										{s.elementsSplit && (
-											<text x="60" y="55" textAnchor="middle" fontSize="9" fill="#fff" fontWeight="600" className="pointer-events-none">Voor</text>
-										)}
-
-										{/* Midfoot zone */}
-										<path
-											d="M30,100 C28,130 22,150 22,175 C22,195 28,200 35,200 L85,200 C92,200 98,195 98,175 C98,150 92,130 90,100 Z"
-											fill={s.elementsSplit ? zoneColor('middle') : zoneColor('front')}
-											opacity={!s.elementsSplit || activeZone === 'middle' ? 0.85 : 0.45}
-											stroke={activeZone === 'middle' ? '#fff' : 'rgba(255,255,255,0.2)'}
-											strokeWidth={activeZone === 'middle' ? 2.5 : 1}
-											className="cursor-pointer transition-all"
-											onClick={() => s.elementsSplit && setSelectedZone('middle')}
-										/>
-										{s.elementsSplit && (
-											<text x="60" y="155" textAnchor="middle" fontSize="9" fill="#fff" fontWeight="600" className="pointer-events-none">Midden</text>
-										)}
-
-										{/* Heel zone */}
-										<path
-											d="M35,200 C28,210 20,230 20,255 C20,280 35,298 60,298 C85,298 100,280 100,255 C100,230 92,210 85,200 Z"
-											fill={s.elementsSplit ? zoneColor('back') : zoneColor('front')}
-											opacity={!s.elementsSplit || activeZone === 'back' ? 0.85 : 0.45}
-											stroke={activeZone === 'back' ? '#fff' : 'rgba(255,255,255,0.2)'}
-											strokeWidth={activeZone === 'back' ? 2.5 : 1}
-											className="cursor-pointer transition-all"
-											onClick={() => s.elementsSplit && setSelectedZone('back')}
-										/>
-										{s.elementsSplit && (
-											<text x="60" y="255" textAnchor="middle" fontSize="9" fill="#fff" fontWeight="600" className="pointer-events-none">Achter</text>
-										)}
-
-										{/* Single-mode label */}
-										{!s.elementsSplit && (
-											<text x="60" y="155" textAnchor="middle" fontSize="10" fill="#fff" fontWeight="600" className="pointer-events-none">
-												{HARDNESS_OPTIONS.find((o) => o.key === s.overall)?.label ?? 'Normaal'}
-											</text>
-										)}
-									</svg>
-								</div>
-
-								{/* Legend showing zone info when split */}
-								{s.elementsSplit && (
-									<div className="grid grid-cols-3 gap-1 text-center text-[10px] text-ui-muted">
-										{(['front', 'middle', 'back'] as const).map((z) => {
-											const h = getZoneHardness(z);
-											const lbl = HARDNESS_OPTIONS.find((o) => o.key === h)?.label ?? '';
-											const infill = activeProfiles[h]?.infillPercent ?? 0;
-											return (
-												<div key={z} className={cn('rounded px-1 py-0.5', activeZone === z && 'bg-white/10')}>
-													<div className="font-medium text-ui-text">{zoneLabel(z)}</div>
-													<div>{lbl}</div>
-													<div>{infill}%</div>
-												</div>
-											);
-										})}
-									</div>
-								)}
-							</div>
-
-							{/* ── Hardness picker ── */}
-							<div className="space-y-1.5">
-								<span className="text-xs font-medium uppercase tracking-wide text-(--ui-text)/70">
-									{s.elementsSplit && activeZone
-										? `Hardheid — ${zoneLabel(activeZone)}`
-										: 'Hardheid'}
-								</span>
-								{s.elementsSplit && !activeZone ? (
-									<p className="text-xs text-ui-muted italic">
-										Klik op de zool in de 3D viewer om de hardheid aan te passen.
-									</p>
-								) : (
-									<div className="grid grid-cols-1 gap-1">
-										{HARDNESS_OPTIONS.map(({ key, label: optLabel, color }) => {
-											const active = activeHardness === key;
-											const infill = activeProfiles[key]?.infillPercent ?? '–';
-											return (
-												<button
-													key={key}
-													type="button"
-													onClick={() => {
-														if (s.elementsSplit && activeZone) {
-															setZoneHardness(activeZone, key);
-														} else if (!s.elementsSplit) {
-															setStep3Current((prev) => ({ ...prev, overall: key }));
-														}
-													}}
-													className={cn(
-														'flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors',
-														active
-															? 'border-ui-accent bg-ui-accent/10 text-ui-accent'
-															: 'border-ui-border bg-[rgba(255,255,255,0.04)] text-ui-text hover:border-ui-accent/50'
-													)}
-												>
-													<span
-														className="inline-block h-3 w-3 rounded-full shrink-0"
-														style={{ background: color }}
-													/>
-													<span className="flex-1 text-left">{optLabel}</span>
-													<span className="text-xs text-(--ui-text)/50">{infill}%</span>
-												</button>
-											);
-										})}
-									</div>
-								)}
-							</div>
+							<PrintContextPanel
+								mode={contextMode}
+								activeZone={activeZone}
+								activeHardness={activeHardness}
+								hardnessOptions={HARDNESS_OPTIONS}
+								activeProfiles={activeProfiles}
+								elementSubtitle={
+									step3FocusedElement
+										? `Element: ${elementSubtitle ?? '?'} (${sideLabel.toLowerCase()})`
+										: undefined
+								}
+								onPickHardness={(key) => {
+									if (step3FocusedElement) {
+										updatePlacedElement(step3FocusedElement.id, {
+											printHardness: key,
+										});
+									} else if (s.elementsSplit && activeZone) {
+										setZoneHardness(activeZone, key);
+									} else {
+										setStep3Current((prev) => ({ ...prev, overall: key }));
+									}
+								}}
+							/>
 						</CardContent>
 					</Card>
 				);
@@ -3948,7 +3788,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										hideScans={false}
 										landmarkPoints={designPlan.points ?? undefined}
 										showGeneratedInsole={false}
-										showZones={activeDesignStep === 3 && step3Current.elementsSplit}
+										showZones={false}
 										showLeft={viewSettings.showLeft}
 										showRight={viewSettings.showRight}
 										transparent={viewSettings.transparent}
@@ -3967,7 +3807,56 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										selectedSide={activeDesignStep === 3 ? null : selectedInsoleSide}
 										onSelectSide={activeDesignStep === 3 ? undefined : (side) => setSelectedInsoleSide(side)}
 										onDeselectSide={activeDesignStep === 3 ? undefined : () => setSelectedInsoleSide(null)}
-										onZoneClick={activeDesignStep === 3 && step3Current.elementsSplit ? (zone, side) => { setSelectedZone(zone); setStep3Side(side); } : undefined}
+										onZoneClick={
+											activeDesignStep === 3 && !isEvaMethod && step3Current.elementsSplit
+												? (zone, side) => {
+														setSelectedZone(zone);
+														setStep3Side(side);
+														selectPlacedElement(null);
+													}
+												: undefined
+										}
+										printPrepInteractive={activeDesignStep === 3 && !isEvaMethod}
+										printPrepSidebarSide={step3Side}
+										printPrepElementsSplitLeft={step3Left.elementsSplit}
+										printPrepElementsSplitRight={step3Right.elementsSplit}
+										printPrepSelectedZone={
+											step3Current.elementsSplit ? selectedZone : null
+										}
+										printPrepHoveredZones={printInteraction.hoveredBySide}
+										onPrintPrepZoneHover={printInteraction.onPrepZoneHover}
+										onPrintWholeInsoleClick={
+											activeDesignStep === 3 && !isEvaMethod && !step3Current.elementsSplit
+												? (side) => {
+														printInteraction.onPrepWholeInsoleClick(side);
+														setStep3Side(side);
+														setSelectedZone(null);
+														selectPlacedElement(null);
+													}
+												: undefined
+										}
+										onPrintElementClick={
+											activeDesignStep === 3 && !isEvaMethod
+												? (elementId, side) => {
+														selectPlacedElement(elementId);
+														setStep3Side(side);
+														setSelectedZone(null);
+														printInteraction.resetHover();
+													}
+												: undefined
+										}
+										printSelectedElementId={
+											activeDesignStep === 3 ? selectedElementId : null
+										}
+										onPrintInteractionDeselect={
+											activeDesignStep === 3 && !isEvaMethod
+												? () => {
+														printInteraction.deselectInteraction();
+														setSelectedZone(null);
+														selectPlacedElement(null);
+													}
+												: undefined
+										}
 										boxEnabled={boxEnabled}
 										gridEditMode={isSelectedGridModeOn || isElementBoxGridModeOn}
 										heelEdgeThicknessMm={viewerHeelEdgeThicknessMm}
@@ -4015,7 +3904,9 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										onReady={() => setIsViewerReady(true)}
 										onBottomTextLoadingChange={handleBottomTextLoadingChange}
 										onBottomTextValidityChange={handleBottomTextValidityChange}
-										disableInteraction={!scansActive || !!selectedPlacedElement}
+										disableInteraction={
+											!scansActive || (!!selectedPlacedElement && activeDesignStep !== 3)
+										}
 										elementPlacementMode={viewerElementPlacementMode}
 										onElementPlace={selectedPlacedElement ? ({ side, u, v }) => {
 											if (selectedPlacedElement.side !== side) return;
@@ -4501,7 +4392,10 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									)}
 								</>
 							)}
-							{leftPanelTab !== 'analysis' && !selectedInsoleSide && selectedPlacedElement && (
+							{leftPanelTab !== 'analysis' &&
+								!selectedInsoleSide &&
+								selectedPlacedElement &&
+								activeDesignStep !== 3 && (
 								<div className="absolute right-4 top-4 z-20 w-[320px]">
 									<ElementInspector
 										element={selectedPlacedElement}
@@ -4513,7 +4407,20 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 							)}
 							{leftPanelTab !== 'analysis' &&
 								!selectedInsoleSide &&
-								!selectedPlacedElement &&
+								selectedPlacedElement &&
+								activeDesignStep === 3 && (
+								<div className="absolute right-[458px] top-4 z-20 w-[320px] max-w-[calc(100vw-500px)]">
+									<ElementInspector
+										element={selectedPlacedElement}
+										standalone
+										editMode={elementEditMode}
+										onClose={() => selectPlacedElement(null)}
+									/>
+								</div>
+							)}
+							{leftPanelTab !== 'analysis' &&
+								!selectedInsoleSide &&
+								(!selectedPlacedElement || activeDesignStep === 3) &&
 								!(textEditorOpen && activeCorrections.includes('tekst')) && (
 									<div className="absolute right-4 top-4 z-20 flex h-[85vh] w-[420px] flex-col rounded-2xl border border-ui-border bg-ui-panel text-ui-text overflow-hidden">
 										<StepRail

@@ -34,6 +34,12 @@ import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpP
 import type { CorrectionKey } from '@/src/shared/components/design/correctionsCatalog';
 import type { PlacedElement } from '@/src/features/design/elements/types';
 import { applyElements, applyElementColors, buildElementOverlayGeometries, DIEPELEMENTEN_ITEMS, ELEMENTEN_ITEMS, getElementByKey, getElementPreferredStlUrl, getElementStlLoadUrls, type ElementOverlayData } from '@/src/features/design/elements';
+import type { PrintZoneId } from '@/src/features/design/print/printZones';
+import { resolvePrintZoneFromLocalPoint } from '@/src/features/design/print/printZones';
+import {
+	applyPrintSplitZoneColors,
+	removePrintPrepAttributes,
+} from '@/src/features/design/print/printZoneVisuals';
 import type {
 	TrimlineAdjustments,
 	TrimlineHandleProfile,
@@ -43,6 +49,11 @@ import { InteractiveScanRotate } from './InteractiveScanRotate';
 import { SideInspectionLayers } from './SideInspectionLayers';
 import { ScanInsoleUpAxisSampler } from './ScanInsoleUpAxisSampler';
 import { composeOverlayManualYawMatrix } from '@/src/features/design/utils/scanManualAlignment';
+import {
+	computeOverlayTopSurfaceAlignOffset,
+	DEFAULT_EMBED_SCAN_HEIGHT_FRACTION,
+	DEFAULT_SINK_BIAS_MM,
+} from '@/src/features/design/utils/scanOverlayAlignment';
 import type { ScanManualAlignment } from '@/src/features/design/types/types';
 import type { LatticeEditKit } from './boxLatticeTypes';
 import type { LatticeOffsetVec, BoxGridSavedOffsets } from '@/src/features/design/types/boxGrid';
@@ -141,6 +152,15 @@ interface STLMeshProps {
 	onTrimDragActiveChange?: (active: boolean) => void;
 	/** When true, render a solid rectangular block around the insole (EVA milling mode) */
 	evaBlockMode?: boolean;
+	/** Print prep: subtle split zones — only meaningful on `meshRole==="insole"` */
+	printPrepSplit?: boolean;
+	printPrepSelectedZone?: PrintZoneId | null;
+	printPrepHoveredZone?: PrintZoneId | null;
+	onPrintPrepZoneHover?: (zone: PrintZoneId | null, side: 'left' | 'right') => void;
+	printPrepWhole?: boolean;
+	onPrintWholeInsoleClick?: (side: 'left' | 'right') => void;
+	onPrintElementClick?: (elementId: string, side: 'left' | 'right') => void;
+	printSelectedElementId?: string | null;
 }
 
 function getAxisValueFromVector(v: THREE.Vector3, axis: 'x' | 'y' | 'z') {
@@ -276,8 +296,7 @@ const ZONE_COLORS = {
 // Global viewer scale so ALL STLs keep real relative dimensions.
 // Source STLs are expected in millimeters.
 const MM_TO_WORLD = 0.4;
-const LEFT_SCAN_OVERLAY_ANCHOR: THREE.Vector3Tuple = [-30, 0, 0.25];
-const RIGHT_SCAN_OVERLAY_ANCHOR: THREE.Vector3Tuple = [30, 0, 0.25];
+const SCAN_OVERLAY_LATERAL_WORLD = { left: -30, right: 30 } as const;
 const DEFAULT_VEC3: [number, number, number] = [0, 0, 0];
 const EMPTY_TEXT_ANNOTATIONS: TextAnnotation[] = [];
 const EMPTY_PICKED_POINTS: [number, number, number][] = [];
@@ -2454,12 +2473,23 @@ function STLMesh({
 	onElementBoxGridSave,
 	onTrimDragActiveChange,
 	evaBlockMode = false,
+	printPrepSplit = false,
+	printPrepSelectedZone = null,
+	printPrepHoveredZone = null,
+	onPrintPrepZoneHover,
+	printPrepWhole = false,
+	onPrintWholeInsoleClick,
+	onPrintElementClick,
+	printSelectedElementId = null,
 }: STLMeshProps) {
 	const rawGeometry = useLoader(STLLoader, url);
 	const general = useDesignStore((state) => state.parameters.general);
 	const { invalidate } = useThree();
 	const invalidateRef = useRef(invalidate);
 	invalidateRef.current = invalidate;
+	const lastEmittedPrintHoverRef = useRef<PrintZoneId | undefined>(undefined);
+	const pendingPrintPrepHoverRef = useRef<PrintZoneId | null>(null);
+	const printPrepHoverFlushRafRef = useRef<number | null>(null);
 	const isLRNumber = (value: unknown): value is { left: number; right: number } => {
 		if (!value || typeof value !== 'object') return false;
 		const maybe = value as Record<string, unknown>;
@@ -2494,6 +2524,14 @@ function STLMesh({
 				setEngravingFontReady(false);
 			});
 	}, [meshRole]);
+	useEffect(() => {
+		return () => {
+			if (printPrepHoverFlushRafRef.current != null) {
+				cancelAnimationFrame(printPrepHoverFlushRafRef.current);
+				printPrepHoverFlushRafRef.current = null;
+			}
+		};
+	}, []);
 	const meshRef = useRef<THREE.Mesh>(null);
 	const lastCorrectionsRef = useRef<string>('');
 	const pendingSignatureRef = useRef<string>('');
@@ -3479,6 +3517,14 @@ function STLMesh({
 		}
 		return next;
 	}, [elementOverlays]);
+	const [printElementHoverId, setPrintElementHoverId] = useState<string | null>(null);
+	useEffect(() => {
+		setPrintElementHoverId(null);
+	}, [placedElementsSignature]);
+	const printPrepZoneTintActive =
+		Boolean(printPrepSplit) &&
+		meshRole === 'insole' &&
+		(printPrepSelectedZone != null || printPrepHoveredZone != null);
 	const clearElementOverlays = useCallback(() => {
 		lastRenderedOverlaySignatureRef.current = '';
 		setElementOverlays((prev) => {
@@ -4104,7 +4150,17 @@ function STLMesh({
 		const finalizeGeometryUpdate = (geometryToFinalize: THREE.BufferGeometry) => {
 			geometryToFinalize.computeVertexNormals();
 			currentOnGeometryReady?.(geometryToFinalize, { mmToWorld: mmToWorld || 1 });
-			if (showZones) applyZoneColors(geometryToFinalize);
+			const ppSplit = Boolean(printPrepSplit);
+			const ppSel = printPrepSelectedZone;
+			const ppHov = printPrepHoveredZone;
+			const prepTintActive =
+				ppSplit && meshRole === 'insole' && (ppSel != null || ppHov != null);
+			if (prepTintActive) {
+				applyPrintSplitZoneColors(geometryToFinalize, {
+					selectedZone: ppSel,
+					hoveredZone: ppHov,
+				});
+			} else if (showZones) applyZoneColors(geometryToFinalize);
 			else if (heatmap) applyHeightmapColors(geometryToFinalize);
 			else if (deviationMap) applyDeviationColors(geometryToFinalize);
 			else if (clampDebug && meshRole === 'insole') {
@@ -4200,7 +4256,7 @@ function STLMesh({
 		animRafRef.current = requestAnimationFrame(step);
 		// We no longer need the target geometry object.
 		target.dispose();
-	}, [gridEditMode, showZones, heatmap, clampDebug, deviationMap, hasPlacedElements, applyOrientation, mmToWorld, scheduleElementOverlayRebuild, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments, invalidate, savedBoxGridOffsetsSignature, bottomTextOverlaySignature]);
+	}, [gridEditMode, showZones, heatmap, clampDebug, deviationMap, hasPlacedElements, applyOrientation, mmToWorld, scheduleElementOverlayRebuild, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments, invalidate, savedBoxGridOffsetsSignature, bottomTextOverlaySignature, printPrepSplit, printPrepSelectedZone, printPrepHoveredZone]);
 
 	const rebuildFinalGeometryFromCorrected = useCallback(() => {
 		// Don't rebuild geometry while box-grid editing is active
@@ -4510,6 +4566,27 @@ function STLMesh({
 	// Apply zone colors / rebuild element overlays whenever visual mode changes
 	useEffect(() => {
 		if (!geometry) return;
+		const isPrepInsole = meshRole === 'insole' && printPrepSplit;
+		if (meshRole === 'insole' && !printPrepSplit) {
+			removePrintPrepAttributes(geometry);
+		}
+		if (isPrepInsole) {
+			if (printPrepSelectedZone != null || printPrepHoveredZone != null) {
+				applyPrintSplitZoneColors(geometry, {
+					selectedZone: printPrepSelectedZone,
+					hoveredZone: printPrepHoveredZone,
+				});
+			} else {
+				geometry.deleteAttribute('color');
+			}
+			invalidate();
+			if (hasPlacedElements) {
+				scheduleElementOverlayRebuild();
+			} else {
+				invalidate();
+			}
+			return;
+		}
 		if (showZones) {
 			clearElementOverlays();
 			applyZoneColors(geometry);
@@ -4553,7 +4630,7 @@ function STLMesh({
 			invalidate();
 		}
 		invalidate();
-	}, [geometry, showZones, heatmap, clampDebug, deviationMap, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments, hasPlacedElements, mmToWorld, scheduleElementOverlayRebuild, clearElementOverlays, invalidate]);
+	}, [geometry, showZones, printPrepSplit, printPrepSelectedZone, printPrepHoveredZone, heatmap, clampDebug, deviationMap, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments, hasPlacedElements, mmToWorld, scheduleElementOverlayRebuild, clearElementOverlays, invalidate]);
 
 	const probeRafRef = useRef<number | null>(null);
 	const pendingProbeInputRef = useRef<{
@@ -4762,6 +4839,7 @@ function STLMesh({
 				ref={meshRef}
 				geometry={geometry}
 				position={position}
+				{...(meshRole === 'overlayScan' ? { renderOrder: 2 } : {})}
 				onPointerDown={interactive ? (event) => {
 					if (!textPlacementEnabled || !onTextPlace) return;
 					if (pointPickMode || gridEditMode) return;
@@ -4785,6 +4863,39 @@ function STLMesh({
 					});
 				} : undefined}
 				onPointerMove={interactive ? (event) => {
+					const printHoverActive =
+						meshRole === 'insole' && Boolean(onPrintElementClick);
+					const suppressZoneProbe =
+						printHoverActive &&
+						printElementHoverId != null;
+					if (
+						printPrepSplit &&
+						onPrintPrepZoneHover &&
+						meshRole === 'insole' &&
+						geometry &&
+						!pointPickMode &&
+						!gridEditMode &&
+						!elementPlacementMode &&
+						!suppressZoneProbe
+					) {
+						const localPt = event.point.clone();
+						if (meshRef.current) meshRef.current.worldToLocal(localPt);
+						const hz = resolvePrintZoneFromLocalPoint(geometry, localPt);
+						pendingPrintPrepHoverRef.current = hz;
+						if (printPrepHoverFlushRafRef.current == null) {
+							printPrepHoverFlushRafRef.current = requestAnimationFrame(() => {
+								printPrepHoverFlushRafRef.current = null;
+								const flushZ = pendingPrintPrepHoverRef.current;
+								if (
+									flushZ != null &&
+									lastEmittedPrintHoverRef.current !== flushZ
+								) {
+									lastEmittedPrintHoverRef.current = flushZ;
+									onPrintPrepZoneHover!(flushZ, side);
+								}
+							});
+						}
+					}
 					if (!probeEnabled || !onProbe) return;
 					if (pointPickMode || gridEditMode) return;
 					const baseline = baselineZ;
@@ -4845,6 +4956,25 @@ function STLMesh({
 						});
 					});
 				} : undefined}
+				onPointerLeave={
+					interactive &&
+					printPrepSplit &&
+					meshRole === 'insole' &&
+					onPrintPrepZoneHover &&
+					!gridEditMode &&
+					!pointPickMode &&
+					!elementPlacementMode
+						? () => {
+								if (printPrepHoverFlushRafRef.current != null) {
+									cancelAnimationFrame(printPrepHoverFlushRafRef.current);
+									printPrepHoverFlushRafRef.current = null;
+								}
+								pendingPrintPrepHoverRef.current = null;
+								lastEmittedPrintHoverRef.current = undefined;
+								onPrintPrepZoneHover(null, side);
+							}
+						: undefined
+				}
 				onClick={interactive ? (event) => {
 					event.stopPropagation();
 					if (textPlacementEnabled) return;
@@ -4859,19 +4989,14 @@ function STLMesh({
 						onPickPoint(event.point.clone());
 						return;
 					}
-					if (onZoneClick && geometry) {
+					if (printPrepWhole && onPrintWholeInsoleClick) {
+						onPrintWholeInsoleClick(side);
+						return;
+					}
+					if (onZoneClick && geometry && meshRole === 'insole') {
 						const localPt = event.point.clone();
-						if (meshRef.current) {
-							meshRef.current.worldToLocal(localPt);
-						}
-						geometry.computeBoundingBox();
-						const bbox = geometry.boundingBox!;
-						const minY = bbox.min.y;
-						const maxY = bbox.max.y;
-						const rangeY = maxY - minY || 1;
-						const relY = (localPt.y - minY) / rangeY;
-						const zone: 'front' | 'middle' | 'back' = relY > 0.55 ? 'front' : relY > 0.25 ? 'middle' : 'back';
-						onZoneClick(zone, side);
+						if (meshRef.current) meshRef.current.worldToLocal(localPt);
+						onZoneClick(resolvePrintZoneFromLocalPoint(geometry, localPt), side);
 						return;
 					}
 					if (onSelect) {
@@ -4880,16 +5005,28 @@ function STLMesh({
 				} : undefined}
 			>
 				<meshStandardMaterial
-					key={(showZones || heatmap || clampDebug || deviationMap) ? 'colored' : 'normal'}
-					color={showZones ? '#ffffff' : pointPickMode ? '#d9b5a1' : color}
-					vertexColors={showZones || heatmap || clampDebug || deviationMap}
+					key={(showZones || printPrepZoneTintActive || heatmap || clampDebug || deviationMap) ? 'colored' : 'normal'}
+					color={
+						showZones || printPrepZoneTintActive ? '#ffffff' : pointPickMode ? '#d9b5a1' : color
+					}
+					vertexColors={
+						showZones || printPrepZoneTintActive || heatmap || clampDebug || deviationMap
+					}
 					side={THREE.DoubleSide}
 					shadowSide={THREE.DoubleSide}
-					roughness={0.4}
+					roughness={printPrepSplit ? 0.35 : 0.4}
 					metalness={0.0}
 					flatShading={false}
 					transparent={transparentGeometry}
 					opacity={effectiveOpacity}
+					{...(meshRole === 'overlayScan'
+						? ({
+								depthWrite: false,
+								polygonOffset: true,
+								polygonOffsetFactor: -0.5,
+								polygonOffsetUnits: -0.5,
+							} as const)
+						: {})}
 				/>
 
 				{/* Selection highlight — hide during box/lattice edit so the mesh reads clearly */}
@@ -4959,7 +5096,16 @@ function STLMesh({
 							);
 							positions.needsUpdate = true;
 							copyGeometryPositionsFast(geometry, working);
-							if (showZones) applyZoneColors(geometry);
+							const ppSpl = Boolean(printPrepSplit);
+							const ppSel = printPrepSelectedZone;
+							const ppHov = printPrepHoveredZone;
+							const prepTint = ppSpl && (ppSel != null || ppHov != null);
+							if (prepTint && meshRole === 'insole') {
+								applyPrintSplitZoneColors(geometry, {
+									selectedZone: ppSel,
+									hoveredZone: ppHov,
+								});
+							} else if (showZones) applyZoneColors(geometry);
 							else if (heatmap) applyHeightmapColors(geometry);
 							else if (deviationMap) applyDeviationColors(geometry);
 							else geometry.deleteAttribute('color');
@@ -4974,21 +5120,60 @@ function STLMesh({
 					/>
 				)}
 
-				{/* Element overlay meshes — solid coloured pads sitting on the insole surface */}
-				{elementOverlays.map(overlay => (
-					<mesh key={overlay.elementId} geometry={overlay.geometry} frustumCulled={false} renderOrder={4}>
-						<meshStandardMaterial
-							color={overlay.colorHex}
-							roughness={0.45}
-							metalness={0.0}
-							side={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
-							shadowSide={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
-							polygonOffset
-							polygonOffsetFactor={overlay.isInset ? -1 : -3}
-							polygonOffsetUnits={overlay.isInset ? -1 : -3}
-						/>
-					</mesh>
-				))}
+				{elementOverlays.map((overlay) => {
+					const printHit = meshRole === 'insole' && Boolean(onPrintElementClick);
+					const selectedHere = printSelectedElementId === overlay.elementId;
+					const hoveredHere = printHit && printElementHoverId === overlay.elementId;
+					const pickFriendly = Boolean(printHit);
+					return (
+						<mesh
+							key={overlay.elementId}
+							geometry={overlay.geometry}
+							frustumCulled={false}
+							renderOrder={printHit ? 20 : 4}
+							{...(printHit ? { cursor: 'pointer' as const } : {})}
+							onClick={
+								printHit
+									? (e) => {
+											e.stopPropagation();
+											onPrintElementClick!(overlay.elementId, side);
+										}
+									: undefined
+							}
+							onPointerOver={
+								printHit
+									? (e) => {
+											e.stopPropagation();
+											setPrintElementHoverId(overlay.elementId);
+										}
+									: undefined
+							}
+							onPointerOut={
+								printHit
+									? (e) => {
+											e.stopPropagation();
+											setPrintElementHoverId((prev) =>
+												prev === overlay.elementId ? null : prev,
+											);
+										}
+									: undefined
+							}
+						>
+							<meshStandardMaterial
+								color={overlay.colorHex}
+								emissive={selectedHere || hoveredHere ? '#6bcda8' : '#000000'}
+								emissiveIntensity={selectedHere ? 0.26 : hoveredHere ? 0.14 : 0}
+								roughness={0.45}
+								metalness={0.0}
+								side={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
+								shadowSide={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
+								polygonOffset={!pickFriendly}
+								polygonOffsetFactor={pickFriendly ? 0 : overlay.isInset ? -1 : -3}
+								polygonOffsetUnits={pickFriendly ? 0 : overlay.isInset ? -1 : -3}
+							/>
+						</mesh>
+					);
+				})}
 				{selectedElementBoxEdit &&
 					selectedElementBoxEdit.side === side &&
 					elementLatticeEditKit &&
@@ -5123,6 +5308,17 @@ interface EnhancedSTLViewerProps {
 	elementPlacementMode?: { elementId: string; side: 'left' | 'right' } | null;
 	onElementPlace?: (payload: { side: 'left' | 'right'; u: number; v: number }) => void;
 	onZoneClick?: (zone: 'front' | 'middle' | 'back', side: 'left' | 'right') => void;
+	printPrepInteractive?: boolean;
+	printPrepSidebarSide?: 'left' | 'right';
+	printPrepElementsSplitLeft?: boolean;
+	printPrepElementsSplitRight?: boolean;
+	printPrepSelectedZone?: PrintZoneId | null;
+	printPrepHoveredZones?: { left: PrintZoneId | null; right: PrintZoneId | null };
+	onPrintPrepZoneHover?: (zone: PrintZoneId | null, side: 'left' | 'right') => void;
+	onPrintWholeInsoleClick?: (side: 'left' | 'right') => void;
+	onPrintElementClick?: (elementId: string, side: 'left' | 'right') => void;
+	printSelectedElementId?: string | null;
+	onPrintInteractionDeselect?: () => void;
 	boxEnabled?: { left: boolean; right: boolean };
 	gridEditMode?: boolean;
 	heelEdgeThicknessMm?: { left: number; right: number };
@@ -5403,10 +5599,35 @@ export const EnhancedSTLViewer = forwardRef<
 			onBottomTextLoadingChange,
 			disableInteraction = false,
 			onBottomTextValidityChange,
+			printPrepInteractive = false,
+			printPrepSidebarSide = 'left',
+			printPrepElementsSplitLeft = false,
+			printPrepElementsSplitRight = false,
+			printPrepSelectedZone = null,
+			printPrepHoveredZones = { left: null, right: null },
+			onPrintPrepZoneHover,
+			onPrintWholeInsoleClick,
+			onPrintElementClick,
+			printSelectedElementId = null,
+			onPrintInteractionDeselect,
 		},
 		ref
 	) => {
 		const shouldFlipBaseLongAxis = baseInsoleType === 'driekwart';
+		const ppSide = printPrepInteractive ? printPrepSidebarSide : null;
+		const leftPrintSplitPrep = Boolean(
+			printPrepInteractive && ppSide === 'left' && printPrepElementsSplitLeft,
+		);
+		const leftPrintWholePrep = Boolean(
+			printPrepInteractive && ppSide === 'left' && !printPrepElementsSplitLeft,
+		);
+		const rightPrintSplitPrep = Boolean(
+			printPrepInteractive && ppSide === 'right' && printPrepElementsSplitRight,
+		);
+		const rightPrintWholePrep = Boolean(
+			printPrepInteractive && ppSide === 'right' && !printPrepElementsSplitRight,
+		);
+
 		const [leftGeometry, setLeftGeometry] =
 			useState<THREE.BufferGeometry | null>(null);
 		const [rightGeometry, setRightGeometry] =
@@ -5718,27 +5939,99 @@ export const EnhancedSTLViewer = forwardRef<
 			scanManualAlignments?.right,
 		]);
 
+		const leftGeomAlignSig = `${leftGeometry?.uuid ?? ''}|${leftGeometry?.getAttribute('position')?.count ?? 0}`;
+		const leftOverlayAlignSig =
+			`${leftOverlayGeometry?.uuid ?? ''}|${leftOverlayGeometry?.getAttribute('position')?.count ?? 0}`;
+		const leftRegMatEl = leftOverlayRegistration.matrix.elements;
+		const leftRegSig = `${leftRegMatEl[12]}-${leftRegMatEl[13]}-${leftRegMatEl[14]}`;
+
+		const leftScanOverlayAnchorTuple = useMemo((): THREE.Vector3Tuple => {
+			const lateral = SCAN_OVERLAY_LATERAL_WORLD.left;
+			const v = computeOverlayTopSurfaceAlignOffset(
+				leftGeometry,
+				leftOverlayGeometry,
+				leftOverlayRegistration,
+				new THREE.Vector3(...leftInsoleAxisWorld),
+				{
+					mmToWorld: MM_TO_WORLD,
+					embedScanHeightFraction: DEFAULT_EMBED_SCAN_HEIGHT_FRACTION,
+					sinkBiasMm: DEFAULT_SINK_BIAS_MM,
+					maxDeltaWorld: MM_TO_WORLD * 35,
+				},
+			);
+			return [lateral, v.y, v.z];
+		}, [
+			leftGeometry,
+			leftGeomAlignSig,
+			leftOverlayGeometry,
+			leftOverlayAlignSig,
+			leftOverlayRegistration,
+			leftRegSig,
+			leftInsoleAxisWorld,
+		]);
+
+		const rightGeomAlignSig = `${rightGeometry?.uuid ?? ''}|${rightGeometry?.getAttribute('position')?.count ?? 0}`;
+		const rightOverlayAlignSig =
+			`${rightOverlayGeometry?.uuid ?? ''}|${rightOverlayGeometry?.getAttribute('position')?.count ?? 0}`;
+		const rightRegMatEl = rightOverlayRegistration.matrix.elements;
+		const rightRegSig = `${rightRegMatEl[12]}-${rightRegMatEl[13]}-${rightRegMatEl[14]}`;
+
+		const rightScanOverlayAnchorTuple = useMemo((): THREE.Vector3Tuple => {
+			const lateral = SCAN_OVERLAY_LATERAL_WORLD.right;
+			const v = computeOverlayTopSurfaceAlignOffset(
+				rightGeometry,
+				rightOverlayGeometry,
+				rightOverlayRegistration,
+				new THREE.Vector3(...rightInsoleAxisWorld),
+				{
+					mmToWorld: MM_TO_WORLD,
+					embedScanHeightFraction: DEFAULT_EMBED_SCAN_HEIGHT_FRACTION,
+					sinkBiasMm: DEFAULT_SINK_BIAS_MM,
+					maxDeltaWorld: MM_TO_WORLD * 35,
+				},
+			);
+			return [lateral, v.y, v.z];
+		}, [
+			rightGeometry,
+			rightGeomAlignSig,
+			rightOverlayGeometry,
+			rightOverlayAlignSig,
+			rightOverlayRegistration,
+			rightRegSig,
+			rightInsoleAxisWorld,
+		]);
+
 		const leftScanMatrix = useMemo(() => {
 			const upAxis = new THREE.Vector3(...leftInsoleAxisWorld).normalize();
 			if (upAxis.lengthSq() < 1e-12) upAxis.set(0, 1, 0);
 			return composeOverlayManualYawMatrix(
-				LEFT_SCAN_OVERLAY_ANCHOR,
+				leftScanOverlayAnchorTuple,
 				leftOverlayRegistration.matrix,
 				leftComposeScanAlignment,
 				upAxis,
 			);
-		}, [leftComposeScanAlignment, leftInsoleAxisWorld, leftOverlayRegistration.matrix]);
+		}, [
+			leftComposeScanAlignment,
+			leftInsoleAxisWorld,
+			leftOverlayRegistration.matrix,
+			leftScanOverlayAnchorTuple,
+		]);
 
 		const rightScanMatrix = useMemo(() => {
 			const upAxis = new THREE.Vector3(...rightInsoleAxisWorld).normalize();
 			if (upAxis.lengthSq() < 1e-12) upAxis.set(0, 1, 0);
 			return composeOverlayManualYawMatrix(
-				RIGHT_SCAN_OVERLAY_ANCHOR,
+				rightScanOverlayAnchorTuple,
 				rightOverlayRegistration.matrix,
 				rightComposeScanAlignment,
 				upAxis,
 			);
-		}, [rightComposeScanAlignment, rightInsoleAxisWorld, rightOverlayRegistration.matrix]);
+		}, [
+			rightComposeScanAlignment,
+			rightInsoleAxisWorld,
+			rightOverlayRegistration.matrix,
+			rightScanOverlayAnchorTuple,
+		]);
 
 		const showRegistrationDebug =
 			process.env.NODE_ENV === 'development' &&
@@ -6323,6 +6616,10 @@ export const EnhancedSTLViewer = forwardRef<
 					performance={{ min: 0.6, debounce: 150 }}
 					onPointerMissed={() => {
 						if (pointPickMode) return;
+						if (printPrepInteractive && onPrintInteractionDeselect) {
+							onPrintInteractionDeselect();
+							return;
+						}
 						onDeselectSide?.();
 					}}
 				>
@@ -6412,6 +6709,22 @@ export const EnhancedSTLViewer = forwardRef<
 									side="left"
 									placedElements={leftPlacedElements}
 									evaBlockMode={evaBlockMode}
+									printPrepSplit={leftPrintSplitPrep}
+									printPrepSelectedZone={printPrepSelectedZone}
+									printPrepHoveredZone={printPrepHoveredZones.left}
+									onPrintPrepZoneHover={
+										disableInteraction ? undefined : onPrintPrepZoneHover
+									}
+									printPrepWhole={leftPrintWholePrep}
+									onPrintWholeInsoleClick={
+										disableInteraction ? undefined : onPrintWholeInsoleClick
+									}
+									onPrintElementClick={
+										disableInteraction || !printPrepInteractive
+											? undefined
+											: onPrintElementClick
+									}
+									printSelectedElementId={printSelectedElementId ?? null}
 								/>
 							</group>
 						)}
@@ -6473,13 +6786,29 @@ export const EnhancedSTLViewer = forwardRef<
 									side="right"
 									placedElements={rightPlacedElements}
 									evaBlockMode={evaBlockMode}
+									printPrepSplit={rightPrintSplitPrep}
+									printPrepSelectedZone={printPrepSelectedZone}
+									printPrepHoveredZone={printPrepHoveredZones.right}
+									onPrintPrepZoneHover={
+										disableInteraction ? undefined : onPrintPrepZoneHover
+									}
+									printPrepWhole={rightPrintWholePrep}
+									onPrintWholeInsoleClick={
+										disableInteraction ? undefined : onPrintWholeInsoleClick
+									}
+									onPrintElementClick={
+										disableInteraction || !printPrepInteractive
+											? undefined
+											: onPrintElementClick
+									}
+									printSelectedElementId={printSelectedElementId ?? null}
 								/>
 							</group>
 						)}
 
 						{/* Scan overlays (non-interactive) shown on top of base insoles */}
 						{!hideScans && effectiveShowModel && showLeft && leftOverlayUrl && (
-							<group ref={leftOverlayRootRef} position={[-30, 0, 0.25]}>
+							<group ref={leftOverlayRootRef} position={leftScanOverlayAnchorTuple}>
 								<group matrixAutoUpdate={false} matrix={leftScanMatrix}>
 									<STLMesh
 										url={leftOverlayUrl}
@@ -6490,7 +6819,7 @@ export const EnhancedSTLViewer = forwardRef<
 										interactive={false}
 										rotationOffset={[Math.PI, 0, Math.PI]}
 										transparentMode={true}
-										opacity={0.72}
+										opacity={0.78}
 										showZones={false}
 										heatmap={false}
 										pointPickMode={false}
@@ -6501,7 +6830,7 @@ export const EnhancedSTLViewer = forwardRef<
 							</group>
 						)}
 						{!hideScans && effectiveShowModel && showRight && rightOverlayUrl && (
-							<group ref={rightOverlayRootRef} position={[30, 0, 0.25]}>
+							<group ref={rightOverlayRootRef} position={rightScanOverlayAnchorTuple}>
 								<group matrixAutoUpdate={false} matrix={rightScanMatrix}>
 									<STLMesh
 										url={rightOverlayUrl}
@@ -6512,7 +6841,7 @@ export const EnhancedSTLViewer = forwardRef<
 										interactive={false}
 										rotationOffset={[Math.PI, 0, Math.PI]}
 										transparentMode={true}
-										opacity={0.72}
+										opacity={0.78}
 										showZones={false}
 										heatmap={false}
 										pointPickMode={false}

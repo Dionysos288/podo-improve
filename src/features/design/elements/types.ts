@@ -4,6 +4,7 @@
 
 import type { BoxGridSavedOffsets } from '@/src/features/design/types/boxGrid';
 import type { TrimlineAdjustments, TrimlineHandleProfile } from '@/src/shared/components/design/TrimlineEditOverlay';
+import type { HardnessKey } from '@/src/features/printers/types/printers';
 
 /** Tab in the elements modal */
 export type ElementTab = 'elementen' | 'diepelementen';
@@ -121,6 +122,8 @@ export interface PlacedElement {
 	rotationRad: number;
 	scaleU: number;
 	scaleV: number;
+	/** Optional per-element print hardness (step 3); defaults to normal when missing */
+	printHardness?: HardnessKey;
 	/** Optional per-region trimline edits for interactive element trimline mode */
 	trimlineAdjustments?: TrimlineAdjustments;
 	/** Optional freeform trimline handle profile for interactive element trimline mode */
