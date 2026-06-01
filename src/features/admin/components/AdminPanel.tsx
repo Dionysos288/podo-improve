@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { Button } from '@/src/shared/components/ui/button';
 import { Input } from '@/src/shared/components/ui/input';
+import { InlineSelect } from '@/src/shared/components/ui/select';
 import {
 	useOrganizationMembers,
 	useUpdateMemberRole,
@@ -154,19 +155,16 @@ export function AdminPanel() {
 										</div>
 									</div>
 									<div className="flex items-center gap-3">
-										<select
+										<InlineSelect
 											value={member.role}
-											onChange={(e) =>
-												handleRoleChange(
-													member.id,
-													e.target.value as 'ADMIN' | 'DOCTOR'
-												)
+											onChange={(val) =>
+												handleRoleChange(member.id, val as 'ADMIN' | 'DOCTOR')
 											}
-											className="rounded-xl border border-ui-border bg-ui-card px-4 py-2 pr-12 text-sm font-medium text-foreground transition-colors focus:border-ui-accent focus:outline-none focus:ring-2 focus:ring-ui-accent/20"
-										>
-											<option value="ADMIN">Beheerder</option>
-											<option value="DOCTOR">Medewerker</option>
-										</select>
+											options={[
+												{ value: 'ADMIN', label: 'Beheerder' },
+												{ value: 'DOCTOR', label: 'Medewerker' },
+											]}
+										/>
 										<button
 											onClick={() => handleRemoveMember(member.id)}
 											className="rounded-xl p-2.5 text-ui-muted transition-all hover:bg-red-500/10 hover:text-red-400"

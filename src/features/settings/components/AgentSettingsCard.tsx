@@ -123,13 +123,14 @@ export function AgentSettingsCard() {
 					PrusaSlicer pad (console exe)
 				</label>
 				<Input
+					variant="dark"
 					value={prusaSlicerPath}
 					onChange={(e) => {
 						setPrusaSlicerPath(e.target.value);
 						setIsDirty(true);
 					}}
 					placeholder="C:\\Program Files\\Prusa3D\\PrusaSlicer\\prusa-slicer-console.exe"
-					className="w-full rounded-xl border border-ui-border bg-ui-card px-4 py-3 text-foreground"
+					className="rounded-xl px-4 py-3"
 				/>
 			</div>
 
@@ -150,10 +151,11 @@ export function AgentSettingsCard() {
 					Agent token
 				</label>
 				<Input
+					variant="dark"
 					value={agentToken}
 					readOnly
 					placeholder="(Opslaan om token te genereren)"
-					className="w-full rounded-xl border border-ui-border bg-ui-card px-4 py-3 font-mono text-foreground"
+					className="rounded-xl px-4 py-3 font-mono"
 				/>
 				<div className="flex items-center justify-between">
 					<p className="text-xs text-ui-muted">

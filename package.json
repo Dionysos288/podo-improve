@@ -1,7 +1,9 @@
 {
 	"name": "podo-improve",
-	"version": "0.1.0",
-	"private": true,
+	"version": "1.0.0",
+	"description": "Open-source podiatry platform for patient management, 3D custom insole design, and print-ready workflows.",
+	"license": "MIT",
+	"private": false,
 	"engines": {
 		"node": ">=20"
 	},

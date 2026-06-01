@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/src/shared/components/ui/button';
 import { Input } from '@/src/shared/components/ui/input';
+import { Select } from '@/src/shared/components/ui/select';
 import { Trash2, Pencil } from 'lucide-react';
 import {
 	deleteProject,
@@ -15,6 +16,13 @@ import type {
 	ProjectActionsProps,
 	Member,
 } from '@/src/features/projects/types/types';
+
+const PROJECT_STATUS_OPTIONS = [
+	{ value: 'DRAFT', label: 'Concept' },
+	{ value: 'IN_PROGRESS', label: 'In behandeling' },
+	{ value: 'COMPLETED', label: 'Voltooid' },
+	{ value: 'ARCHIVED', label: 'Gearchiveerd' },
+];
 
 export function ProjectActions({
 	projectId,
@@ -101,24 +109,13 @@ export function ProjectActions({
 	return (
 		<>
 			<div className="flex items-center gap-3">
-				<select
+				<Select
 					value={projectStatus}
-					onChange={(e) =>
-						handleStatusChange(
-							e.target.value as
-								| 'DRAFT'
-								| 'IN_PROGRESS'
-								| 'COMPLETED'
-								| 'ARCHIVED'
-						)
-					}
-					className="rounded-xl border border-ui-border bg-ui-card px-4 py-2.5 pr-12 text-sm font-medium text-foreground transition-colors focus:border-ui-accent focus:outline-none focus:ring-2 focus:ring-ui-accent/20"
-				>
-					<option value="DRAFT">Concept</option>
-					<option value="IN_PROGRESS">In behandeling</option>
-					<option value="COMPLETED">Voltooid</option>
-					<option value="ARCHIVED">Gearchiveerd</option>
-				</select>
+					onChange={(val) => handleStatusChange(val as ProjectStatus)}
+					options={PROJECT_STATUS_OPTIONS}
+					className="min-w-[180px]"
+					size="md"
+				/>
 				<Button
 					onClick={handleCreateDesign}
 					disabled={isCreatingDesign}
@@ -155,35 +152,37 @@ export function ProjectActions({
 									Projectnaam
 								</label>
 								<Input
+									variant="dark"
 									type="text"
 									value={projectName}
 									onChange={(e) => setProjectName(e.target.value)}
-									className="w-full rounded-xl border border-ui-border bg-ui-card px-4 py-3 text-foreground"
+									className="rounded-xl px-4 py-3"
 								/>
 							</div>
-							<div className="space-y-2">
-								<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
-									Behandelaar
-								</label>
-								{isLoadingMembers ? (
+							{isLoadingMembers ? (
+								<div className="space-y-2">
+									<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
+										Behandelaar
+									</label>
 									<div className="rounded-xl border border-ui-border bg-ui-card px-4 py-3 text-sm text-ui-muted">
 										Laden...
 									</div>
-								) : (
-									<select
-										value={selectedDoctorId}
-										onChange={(e) => setSelectedDoctorId(e.target.value)}
-										className="w-full rounded-xl border border-ui-border bg-ui-card px-4 py-3 pr-12 text-sm font-medium text-foreground transition-colors focus:border-ui-accent focus:outline-none focus:ring-2 focus:ring-ui-accent/20"
-									>
-										<option value="">Geen behandelaar</option>
-										{members?.map((member: Member) => (
-											<option key={member.id} value={member.id}>
-												{member.name}
-											</option>
-										))}
-									</select>
-								)}
-							</div>
+								</div>
+							) : (
+								<Select
+									label="Behandelaar"
+									value={selectedDoctorId}
+									onChange={setSelectedDoctorId}
+									placeholder="Geen behandelaar"
+									options={[
+										{ value: '', label: 'Geen behandelaar' },
+										...(members?.map((member: Member) => ({
+											value: member.id,
+											label: member.name,
+										})) ?? []),
+									]}
+								/>
+							)}
 							<div className="flex gap-3 pt-4">
 								<Button
 									onClick={() => setShowEditModal(false)}

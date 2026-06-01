@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/src/shared/components/ui/button';
 import { Input } from '@/src/shared/components/ui/input';
+import { Select } from '@/src/shared/components/ui/select';
 import { createProject } from '@/src/features/projects/server/actions';
 import { getPatients } from '@/src/features/patients/server/actions';
 import { useOrganizationMembers } from '@/src/features/organizations/hooks/use-organization';
@@ -119,61 +120,57 @@ export function CreateProjectModal({
 					Nieuw project
 				</h2>
 				<form onSubmit={handleSubmit} className="space-y-6">
-					{!isPatientPreselected && (
-						<div className="space-y-2">
-							<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
-								Patiënt
-							</label>
-							{isLoadingPatients ? (
+					{!isPatientPreselected &&
+						(isLoadingPatients ? (
+							<div className="space-y-2">
+								<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
+									Patiënt
+								</label>
 								<div className="rounded-xl border border-ui-border bg-ui-card px-4 py-3 text-sm text-ui-muted">
 									Laden...
 								</div>
-							) : (
-								<select
-									value={selectedPatientId}
-									onChange={(e) => setSelectedPatientId(e.target.value)}
-									className="w-full rounded-xl border border-ui-border bg-ui-card px-4 py-3 pr-12 text-sm font-medium text-foreground transition-colors focus:border-ui-accent focus:outline-none focus:ring-2 focus:ring-ui-accent/20"
-									required
-								>
-									<option value="">Selecteer een patiënt</option>
-									{patients.map((patient) => (
-										<option key={patient.id} value={patient.id}>
-											{patient.firstName} {patient.lastName}
-										</option>
-									))}
-								</select>
-							)}
-						</div>
-					)}
-					<div className="space-y-2">
-						<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
-							Behandelaar
-						</label>
-						{isLoadingMembers ? (
+							</div>
+						) : (
+							<Select
+								label="Patiënt"
+								value={selectedPatientId}
+								onChange={setSelectedPatientId}
+								placeholder="Selecteer een patiënt"
+								options={patients.map((patient) => ({
+									value: patient.id,
+									label: `${patient.firstName} ${patient.lastName}`,
+								}))}
+							/>
+						))}
+					{isLoadingMembers ? (
+						<div className="space-y-2">
+							<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
+								Behandelaar
+							</label>
 							<div className="rounded-xl border border-ui-border bg-ui-card px-4 py-3 text-sm text-ui-muted">
 								Laden...
 							</div>
-						) : (
-							<select
-								value={selectedDoctorId}
-								onChange={(e) => setSelectedDoctorId(e.target.value)}
-								className="w-full rounded-xl border border-ui-border bg-ui-card px-4 py-3 pr-12 text-sm font-medium text-foreground transition-colors focus:border-ui-accent focus:outline-none focus:ring-2 focus:ring-ui-accent/20"
-								required
-							>
-								<option value="">Selecteer een behandelaar</option>
-								{members?.map((member: Member) => (
-									<option key={member.id} value={member.id}>
-										{member.name}
-									</option>
-								))}
-							</select>
-						)}
-					</div>
+						</div>
+					) : (
+						<Select
+							label="Behandelaar"
+							value={selectedDoctorId}
+							onChange={setSelectedDoctorId}
+							placeholder="Selecteer een behandelaar"
+							options={
+								members?.map((member: Member) => ({
+									value: member.id,
+									label: member.name,
+								})) ?? []
+							}
+						/>
+					)}
 					<div className="space-y-2">
 						<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
 							Projectnaam
 						</label>
 						<Input
+							variant="dark"
 							type="text"
 							value={projectName}
 							onChange={(e) => setProjectName(e.target.value)}
@@ -184,7 +181,7 @@ export function CreateProjectModal({
 										? `Project voor ${selectedPatient.firstName} ${selectedPatient.lastName}`
 										: 'Projectnaam'
 							}
-							className="w-full rounded-xl border border-ui-border bg-ui-card px-4 py-3 text-foreground placeholder:text-ui-muted focus:border-ui-accent focus:outline-none focus:ring-2 focus:ring-ui-accent/20"
+							className="rounded-xl px-4 py-3"
 						/>
 					</div>
 					<div className="flex gap-3 pt-4">

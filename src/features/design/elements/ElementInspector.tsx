@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { cn } from '@/src/shared/lib/cn';
+import { InlineSelect } from '@/src/shared/components/ui/select';
 import {
 	useElementsStore,
 	getElementByKey,
@@ -14,8 +15,6 @@ type Props = {
 	element: PlacedElement;
 	/** When true, renders as the full right-sidebar panel */
 	standalone?: boolean;
-	/** Callback to close / deselect (back button) */
-	onClose?: () => void;
 	/** Optional active element edit mode supplied by the action panel */
 	editMode?: 'scale' | 'trimline' | 'box' | null;
 };
@@ -34,13 +33,26 @@ type Props = {
  *   │  [ Toevoegen aan bibliotheek]│
  *   └──────────────────────────────┘
  */
-export function ElementInspector({ element, standalone, onClose, editMode: _editMode = null }: Props) {
+export function ElementInspector({ element, standalone, editMode: _editMode = null }: Props) {
 	const updateElement = useElementsStore((state) => state.updateElement);
 
 	const item = getElementByKey(element.libraryKey);
 	const color = item ? ELEMENT_COLORS[item.color] : '#999';
 	const isStandalone = Boolean(standalone);
 	const standaloneFloorMode = element.floorMode === 'sole' ? 'sole' : 'free';
+	const floorValue = isStandalone ? standaloneFloorMode : element.floorMode;
+
+	const floorOptions = useMemo(() => {
+		const options = [{ value: 'sole', label: 'Op zool vloeien' }];
+		if (!isStandalone) {
+			options.push({ value: 'scan', label: 'Op scan vloeren' });
+		}
+		options.push({
+			value: 'free',
+			label: isStandalone ? 'Niet vloeien' : 'Vrij',
+		});
+		return options;
+	}, [isStandalone]);
 
 	const update = useCallback(
 		(updates: Partial<PlacedElement>) => {
@@ -105,20 +117,12 @@ export function ElementInspector({ element, standalone, onClose, editMode: _edit
 			{/* Vloeren */}
 			<div className="flex items-center justify-between">
 				<span className="text-sm text-ui-muted">Vloeren</span>
-				<select
-					value={isStandalone ? standaloneFloorMode : element.floorMode}
-					onChange={(e) => update({ floorMode: e.target.value as ElementFloorMode })}
-					className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-2.5 py-1.5 text-right text-sm text-ui-text appearance-none pr-7 cursor-pointer"
-					style={{
-						backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%23999' viewBox='0 0 16 16'%3E%3Cpath d='M4.646 5.646a.5.5 0 01.708 0L8 8.293l2.646-2.647a.5.5 0 01.708.708l-3 3a.5.5 0 01-.708 0l-3-3a.5.5 0 010-.708z'/%3E%3C/svg%3E")`,
-						backgroundRepeat: 'no-repeat',
-						backgroundPosition: 'right 8px center',
-					}}
-				>
-					<option value="sole">Op zool vloeien</option>
-					{!isStandalone && <option value="scan">Op scan vloeren</option>}
-					<option value="free">{isStandalone ? 'Niet vloeien' : 'Vrij'}</option>
-				</select>
+				<InlineSelect
+					value={floorValue}
+					onChange={(val) => update({ floorMode: val as ElementFloorMode })}
+					options={floorOptions}
+					className="rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-2.5 py-1.5 text-sm font-medium text-ui-text hover:bg-[rgba(255,255,255,0.06)]"
+				/>
 			</div>
 
 			{/* Opsplitsen */}
@@ -168,33 +172,22 @@ export function ElementInspector({ element, standalone, onClose, editMode: _edit
 		return (
 			<div className="ui-overlay-card rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
 				{/* Header — same pattern as BoxEditConfirmOverlay */}
-				<div className="flex items-start justify-between">
-					<div>
-						<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">
-							Actie
-						</div>
-						<div className="mt-1 flex items-center gap-2">
-							<div
-								className="h-2.5 w-2.5 rounded-full shrink-0"
-								style={{ backgroundColor: color }}
-							/>
-							<span className="text-sm font-semibold text-ui-text">
-								{item?.label ?? element.libraryKey}
-							</span>
-							<span className="rounded-full bg-ui-accent/15 px-2 py-0.5 text-[10px] font-semibold text-ui-accent">
-								{element.side === 'left' ? 'Links' : 'Rechts'}
-							</span>
-						</div>
+				<div>
+					<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">
+						Actie
 					</div>
-					{onClose && (
-						<button
-							type="button"
-							onClick={onClose}
-							className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-xs text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)]"
-						>
-							Sluiten
-						</button>
-					)}
+					<div className="mt-1 flex items-center gap-2">
+						<div
+							className="h-2.5 w-2.5 rounded-full shrink-0"
+							style={{ backgroundColor: color }}
+						/>
+						<span className="text-sm font-semibold text-ui-text">
+							{item?.label ?? element.libraryKey}
+						</span>
+						<span className="rounded-full bg-ui-accent/15 px-2 py-0.5 text-[10px] font-semibold text-ui-accent">
+							{element.side === 'left' ? 'Links' : 'Rechts'}
+						</span>
+					</div>
 				</div>
 
 				<div className="mt-3 h-px bg-ui-border" />

@@ -15,6 +15,9 @@ export type SideInspectionLayerStyle = {
 	topSurfaceOpacity?: number;
 	topSurfaceDepthWorld?: number;
 	showTopLine?: boolean;
+	showShellOutline?: boolean;
+	outlineColor?: string;
+	outlineWidth?: number;
 	lineWidth?: number;
 	renderOrder?: number;
 };
@@ -190,6 +193,11 @@ export function SideInspectionLayers({
 	const renderOrder = style?.renderOrder ?? SIDE_PROFILE_RENDER_ORDER;
 	const lineWidth = style?.lineWidth ?? 3;
 	const showTopLine = style?.showTopLine ?? !style?.topSurfaceColor;
+	const showShellOutline = Boolean(style?.showShellOutline);
+	const shellOutline =
+		showShellOutline && top.length > 1 && bottom.length > 1
+			? [...top, ...[...bottom].reverse(), top[0]!]
+			: null;
 
 	return (
 		<group>
@@ -219,7 +227,17 @@ export function SideInspectionLayers({
 					/>
 				</mesh>
 			) : null}
-			{bottom.length > 1 ? (
+			{shellOutline ? (
+				<Line
+					points={shellOutline}
+					color={style?.outlineColor ?? '#f8fafc'}
+					lineWidth={style?.outlineWidth ?? style?.lineWidth ?? 2.6}
+					renderOrder={renderOrder + 10}
+					depthTest={false}
+					toneMapped={false}
+				/>
+			) : null}
+			{!showShellOutline && bottom.length > 1 ? (
 				<Line
 					points={bottom}
 					color={style?.bottomColor ?? '#020617'}

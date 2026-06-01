@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, useTransition } from 'react';
 import { BaseModal } from '@/src/shared/components/ui/modal';
 import { Button } from '@/src/shared/components/ui/button';
 import { Input } from '@/src/shared/components/ui/input';
+import { Select } from '@/src/shared/components/ui/select';
 import { updatePrinterSettings } from '@/src/features/printers/server/actions';
 import type {
 	PrinterListItem,
@@ -11,6 +12,18 @@ import type {
 	HardnessKey,
 	HardnessProfile,
 } from '@/src/features/printers/types/printers';
+
+const EXTRUDER_OPTIONS = [
+	{ value: 'Links', label: 'Links' },
+	{ value: 'Rechts', label: 'Rechts' },
+];
+
+const ADHESION_OPTIONS = [
+	{ value: 'Geen', label: 'Geen' },
+	{ value: 'Brim', label: 'Brim' },
+	{ value: 'Raft', label: 'Raft' },
+	{ value: 'Skirt', label: 'Skirt' },
+];
 
 function clampNumber(value: number, min: number, max: number) {
 	if (Number.isNaN(value)) return min;
@@ -72,6 +85,7 @@ export function PrinterSettingsModal({
 								Nozzle afmeting
 							</label>
 							<Input
+								variant="dark"
 								type="number"
 								step="0.1"
 								value={local.nozzleDiameter ?? 0.8}
@@ -89,6 +103,7 @@ export function PrinterSettingsModal({
 								Strategie
 							</label>
 							<Input
+								variant="dark"
 								value={local.strategy ?? 'Default'}
 								onChange={(e) => setLocal((p) => ({ ...p, strategy: e.target.value }))}
 							/>
@@ -96,30 +111,24 @@ export function PrinterSettingsModal({
 					</div>
 
 					<div className="grid grid-cols-2 gap-4">
-						<div className="space-y-1.5">
-							<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
-								Extruder
-							</label>
-							<select
-								value={local.extruder ?? 'Links'}
-								onChange={(e) =>
-									setLocal((p) => ({
-										...p,
-										extruder: e.target.value as 'Links' | 'Rechts',
-									}))
-								}
-								className="w-full rounded-xl border border-ui-border bg-ui-card px-3 py-2 text-sm text-foreground"
-							>
-								<option value="Links">Links</option>
-								<option value="Rechts">Rechts</option>
-							</select>
-						</div>
+						<Select
+							label="Extruder"
+							value={local.extruder ?? 'Links'}
+							onChange={(val) =>
+								setLocal((p) => ({
+									...p,
+									extruder: val as 'Links' | 'Rechts',
+								}))
+							}
+							options={EXTRUDER_OPTIONS}
+						/>
 
 						<div className="space-y-1.5">
 							<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
 								Retraction
 							</label>
 							<Input
+								variant="dark"
 								type="number"
 								step="0.1"
 								value={local.retraction ?? 0}
@@ -139,6 +148,7 @@ export function PrinterSettingsModal({
 								Overhang
 							</label>
 							<Input
+								variant="dark"
 								type="number"
 								value={local.overhang ?? 1}
 								onChange={(e) =>
@@ -154,6 +164,7 @@ export function PrinterSettingsModal({
 								Onderlaag
 							</label>
 							<Input
+								variant="dark"
 								type="number"
 								value={local.underlay ?? 2}
 								onChange={(e) =>
@@ -167,31 +178,23 @@ export function PrinterSettingsModal({
 					</div>
 
 					<div className="grid grid-cols-2 gap-4">
-						<div className="space-y-1.5">
-							<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
-								Adhesion
-							</label>
-							<select
-								value={local.adhesion ?? 'Geen'}
-								onChange={(e) =>
-									setLocal((p) => ({
-										...p,
-										adhesion: e.target.value as PrinterSettings['adhesion'],
-									}))
-								}
-								className="w-full rounded-xl border border-ui-border bg-ui-card px-3 py-2 text-sm text-foreground"
-							>
-								<option value="Geen">Geen</option>
-								<option value="Brim">Brim</option>
-								<option value="Raft">Raft</option>
-								<option value="Skirt">Skirt</option>
-							</select>
-						</div>
+						<Select
+							label="Adhesion"
+							value={local.adhesion ?? 'Geen'}
+							onChange={(val) =>
+								setLocal((p) => ({
+									...p,
+									adhesion: val as PrinterSettings['adhesion'],
+								}))
+							}
+							options={ADHESION_OPTIONS}
+						/>
 						<div className="space-y-1.5">
 							<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">
 								Infill
 							</label>
 							<Input
+								variant="dark"
 								value={local.infill ?? 'Standard'}
 								onChange={(e) => setLocal((p) => ({ ...p, infill: e.target.value }))}
 							/>
@@ -219,6 +222,7 @@ export function PrinterSettingsModal({
 								<div className="flex items-center gap-2">
 									<span className="text-xs text-ui-muted">infill</span>
 									<Input
+										variant="dark"
 										type="number"
 										className="w-20"
 										value={hardness[row.key as keyof typeof hardness]?.infillPercent ?? 0}
@@ -246,4 +250,3 @@ export function PrinterSettingsModal({
 		</BaseModal>
 	);
 }
-

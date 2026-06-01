@@ -5,12 +5,9 @@ import { Loader2 } from 'lucide-react';
 import { useOrgSettings, useUpdateOrgSettings } from '@/src/features/settings/hooks/use-settings';
 import type { OrgSettings } from '@/src/features/settings/types/settings';
 import { Button } from '@/src/shared/components/ui/button';
-import { Input } from '@/src/shared/components/ui/input';
+import { darkInputClassName, Input } from '@/src/shared/components/ui/input';
 import { SectionCard, SectionHeader } from '@/src/shared/components/ui/section-card';
 import { cn } from '@/src/shared/lib/cn';
-
-const inputClassName =
-	'flex w-full rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-2 text-sm text-foreground placeholder:text-ui-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ui-accent/40 disabled:opacity-50';
 
 function EditableField({
 	label,
@@ -27,10 +24,11 @@ function EditableField({
 		<div className="rounded-xl border border-ui-border bg-ui-panel px-4 py-3">
 			<label className="text-xs font-medium uppercase tracking-wide text-ui-muted">{label}</label>
 			<Input
+				variant="dark"
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
 				placeholder="Invullen…"
-				className={cn('mt-2 h-9', inputClassName)}
+				className="mt-2 h-9"
 			/>
 			{hint ? <p className="mt-1 text-xs text-ui-muted">{hint}</p> : null}
 		</div>
@@ -56,7 +54,7 @@ function EditableTextarea({
 				onChange={(e) => onChange(e.target.value)}
 				rows={rows}
 				placeholder="Invullen…"
-				className={cn('mt-2 min-h-[80px] resize-y', inputClassName)}
+				className={cn('mt-2 min-h-[80px] w-full resize-y', darkInputClassName)}
 			/>
 		</div>
 	);

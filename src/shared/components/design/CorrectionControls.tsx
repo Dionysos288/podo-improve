@@ -342,8 +342,9 @@ export function StyledSelect({
 	return (
 		<div className={cn('space-y-1', className)}>
 			{label && <span className="text-xs text-ui-muted">{label}</span>}
-			<Select.Root 
-				value={value} 
+			<Select.Root
+				value={value}
+				items={options}
 				onValueChange={(val) => {
 					if (val !== null) onChange(val);
 				}}

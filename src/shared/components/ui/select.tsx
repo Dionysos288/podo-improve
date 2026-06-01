@@ -70,6 +70,7 @@ export function Select({
 			)}
 			<BaseSelect.Root
 				value={value}
+				items={options}
 				onValueChange={(val) => {
 					if (val !== null) onChange(val);
 				}}
@@ -148,6 +149,7 @@ export function InlineSelect({
 	return (
 		<BaseSelect.Root
 			value={value}
+			items={options}
 			onValueChange={(val) => {
 				if (val !== null) onChange(val);
 			}}
