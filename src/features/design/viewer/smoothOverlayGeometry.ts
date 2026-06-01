@@ -146,6 +146,87 @@ export function tessellateAndWeldGeometry(
 	}
 }
 
+const MELT_PASSES = 14;
+const MELT_LAMBDA = 0.55;
+
+/**
+ * "Elementen vloeien" melt for the visible element overlay pad.
+ *
+ * Strongly smooths the pad ALONG ITS HEIGHT AXIS ONLY (averaging neighbour
+ * heights, leaving the footprint x/y untouched). This rounds and lowers the
+ * raised top and tapers the rim down toward the base so the colored element
+ * visibly melts into the insole body instead of reading as a sharp raised pad.
+ * The pad stays a pickable mesh.
+ */
+export function meltElementOverlayGeometry(
+	geometry: THREE.BufferGeometry,
+): THREE.BufferGeometry {
+	let working = mergeAndNormals(geometry, OVERLAY_MERGE_TOLERANCE);
+	const posAttr = working.getAttribute('position') as
+		| THREE.BufferAttribute
+		| undefined;
+	const index = working.getIndex();
+	if (
+		!posAttr ||
+		!index ||
+		posAttr.count < 3 ||
+		posAttr.count > MAX_LAPLACIAN_VERTS
+	) {
+		working.computeVertexNormals();
+		return working;
+	}
+
+	const vertCount = posAttr.count;
+	working.computeBoundingBox();
+	const box = working.boundingBox!;
+	const sx = box.max.x - box.min.x;
+	const sy = box.max.y - box.min.y;
+	const sz = box.max.z - box.min.z;
+	const h: 0 | 1 | 2 = sx <= sy && sx <= sz ? 0 : sy <= sz ? 1 : 2;
+
+	const neighborSets: Set<number>[] = Array.from(
+		{ length: vertCount },
+		() => new Set<number>(),
+	);
+	const indices = index.array;
+	const addEdge = (a: number, b: number) => {
+		if (a === b) return;
+		neighborSets[a].add(b);
+		neighborSets[b].add(a);
+	};
+	for (let i = 0; i < indices.length; i += 3) {
+		addEdge(indices[i], indices[i + 1]);
+		addEdge(indices[i + 1], indices[i + 2]);
+		addEdge(indices[i + 2], indices[i]);
+	}
+
+	const arr = posAttr.array as Float32Array;
+	const heights = new Float32Array(vertCount);
+	for (let v = 0; v < vertCount; v++) heights[v] = arr[v * 3 + h];
+	const tmp = heights.slice();
+
+	for (let pass = 0; pass < MELT_PASSES; pass++) {
+		for (let v = 0; v < vertCount; v++) {
+			const nbs = neighborSets[v];
+			if (nbs.size === 0) {
+				tmp[v] = heights[v];
+				continue;
+			}
+			let sum = 0;
+			for (const n of nbs) sum += heights[n];
+			tmp[v] = heights[v] + MELT_LAMBDA * (sum / nbs.size - heights[v]);
+		}
+		heights.set(tmp);
+	}
+
+	for (let v = 0; v < vertCount; v++) arr[v * 3 + h] = heights[v];
+	posAttr.needsUpdate = true;
+	working.computeVertexNormals();
+	working.computeBoundingBox();
+	working.computeBoundingSphere();
+	return working;
+}
+
 /**
  * Final smooth pass for element overlay meshes after transform/trim.
  */

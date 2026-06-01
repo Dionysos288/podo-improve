@@ -1441,33 +1441,33 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const leftPlacedElementCount = leftPlacedElements.length;
 	const rightPlacedElementCount = rightPlacedElements.length;
 
-	// ── Effective elements: override floorMode when "elementen vloeien" is active ──
-	// In EVA mode the global toggle lives in cncState.evaSettings.elementsFlow.
-	// In Print mode each side has its own elementsVloeien flag.
+	// ── Effective elements: normalize floor mode only. ──
+	// "Elementen vloeien" no longer rewrites every element to floorMode 'sole';
+	// instead it triggers a surface-smoothing pass in the viewer (see
+	// elementsVloeienLeft/Right flags below). Elements keep their own floor mode.
 
 	const effectiveLeftPlacedElements = useMemo(() => {
-		const vloeien = isEvaMethod ? cncState.evaSettings.elementsFlow : step3Left.elementsVloeien;
-		const normalized = leftPlacedElements.map((el) => {
+		return leftPlacedElements.map((el) => {
 			const floor = normalizeElementFloorMode(el.floorMode);
 			return floor === el.floorMode ? el : { ...el, floorMode: floor };
 		});
-		if (!vloeien) return normalized;
-		return normalized.map((el) =>
-			el.floorMode === 'sole' ? el : { ...el, floorMode: 'sole' as const },
-		);
-	}, [leftPlacedElements, isEvaMethod, cncState.evaSettings.elementsFlow, step3Left.elementsVloeien]);
+	}, [leftPlacedElements]);
 
 	const effectiveRightPlacedElements = useMemo(() => {
-		const vloeien = isEvaMethod ? cncState.evaSettings.elementsFlow : step3Right.elementsVloeien;
-		const normalized = rightPlacedElements.map((el) => {
+		return rightPlacedElements.map((el) => {
 			const floor = normalizeElementFloorMode(el.floorMode);
 			return floor === el.floorMode ? el : { ...el, floorMode: floor };
 		});
-		if (!vloeien) return normalized;
-		return normalized.map((el) =>
-			el.floorMode === 'sole' ? el : { ...el, floorMode: 'sole' as const },
-		);
-	}, [rightPlacedElements, isEvaMethod, cncState.evaSettings.elementsFlow, step3Right.elementsVloeien]);
+	}, [rightPlacedElements]);
+
+	// Per-side "Elementen vloeien" flag: Print mode uses the per-side step-3
+	// toggle, EVA milling uses the shared evaSettings.elementsFlow flag.
+	const elementsVloeienLeft = isEvaMethod
+		? cncState.evaSettings.elementsFlow
+		: step3Left.elementsVloeien;
+	const elementsVloeienRight = isEvaMethod
+		? cncState.evaSettings.elementsFlow
+		: step3Right.elementsVloeien;
 
 	const viewerHeelEdgeThicknessMm = useMemo(
 		() => ({
@@ -3942,6 +3942,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										printPrepSidebarSide={step3Side}
 										printPrepElementsSplitLeft={step3Left.elementsSplit}
 										printPrepElementsSplitRight={step3Right.elementsSplit}
+										elementsVloeienLeft={elementsVloeienLeft}
+										elementsVloeienRight={elementsVloeienRight}
 										printPrepSelectedZone={
 											step3Current.elementsSplit ? selectedZone : null
 										}

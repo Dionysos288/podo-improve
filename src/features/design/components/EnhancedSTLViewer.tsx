@@ -42,7 +42,7 @@ import {
 	SCAN_OVERLAY_RENDER_ORDER,
 	type ScanOverlayViewerMode,
 } from '@/src/features/design/viewer/scanOverlayRender';
-import { tessellateAndWeldGeometry } from '@/src/features/design/viewer/smoothOverlayGeometry';
+import { tessellateAndWeldGeometry, meltElementOverlayGeometry } from '@/src/features/design/viewer/smoothOverlayGeometry';
 import { applyTrimlineRimSilhouette } from '@/src/features/design/viewer/trimlineRimSilhouette';
 import { applyElementTrimlineFootprint } from '@/src/features/design/viewer/elementTrimlineFootprint';
 import { ViewerPostFX } from '@/src/features/design/viewer/ViewerPostFX';
@@ -158,6 +158,7 @@ interface STLMeshProps {
 		normal: [number, number, number];
 	}) => void;
 	placedElements?: PlacedElement[];
+	elementsVloeien?: boolean;
 	elementPlacementMode?: { elementId: string; side: 'left' | 'right' } | null;
 	onElementPlace?: (payload: { side: 'left' | 'right'; u: number; v: number }) => void;
 	selectedElementTrimlineEdit?: {
@@ -1073,6 +1074,107 @@ function smoothInsoleTopSurface(
 	for (let v = 0; v < vertCount; v++) {
 		if (!topFacing[v]) continue;
 		pos[v * 3 + hAxisIdx] = smoothRef[v] + residualFactor * (origHeights[v] - smoothRef[v]);
+	}
+
+	posAttr.needsUpdate = true;
+	geometry.computeVertexNormals();
+	return geometry;
+}
+
+/**
+ * Blend placed elements smoothly into the insole top surface ("Elementen vloeien").
+ *
+ * Runs AFTER applyElements has displaced the top surface into raised element pads.
+ * Crucially this only smooths the vertices the ELEMENTS moved (detected by diffing
+ * against the pre-element height snapshot), plus a few transition rings around them
+ * so the element edges melt into the surrounding insole. The rest of the insole top
+ * surface is left completely untouched. A moderate iterative Laplacian smooth (along
+ * the height axis, averaging over all neighbours) rounds the seams while the low pass
+ * count preserves the broad therapeutic element volume.
+ */
+function smoothElementsIntoInsole(
+	geometry: THREE.BufferGeometry,
+	/** Height-axis positions captured BEFORE applyElements (full x/y/z array). */
+	basePositions: Float32Array,
+	passes = 14,
+	alpha = 0.5,
+	dilateRings = 3,
+	normalThreshold = 0.2,
+): THREE.BufferGeometry {
+	if (!geometry.index) return geometry;
+	const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute | null;
+	const normalAttr = geometry.getAttribute('normal') as THREE.BufferAttribute | null;
+	if (!posAttr || !normalAttr) return geometry;
+
+	const vertCount = posAttr.count;
+	if (basePositions.length < vertCount * 3) return geometry;
+	const idxArr = geometry.index.array;
+	const faceCount = idxArr.length / 3;
+
+	geometry.computeBoundingBox();
+	const bbox = geometry.boundingBox!;
+	const sz = bbox.getSize(new THREE.Vector3());
+	const hAxisIdx: 0 | 1 | 2 = sz.x <= sz.y && sz.x <= sz.z ? 0 : sz.y <= sz.z ? 1 : 2;
+
+	const neighborSets: Set<number>[] = Array.from({ length: vertCount }, () => new Set<number>());
+	for (let f = 0; f < faceCount; f++) {
+		const a = idxArr[f * 3], b = idxArr[f * 3 + 1], c = idxArr[f * 3 + 2];
+		neighborSets[a].add(b); neighborSets[a].add(c);
+		neighborSets[b].add(a); neighborSets[b].add(c);
+		neighborSets[c].add(a); neighborSets[c].add(b);
+	}
+
+	const normals = normalAttr.array as Float32Array;
+	const topFacing = new Uint8Array(vertCount);
+	for (let v = 0; v < vertCount; v++) {
+		if (normals[v * 3 + hAxisIdx] > normalThreshold) topFacing[v] = 1;
+	}
+
+	const pos = posAttr.array as Float32Array;
+
+	// Mark only the vertices the elements actually displaced.
+	let maxDelta = 1e-6;
+	const deltas = new Float32Array(vertCount);
+	for (let v = 0; v < vertCount; v++) {
+		const d = Math.abs(pos[v * 3 + hAxisIdx] - basePositions[v * 3 + hAxisIdx]);
+		deltas[v] = d;
+		if (d > maxDelta) maxDelta = d;
+	}
+	// Nothing moved → no elements affect the surface, leave the insole alone.
+	if (maxDelta <= 1e-5) return geometry;
+	const threshold = Math.max(1e-5, maxDelta * 0.02);
+	const affected = new Uint8Array(vertCount);
+	for (let v = 0; v < vertCount; v++) {
+		if (deltas[v] > threshold) affected[v] = 1;
+	}
+	// Dilate the affected region so the element edges blend into the insole.
+	for (let r = 0; r < dilateRings; r++) {
+		const snapshot = affected.slice();
+		for (let v = 0; v < vertCount; v++) {
+			if (!snapshot[v]) continue;
+			for (const nb of neighborSets[v]) affected[nb] = 1;
+		}
+	}
+
+	const heights = new Float32Array(vertCount);
+	for (let v = 0; v < vertCount; v++) heights[v] = pos[v * 3 + hAxisIdx];
+	const tmp = heights.slice();
+
+	for (let p = 0; p < passes; p++) {
+		for (let v = 0; v < vertCount; v++) {
+			if (!affected[v] || !topFacing[v]) { tmp[v] = heights[v]; continue; }
+			const nbs = neighborSets[v];
+			if (nbs.size === 0) { tmp[v] = heights[v]; continue; }
+			let sum = 0;
+			for (const nb of nbs) sum += heights[nb]; // ALL neighbours (incl. surrounding insole) pull edges in
+			tmp[v] = heights[v] + alpha * (sum / nbs.size - heights[v]);
+		}
+		heights.set(tmp);
+	}
+
+	for (let v = 0; v < vertCount; v++) {
+		if (!affected[v] || !topFacing[v]) continue;
+		pos[v * 3 + hAxisIdx] = heights[v];
 	}
 
 	posAttr.needsUpdate = true;
@@ -2214,6 +2316,7 @@ function STLMesh({
 	onBottomTextValidityChange,
 	onTextPlace,
 	placedElements,
+	elementsVloeien = false,
 	elementPlacementMode = null,
 	onElementPlace,
 	selectedElementTrimlineEdit = null,
@@ -2319,6 +2422,8 @@ function STLMesh({
 	);
 	const placedElementsRef = useRef<PlacedElement[] | undefined>(placedElements);
 	placedElementsRef.current = placedElements;
+	const elementsVloeienRef = useRef<boolean>(elementsVloeien);
+	elementsVloeienRef.current = elementsVloeien;
 	const selectedElementBoxEditRef = useRef<STLMeshProps['selectedElementBoxEdit']>(selectedElementBoxEdit);
 	selectedElementBoxEditRef.current = selectedElementBoxEdit;
 	const savedBoxGridOffsetsRef = useRef<BoxGridSavedOffsets | null | undefined>(savedBoxGridOffsets);
@@ -2347,6 +2452,7 @@ function STLMesh({
 		placedElementsSignature: string;
 		selectedBoxEditSignature: string;
 		stlCacheVersion: number;
+		vloeien: boolean;
 	} | null>(null);
 	const correctedGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const correctedSignatureRef = useRef<string>('');
@@ -3465,7 +3571,8 @@ function STLMesh({
 		const stlCacheVersion = elementStlCacheVersionRef.current;
 		const currentPlacedElementsSignature = placedElementsSignatureRef.current;
 		const currentSelectedElementBoxEditSignature = selectedElementBoxEditSignatureRef.current;
-		const overlayBuildSignature = `${positionVersion}|${currentPlacedElementsSignature}|${currentSelectedElementBoxEditSignature}|${stlCacheVersion}`;
+		const currentVloeien = elementsVloeienRef.current;
+		const overlayBuildSignature = `${positionVersion}|${currentPlacedElementsSignature}|${currentSelectedElementBoxEditSignature}|${stlCacheVersion}|v:${currentVloeien ? '1' : '0'}`;
 		const currentPlacedElements = placedElementsRef.current;
 		const currentSelectedBoxEdit = selectedElementBoxEditRef.current;
 		const currentHasPlacedElements = hasPlacedElementsRef.current;
@@ -3477,7 +3584,8 @@ function STLMesh({
 			lastBuild.positionVersion === positionVersion &&
 			lastBuild.placedElementsSignature === currentPlacedElementsSignature &&
 			lastBuild.selectedBoxEditSignature === currentSelectedElementBoxEditSignature &&
-			lastBuild.stlCacheVersion === stlCacheVersion
+			lastBuild.stlCacheVersion === stlCacheVersion &&
+			lastBuild.vloeien === currentVloeien
 		) {
 			return;
 		}
@@ -3489,6 +3597,7 @@ function STLMesh({
 				placedElementsSignature: currentPlacedElementsSignature,
 				selectedBoxEditSignature: currentSelectedElementBoxEditSignature,
 				stlCacheVersion,
+				vloeien: currentVloeien,
 			};
 			logViewerDebug('overlay-clear', {
 				positionVersion,
@@ -3513,12 +3622,18 @@ function STLMesh({
 			stlGeometries: elementStlGeometriesRef.current,
 		});
 		const mw = currentMmToWorld;
+		const vloeien = currentVloeien;
 		for (const overlay of overlays) {
 			const effectiveOffsets = boxOffsetsByElementId.get(overlay.elementId);
 			overlay.geometry = applySavedBoxGridOffsetsToGeometry(overlay.geometry, effectiveOffsets, mw);
 			// Trimline edit follows box-grid so the rim reshape matches the geometry the
 			// user was dragging on (box lattice is applied first during editing too).
 			applyElementTrimlineFootprint(overlay.geometry, trimlineProfileByElementId.get(overlay.elementId), mw);
+			// "Elementen vloeien": melt the visible pad into the body (round + lower
+			// its raised profile) while staying a pickable mesh.
+			if (vloeien) {
+				overlay.geometry = meltElementOverlayGeometry(overlay.geometry);
+			}
 		}
 		lastOverlayBuildRef.current = {
 			geometry: geom,
@@ -3526,6 +3641,7 @@ function STLMesh({
 			placedElementsSignature: currentPlacedElementsSignature,
 			selectedBoxEditSignature: currentSelectedElementBoxEditSignature,
 			stlCacheVersion,
+			vloeien: currentVloeien,
 		};
 		const nextRenderedOverlaySignature = `${overlayBuildSignature}|${overlays.length}`;
 		if (lastRenderedOverlaySignatureRef.current === nextRenderedOverlaySignature) {
@@ -4120,7 +4236,19 @@ function STLMesh({
 		}
 		// Apply element height displacements (raised pads)
 		if (hasPlacedElements && currentPlacedElements) {
+			// "Elementen vloeien" melts the elements (not the whole insole) into the
+			// body. Snapshot the surface BEFORE applyElements so we can detect exactly
+			// which vertices the elements moved and smooth only those.
+			const doVloeien = elementsVloeienRef.current && meshRole === 'insole';
+			let preElementPositions: Float32Array | null = null;
+			if (doVloeien) {
+				const prePos = finalGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+				if (prePos) preElementPositions = new Float32Array(prePos.array as Float32Array);
+			}
 			applyElements(finalGeometry, currentPlacedElements, { mmToWorld: mmToWorld || 1 });
+			if (doVloeien && preElementPositions) {
+				smoothElementsIntoInsole(finalGeometry, preElementPositions);
+			}
 		}
 		applyHeelEdgeThicknessBand(finalGeometry, heelEdgeThicknessMm, mmToWorld || 1, side);
 		// Trimline rim cut runs LAST, in the same final space the gizmo edits, so the
@@ -4366,7 +4494,7 @@ function STLMesh({
 				placedElementsRafRef.current = null;
 			}
 		};
-	}, [placedElementsSignature]);
+	}, [placedElementsSignature, elementsVloeien]);
 
 	useEffect(() => {
 		void bottomTextOverlaySignature;
@@ -5076,9 +5204,9 @@ function STLMesh({
 									flatShading={VIEWER_MATERIALS.elementOverlay.flatShading}
 									side={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
 									shadowSide={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
-									polygonOffset={!pickFriendly}
-									polygonOffsetFactor={pickFriendly ? 0 : overlay.isInset ? -1 : -3}
-									polygonOffsetUnits={pickFriendly ? 0 : overlay.isInset ? -1 : -3}
+									polygonOffset={!pickFriendly || elementsVloeien}
+									polygonOffsetFactor={pickFriendly ? (elementsVloeien ? -3 : 0) : overlay.isInset ? -1 : -3}
+									polygonOffsetUnits={pickFriendly ? (elementsVloeien ? -3 : 0) : overlay.isInset ? -1 : -3}
 								/>
 							) : (
 								<meshStandardMaterial
@@ -5092,9 +5220,9 @@ function STLMesh({
 									flatShading={VIEWER_MATERIALS.elementOverlay.flatShading}
 									side={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
 									shadowSide={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
-									polygonOffset={!pickFriendly}
-									polygonOffsetFactor={pickFriendly ? 0 : overlay.isInset ? -1 : -3}
-									polygonOffsetUnits={pickFriendly ? 0 : overlay.isInset ? -1 : -3}
+									polygonOffset={!pickFriendly || elementsVloeien}
+									polygonOffsetFactor={pickFriendly ? (elementsVloeien ? -3 : 0) : overlay.isInset ? -1 : -3}
+									polygonOffsetUnits={pickFriendly ? (elementsVloeien ? -3 : 0) : overlay.isInset ? -1 : -3}
 								/>
 							)}
 						</mesh>
@@ -5288,6 +5416,8 @@ interface EnhancedSTLViewerProps {
 	printPrepSidebarSide?: 'left' | 'right';
 	printPrepElementsSplitLeft?: boolean;
 	printPrepElementsSplitRight?: boolean;
+	elementsVloeienLeft?: boolean;
+	elementsVloeienRight?: boolean;
 	printPrepSelectedZone?: PrintZoneId | null;
 	printPrepHoveredZones?: { left: PrintZoneId | null; right: PrintZoneId | null };
 	onPrintPrepZoneHover?: (zone: PrintZoneId | null, side: 'left' | 'right') => void;
@@ -5631,6 +5761,8 @@ const EnhancedSTLViewerInner = forwardRef<
 			printPrepSidebarSide = 'left',
 			printPrepElementsSplitLeft = false,
 			printPrepElementsSplitRight = false,
+			elementsVloeienLeft = false,
+			elementsVloeienRight = false,
 			printPrepSelectedZone = null,
 			printPrepHoveredZones = { left: null, right: null },
 			onPrintPrepZoneHover,
@@ -6811,6 +6943,7 @@ const EnhancedSTLViewerInner = forwardRef<
 									onTrimDragActiveChange={handleInteractionDragActive}
 									side="left"
 									placedElements={leftPlacedElements}
+									elementsVloeien={elementsVloeienLeft}
 									evaBlockMode={evaBlockMode}
 									printPrepSplit={leftPrintSplitPrep}
 									printPrepSelectedZone={printPrepSelectedZone}
@@ -6886,6 +7019,7 @@ const EnhancedSTLViewerInner = forwardRef<
 									onTrimDragActiveChange={handleInteractionDragActive}
 									side="right"
 									placedElements={rightPlacedElements}
+									elementsVloeien={elementsVloeienRight}
 									evaBlockMode={evaBlockMode}
 									printPrepSplit={rightPrintSplitPrep}
 									printPrepSelectedZone={printPrepSelectedZone}
