@@ -29,7 +29,7 @@ export default async function SettingsUsagePage() {
 				<div className="rounded-2xl border border-ui-border bg-ui-panel p-6">
 					<p className="text-xs font-medium uppercase tracking-wide text-ui-muted">STL limiet</p>
 					<p className="mt-2 text-lg font-semibold text-foreground">{data.stlUsage} / {data.organization.stlLimit}</p>
-					<p className="mt-1 text-sm text-ui-muted">Actieve STL-bestanden in deze organisatie</p>
+					<p className="mt-1 text-sm text-ui-muted">Scans en exports (STL, G-code, NC) in deze organisatie</p>
 				</div>
 				<div className="rounded-2xl border border-ui-border bg-ui-panel p-6">
 					<p className="text-xs font-medium uppercase tracking-wide text-ui-muted">Organisatie</p>

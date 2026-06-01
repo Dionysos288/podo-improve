@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { ensureDefaultPrinter, getPrinters } from '@/src/features/printers/server/actions';
+import { getPrintersWithDefault } from '@/src/features/printers/server/actions';
 import { PrintersClient } from '@/src/features/printers/components/PrintersClient';
 
 export const metadata: Metadata = {
@@ -8,8 +8,7 @@ export const metadata: Metadata = {
 };
 
 export default async function Settings3DPrinterPage() {
-	await ensureDefaultPrinter();
-	const printers = await getPrinters();
+	const printers = await getPrintersWithDefault();
 	return <PrintersClient printers={printers} />;
 }
 

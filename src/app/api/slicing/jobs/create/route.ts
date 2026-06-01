@@ -3,6 +3,10 @@ import { Prisma } from '@prisma/client';
 import { requireOrganization } from '@/src/shared/core/auth/get-session';
 import { prisma } from '@/src/shared/core/db/prisma';
 import { recordUsageEvent } from '@/src/shared/core/platform/usage';
+import {
+	assertStlQuotaAndRecordExport,
+	StlQuotaExceededError,
+} from '@/src/shared/core/platform/stlQuota';
 
 // Prevent Next.js from caching / cloning the Response body internally
 export const dynamic = 'force-dynamic';
@@ -65,6 +69,23 @@ export async function POST(req: NextRequest) {
 
 		if (!stlBase64) {
 			return jsonResponse({ error: 'stlBase64 is verplicht.' }, 400);
+		}
+
+		const projectIdHeader = req.headers.get('x-project-id');
+
+		try {
+			await assertStlQuotaAndRecordExport({
+				orgId,
+				userId: session.user.id,
+				exportKind: 'gcode',
+				projectId: projectIdHeader,
+				resourceId: null,
+			});
+		} catch (error) {
+			if (error instanceof StlQuotaExceededError) {
+				return jsonResponse({ error: error.message }, 403);
+			}
+			throw error;
 		}
 
 		const prismaAny = prisma as unknown as {

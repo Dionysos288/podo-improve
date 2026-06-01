@@ -1,10 +1,12 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { after } from 'next/server';
 import { Button } from '@/src/shared/components/ui/button';
-import { getProject } from '@/src/features/projects/server/actions';
+import { getProjectDetail } from '@/src/features/projects/server/get-project-detail';
 import { ArrowLeft, Box } from 'lucide-react';
 import { ProjectActions } from '@/src/features/projects/hooks/ProjectActions';
 import { ProjectScansCard } from '@/src/features/projects/components/ProjectScansCard';
+import { ProjectDetailPanel } from '@/src/features/projects/components/ProjectDetailPanel';
 import { notFound } from 'next/navigation';
 import { requireOrganization } from '@/src/shared/core/auth/get-session';
 import { recordUsageEvent } from '@/src/shared/core/platform/usage';
@@ -18,7 +20,10 @@ export async function generateMetadata({
 }: ProjectDetailPageProps): Promise<Metadata> {
 	const { id } = await params;
 	try {
-		const project = await getProject(id);
+		const project = await getProjectDetail(id);
+		if (!project) {
+			return { title: 'Project' };
+		}
 		return {
 			title: project.name,
 			description: `Zolenproject "${project.name}" – ontwerp, scans en exportopties.`,
@@ -35,7 +40,7 @@ export default async function ProjectDetailPage({
 
 	let project;
 	try {
-		project = await getProject(id);
+		project = await getProjectDetail(id);
 	} catch {
 		notFound();
 	}
@@ -44,20 +49,27 @@ export default async function ProjectDetailPage({
 		notFound();
 	}
 
+	const projectName = project.name;
 	const { session, orgId } = await requireOrganization();
-	await recordUsageEvent({
-		orgId,
-		userId: session.user.id,
-		eventType: 'PROJECT_OPENED',
-		resourceId: id,
-		metadata: { projectName: project.name },
+	after(async () => {
+		try {
+			await recordUsageEvent({
+				orgId,
+				userId: session.user.id,
+				eventType: 'PROJECT_OPENED',
+				resourceId: id,
+				metadata: { projectName },
+			});
+		} catch (error) {
+			console.error('Failed to record project open usage event:', error);
+		}
 	});
 
 	return (
-		<div className="min-h-screen bg-background p-8">
-			<div className="mx-auto max-w-7xl">
+		<div className="flex min-h-full flex-col bg-background p-8 lg:h-full lg:min-h-0 lg:overflow-hidden">
+			<div className="mx-auto flex w-full max-w-7xl min-h-0 flex-1 flex-col lg:min-h-0">
 				{/* Header */}
-				<div className="mb-8">
+				<div className="mb-8 shrink-0">
 					<Link
 						href={`/${orgSlug}/projects`}
 						className="mb-6 inline-flex items-center gap-2 text-sm text-ui-muted transition-colors hover:text-foreground"
@@ -85,12 +97,15 @@ export default async function ProjectDetailPage({
 					</div>
 				</div>
 
-				<div className="grid gap-8 lg:grid-cols-3">
+				<div className="grid gap-8 lg:min-h-0 lg:flex-1 lg:grid-cols-3 lg:items-stretch">
 					{/* Project info */}
-					<div className="rounded-2xl border border-ui-border bg-linear-to-br from-ui-card to-ui-panel p-6">
-						<h2 className="mb-6 text-xl font-semibold text-foreground">
-							Projectgegevens
-						</h2>
+					<ProjectDetailPanel
+						header={
+							<h2 className="text-xl font-semibold text-foreground">
+								Projectgegevens
+							</h2>
+						}
+					>
 						<div className="space-y-6">
 							<div>
 								<p className="mb-2 text-xs font-medium uppercase tracking-wide text-ui-muted">
@@ -142,19 +157,22 @@ export default async function ProjectDetailPage({
 								</p>
 							</div>
 						</div>
-					</div>
+					</ProjectDetailPanel>
 
 					{/* Scans */}
 					<ProjectScansCard projectId={id} orgSlug={orgSlug} scans={project.scans} />
 
 					{/* Designs */}
-					<div className="rounded-2xl border border-ui-border bg-linear-to-br from-ui-card to-ui-panel p-6">
-						<h2 className="mb-6 flex items-center gap-3 text-xl font-semibold text-foreground">
-							<div className="rounded-xl bg-ui-accent/10 p-2">
-								<Box className="h-5 w-5 text-ui-accent" />
-							</div>
-							Ontwerpen ({project.designs.length})
-						</h2>
+					<ProjectDetailPanel
+						header={
+							<h2 className="flex items-center gap-3 text-xl font-semibold text-foreground">
+								<div className="rounded-xl bg-ui-accent/10 p-2">
+									<Box className="h-5 w-5 text-ui-accent" />
+								</div>
+								Ontwerpen ({project.designs.length})
+							</h2>
+						}
+					>
 						{project.designs.length === 0 ? (
 							<div className="flex flex-col items-center justify-center rounded-xl bg-ui-overlay/30 py-12">
 								<div className="mb-4 rounded-full bg-ui-overlay p-4">
@@ -194,7 +212,7 @@ export default async function ProjectDetailPage({
 								))}
 							</div>
 						)}
-					</div>
+					</ProjectDetailPanel>
 				</div>
 			</div>
 		</div>

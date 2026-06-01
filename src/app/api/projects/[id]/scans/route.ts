@@ -7,7 +7,8 @@ import {
 import { uploadFile } from '@/src/shared/core/db/supabase';
 import { FootSide } from '@prisma/client';
 import { randomUUID } from 'crypto';
-import { getCurrentStlUsage, recordUsageEvent } from '@/src/shared/core/platform/usage';
+import { recordUsageEvent } from '@/src/shared/core/platform/usage';
+import { assertStlQuotaAvailable, StlQuotaExceededError } from '@/src/shared/core/platform/stlQuota';
 
 /**
  * POST /api/projects/[id]/scans
@@ -59,22 +60,13 @@ export async function POST(
 			);
 		}
 
-		const organization = await (prisma as unknown as {
-			organization: {
-				findUnique: (args: Record<string, unknown>) => Promise<{ stlLimit: number } | null>;
-			};
-		}).organization.findUnique({
-			where: { id: orgId },
-			select: { stlLimit: true },
-		});
-		const currentStlUsage = await getCurrentStlUsage(orgId);
-		if (organization && currentStlUsage >= organization.stlLimit) {
-			return NextResponse.json(
-				{
-					error: `STL limiet bereikt (${organization.stlLimit}). Neem contact op voor een upgrade.`,
-				},
-				{ status: 403 }
-			);
+		try {
+			await assertStlQuotaAvailable(orgId);
+		} catch (error) {
+			if (error instanceof StlQuotaExceededError) {
+				return NextResponse.json({ error: error.message }, { status: 403 });
+			}
+			throw error;
 		}
 
 		// Convert File to buffer for upload

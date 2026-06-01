@@ -2,17 +2,14 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-	getInvitations,
 	createInvitation,
 	revokeInvitation,
 } from '../server/actions';
 import { CreateInvitationData } from '../types/types';
+import { invitationsQueryOptions } from '../queries/invitation-query-options';
 
 export function useInvitations() {
-	return useQuery({
-		queryKey: ['invitations'],
-		queryFn: () => getInvitations(),
-	});
+	return useQuery(invitationsQueryOptions());
 }
 
 export function useCreateInvitation() {

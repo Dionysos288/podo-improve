@@ -167,6 +167,7 @@ model RegistrationAccessKey {
 
 enum UsageEventType {
   STL_UPLOADED
+  STL_EXPORTED
   PRINT_STARTED
   PROJECT_OPENED
   DESIGN_OPENED

@@ -6,6 +6,7 @@ import { Button } from '@/src/shared/components/ui/button';
 import { Upload, FileBox, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { UploadScansModal } from './UploadScansModal';
 import { deleteScanPair } from '@/src/features/projects/server/actions';
+import { UiScrollArea } from '@/src/shared/components/ui/scroll-area';
 
 interface ScanData {
 	id: string;
@@ -78,8 +79,8 @@ export function ProjectScansCard({ projectId, orgSlug, scans }: ProjectScansCard
 
 	return (
 		<>
-			<div className="rounded-2xl border border-ui-border bg-linear-to-br from-ui-card to-ui-panel p-6">
-				<div className="mb-6 flex items-center justify-between">
+			<div className="flex min-h-0 flex-col rounded-2xl border border-ui-border bg-linear-to-br from-ui-card to-ui-panel pl-6 pt-6 pb-6 pr-1.5 lg:h-full">
+				<div className="mb-6 flex shrink-0 items-center justify-between gap-3 pr-[18px]">
 					<h2 className="flex items-center gap-3 text-xl font-semibold text-foreground">
 						<div className="rounded-xl bg-ui-accent/10 p-2">
 							<FileBox className="h-5 w-5 text-ui-accent" />
@@ -88,11 +89,12 @@ export function ProjectScansCard({ projectId, orgSlug, scans }: ProjectScansCard
 					</h2>
 					<Button
 						onClick={() => setShowUploadModal(true)}
-						className="flex items-center gap-2 rounded-xl bg-ui-accent px-4 py-2 text-sm font-medium text-slate-900 transition-colors"
+						className="flex shrink-0 items-center gap-2 rounded-xl bg-ui-accent px-4 py-2 text-sm font-medium text-slate-900 transition-colors"
 					>
 						<Upload className="h-4 w-4" /> Upload scans
 					</Button>
 				</div>
+				<UiScrollArea>
 				{scanPairs.length === 0 ? (
 					<div className="flex flex-col items-center justify-center rounded-xl bg-ui-overlay/30 py-12">
 						<div className="mb-4 rounded-full bg-ui-overlay p-4">
@@ -181,6 +183,7 @@ export function ProjectScansCard({ projectId, orgSlug, scans }: ProjectScansCard
 						))}
 					</div>
 				)}
+				</UiScrollArea>
 			</div>
 
 			<UploadScansModal

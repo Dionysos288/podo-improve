@@ -5,10 +5,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
 	getOrganization,
 	updateOrganization,
-	getOrganizationMembers,
 	updateMemberRole,
 	removeMember,
 } from '../server/actions';
+import { organizationMembersQueryOptions } from '../queries/organization-query-options';
 
 export function useOrganization() {
 	return useQuery({
@@ -18,10 +18,7 @@ export function useOrganization() {
 }
 
 export function useOrganizationMembers() {
-	return useQuery({
-		queryKey: ['organization', 'members'],
-		queryFn: () => getOrganizationMembers(),
-	});
+	return useQuery(organizationMembersQueryOptions());
 }
 
 export function useUpdateOrganization() {

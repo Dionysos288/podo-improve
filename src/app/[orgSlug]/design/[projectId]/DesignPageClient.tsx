@@ -5,6 +5,7 @@ import { useRef, useState, useCallback, useMemo, useEffect, useTransition, useDe
 import * as THREE from 'three';
 import { Card, CardContent } from '@/src/shared/components/ui/card';
 import { Button } from '@/src/shared/components/ui/button';
+import { UiScrollArea } from '@/src/shared/components/ui/scroll-area';
 import { Select, InlineSelect } from '@/src/shared/components/ui/select';
 import { CircleCheck, Plus } from 'lucide-react';
 import Link from 'next/link';
@@ -71,6 +72,7 @@ import {
 	exportGeometryToSTLBinary,
 	geometryToBinarySTLArrayBuffer,
 } from '@/src/features/design/utils/stlExport';
+import { consumeStlExportCredit } from '@/src/shared/core/platform/consumeStlExportCredit';
 import type {
 	EnhancedSTLViewerRef,
 	BottomTextOverlay,
@@ -85,36 +87,20 @@ import {
 } from '@/src/shared/components/design/PrintContextPanel';
 import {
 	useElementsStore,
-	normalizeElementFloorMode,
-	ElementsModal,
-	ElementInspector,
-	ElementActionsPanel,
-	PlacedElementsList,
-	getElementByKey,
+} from '@/src/features/design/elements/elementsStore';
+import { normalizeElementFloorMode } from '@/src/features/design/elements/normalizeFloorMode';
+import { getElementByKey } from '@/src/features/design/elements/catalog';
+import {
 	mirrorBoxGridOffsetsAcrossWidth,
 	mirrorPlacedElementToSide,
 	mirrorTrimlineHandleProfileAcrossWidth,
-} from '@/src/features/design/elements';
+} from '@/src/features/design/elements/placement';
 import {
 	type MillingMode,
-	type EvaPreparationSettings,
-	type FixtureLayout,
-	type CncToolSettings,
 	type CncProductionState,
-	DEFAULT_EVA_SETTINGS,
-	DEFAULT_CNC_TOOL_SETTINGS,
-	createDefaultFixtureLayout,
 	createDefaultCncState,
-	generateNcFile,
-	downloadNcFile,
-	extractStlContour,
-	extractContourFromExportGeometryAsync,
-	DEFAULT_CNC_POST_SETTINGS,
-} from '@/src/features/milling';
+} from '@/src/features/milling/types';
 import { EvaPreparationPanel } from '@/src/shared/components/design/EvaPreparationPanel';
-import { CncProducePanel } from '@/src/shared/components/design/CncProducePanelSimple';
-import { CncFixtureView } from '@/src/shared/components/design/CncFixtureView';
-import { MillingModeSelector } from '@/src/shared/components/design/MillingModeSelector';
 import { useDesignAutosave, type ClientSettingsGetter } from '@/src/features/design/hooks/useDesignAutosave';
 import { UploadScansModal } from '@/src/features/projects/components/UploadScansModal';
 import { useRouter } from 'next/navigation';
@@ -224,7 +210,7 @@ const EnhancedSTLViewer = dynamic(
 		),
 	{
 		ssr: false,
-		loading: () => null,
+		loading: () => <ViewerStatusOverlay mode={{ kind: 'boot' }} />,
 	}
 );
 
@@ -275,6 +261,72 @@ const MiniSTLPreview = dynamic(
 			</div>
 		),
 	}
+);
+
+const CncProducePanel = dynamic(
+	() =>
+		import('@/src/shared/components/design/CncProducePanelSimple').then(
+			(mod) => mod.CncProducePanel
+		),
+	{
+		ssr: false,
+		loading: () => (
+			<div className="rounded-2xl border border-ui-border bg-ui-panel p-4 text-sm text-ui-muted">
+				CNC planning laden...
+			</div>
+		),
+	}
+);
+
+const CncFixtureView = dynamic(
+	() =>
+		import('@/src/shared/components/design/CncFixtureView').then(
+			(mod) => mod.CncFixtureView
+		),
+	{
+		ssr: false,
+		loading: () => <ViewerStatusOverlay mode={{ kind: 'boot' }} />,
+	}
+);
+
+const MillingModeSelector = dynamic(
+	() =>
+		import('@/src/shared/components/design/MillingModeSelector').then(
+			(mod) => mod.MillingModeSelector
+		),
+	{ ssr: false }
+);
+
+const ElementsModal = dynamic(
+	() =>
+		import('@/src/features/design/elements/ElementsModal').then(
+			(mod) => mod.ElementsModal
+		),
+	{ ssr: false }
+);
+
+const ElementInspector = dynamic(
+	() =>
+		import('@/src/features/design/elements/ElementInspector').then(
+			(mod) => mod.ElementInspector
+		),
+	{ ssr: false }
+);
+
+const ElementActionsPanel = dynamic(
+	() =>
+		import('@/src/features/design/elements/ElementActionsPanel').then(
+			(mod) => mod.ElementActionsPanel
+		),
+	{ ssr: false }
+);
+
+const PlacedElementsList = dynamic(
+	() =>
+		import('@/src/features/design/elements/PlacedElementsList').then(
+			(mod) => mod.PlacedElementsList
+		),
+	{ ssr: false }
 );
 
 export interface ProjectDetail {
@@ -762,7 +814,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const clientSettingsGetterRef = useRef<ClientSettingsGetter | null>(null);
 
 	// ── Autosave hook ──
-	const { saveStatus, lastSavedAt, hydrateFromDesign, debouncedSave } = useDesignAutosave(
+	const { designId, saveStatus, lastSavedAt, hydrateFromDesign, debouncedSave } = useDesignAutosave(
 		projectId,
 		initialDesign?.id ?? null,
 		clientSettingsGetterRef
@@ -1250,8 +1302,28 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		setCncPlanningActive(true);
 	}, [captureCncPreviewGeometry]);
 
+	const recordExportCredit = useCallback(
+		async (exportKind: Parameters<typeof consumeStlExportCredit>[0]['exportKind']) => {
+			await consumeStlExportCredit({
+				exportKind,
+				projectId,
+				designId,
+			});
+		},
+		[projectId, designId],
+	);
+
 	const handleExportNcFile = useCallback(async () => {
 		if (!cncState.millingMode) return;
+
+		try {
+			await recordExportCredit('nc');
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : 'Export niet toegestaan.';
+			window.alert(msg);
+			return;
+		}
+
 		const name = project?.patient
 			? `${project.patient.firstName}_${project.patient.lastName}`
 			: 'patient';
@@ -1263,6 +1335,14 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		const freshRightGeom = viewerRef.current?.getExportInsoleGeometryMm('right') ?? null;
 		const leftGeom = freshLeftGeom ?? cncPreviewGeometry.left;
 		const rightGeom = freshRightGeom ?? cncPreviewGeometry.right;
+		const [{ generateNcFile, downloadNcFile }, contourModule] = await Promise.all([
+			import('@/src/features/milling/gcode/generateNc'),
+			import('@/src/features/milling/gcode/extractStlContour'),
+		]);
+		const {
+			extractStlContour,
+			extractContourFromExportGeometryAsync,
+		} = contourModule;
 
 		let leftResult, rightResult;
 
@@ -1320,7 +1400,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		});
 		const filename = `${name}_${cncState.millingMode}_${new Date().getFullYear()}_top.nc`;
 		downloadNcFile(ncContent, filename);
-	}, [cncPreviewGeometry.left, cncPreviewGeometry.right, cncState, generalNormalized.baseInsoleType, projectId, project?.patient, selectedBaseInsoleAssets.leftUrl, selectedBaseInsoleAssets.rightUrl]);
+	}, [cncPreviewGeometry.left, cncPreviewGeometry.right, cncState, generalNormalized.baseInsoleType, projectId, project?.patient, recordExportCredit, selectedBaseInsoleAssets.leftUrl, selectedBaseInsoleAssets.rightUrl]);
 
 	const [selectedBaseSTL, setSelectedBaseSTL] = useState<string | null>(null);
 	const [corrections, setCorrections] = useState<OntwerpCorrections>(createDefaultOntwerpCorrections);
@@ -2838,6 +2918,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 
 	const handleExportSTLLeft = useCallback(async () => {
 		const steps = [
+			'Limiet controleren',
 			'Geometrie ophalen',
 			'STL bestand genereren',
 			'Bestand downloaden',
@@ -2848,28 +2929,41 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		setExportProgress({ title: 'Exporteer STL (links)', phases: mkPhases(0) });
 		await new Promise((r) => setTimeout(r, 150));
 
+		try {
+			await recordExportCredit('stl_left');
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : 'Export niet toegestaan.';
+			setExportProgress({
+				title: 'Exporteer STL (links)',
+				phases: mkPhases(0).map((p, i) => (i === 0 ? { ...p, status: 'error' } : p)),
+				error: msg,
+			});
+			return;
+		}
+
 		const geometry = viewerRef.current?.getExportInsoleGeometryMm('left');
 		const dims = viewerRef.current?.getInsoleDimensionsMm('left') ?? null;
 		const check = validateExportDimensions('left', dims);
 		if (!geometry || !check.ok) {
-			setExportProgress({ title: 'Exporteer STL (links)', phases: mkPhases(0).map((p, i) => i === 0 ? { ...p, status: 'error' } : p), error: check.ok ? 'Geen linker steunzool beschikbaar om te exporteren.' : check.reason });
+			setExportProgress({ title: 'Exporteer STL (links)', phases: mkPhases(1).map((p, i) => i === 1 ? { ...p, status: 'error' } : p), error: check.ok ? 'Geen linker steunzool beschikbaar om te exporteren.' : check.reason });
 			return;
 		}
 
-		setExportProgress({ title: 'Exporteer STL (links)', phases: mkPhases(1) });
+		setExportProgress({ title: 'Exporteer STL (links)', phases: mkPhases(2) });
 		await new Promise((r) => setTimeout(r, 150));
 
 		exportGeometryToSTLBinary(geometry, `${patientName}_left_${projectId}.stl`);
 		geometry.dispose();
 
-		setExportProgress({ title: 'Exporteer STL (links)', phases: mkPhases(2) });
+		setExportProgress({ title: 'Exporteer STL (links)', phases: mkPhases(3) });
 		await new Promise((r) => setTimeout(r, 200));
 
 		setExportProgress({ title: 'STL (links) gedownload', phases: steps.map((label) => ({ label, status: 'done' })), done: true });
-	}, [patientName, projectId, validateExportDimensions]);
+	}, [patientName, projectId, recordExportCredit, validateExportDimensions]);
 
 	const handleExportSTLRight = useCallback(async () => {
 		const steps = [
+			'Limiet controleren',
 			'Geometrie ophalen',
 			'STL bestand genereren',
 			'Bestand downloaden',
@@ -2880,28 +2974,41 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		setExportProgress({ title: 'Exporteer STL (rechts)', phases: mkPhases(0) });
 		await new Promise((r) => setTimeout(r, 150));
 
+		try {
+			await recordExportCredit('stl_right');
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : 'Export niet toegestaan.';
+			setExportProgress({
+				title: 'Exporteer STL (rechts)',
+				phases: mkPhases(0).map((p, i) => (i === 0 ? { ...p, status: 'error' } : p)),
+				error: msg,
+			});
+			return;
+		}
+
 		const geometry = viewerRef.current?.getExportInsoleGeometryMm('right');
 		const dims = viewerRef.current?.getInsoleDimensionsMm('right') ?? null;
 		const check = validateExportDimensions('right', dims);
 		if (!geometry || !check.ok) {
-			setExportProgress({ title: 'Exporteer STL (rechts)', phases: mkPhases(0).map((p, i) => i === 0 ? { ...p, status: 'error' } : p), error: check.ok ? 'Geen rechter steunzool beschikbaar om te exporteren.' : check.reason });
+			setExportProgress({ title: 'Exporteer STL (rechts)', phases: mkPhases(1).map((p, i) => i === 1 ? { ...p, status: 'error' } : p), error: check.ok ? 'Geen rechter steunzool beschikbaar om te exporteren.' : check.reason });
 			return;
 		}
 
-		setExportProgress({ title: 'Exporteer STL (rechts)', phases: mkPhases(1) });
+		setExportProgress({ title: 'Exporteer STL (rechts)', phases: mkPhases(2) });
 		await new Promise((r) => setTimeout(r, 150));
 
 		exportGeometryToSTLBinary(geometry, `${patientName}_right_${projectId}.stl`);
 		geometry.dispose();
 
-		setExportProgress({ title: 'Exporteer STL (rechts)', phases: mkPhases(2) });
+		setExportProgress({ title: 'Exporteer STL (rechts)', phases: mkPhases(3) });
 		await new Promise((r) => setTimeout(r, 200));
 
 		setExportProgress({ title: 'STL (rechts) gedownload', phases: steps.map((label) => ({ label, status: 'done' })), done: true });
-	}, [patientName, projectId, validateExportDimensions]);
+	}, [patientName, projectId, recordExportCredit, validateExportDimensions]);
 
 	const handleExportSTL = useCallback(async () => {
 		const steps = [
+			'Limiet controleren',
 			'Afmetingen controleren',
 			'Paar geometrie ophalen',
 			'STL bestand genereren',
@@ -2913,35 +3020,47 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(0) });
 		await new Promise((r) => setTimeout(r, 150));
 
+		try {
+			await recordExportCredit('stl_pair');
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : 'Export niet toegestaan.';
+			setExportProgress({
+				title: 'Exporteer STL (paar)',
+				phases: mkPhases(0).map((p, i) => (i === 0 ? { ...p, status: 'error' } : p)),
+				error: msg,
+			});
+			return;
+		}
+
 		const leftDims = viewerRef.current?.getInsoleDimensionsMm('left') ?? null;
 		const rightDims = viewerRef.current?.getInsoleDimensionsMm('right') ?? null;
 		const leftCheck = validateExportDimensions('left', leftDims);
 		const rightCheck = validateExportDimensions('right', rightDims);
 		if (!leftCheck.ok || !rightCheck.ok) {
-			setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(0).map((p, i) => i === 0 ? { ...p, status: 'error' } : p), error: !leftCheck.ok ? leftCheck.reason : rightCheck.reason });
-			return;
-		}
-
-		setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(1) });
-		await new Promise((r) => setTimeout(r, 150));
-
-		const geometry = viewerRef.current?.getExportPairGeometryMm(15);
-		if (!geometry) {
-			setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(1).map((p, i) => i === 1 ? { ...p, status: 'error' } : p), error: 'Geen steunzoolpaar beschikbaar om te exporteren.' });
+			setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(1).map((p, i) => i === 1 ? { ...p, status: 'error' } : p), error: !leftCheck.ok ? leftCheck.reason : rightCheck.reason });
 			return;
 		}
 
 		setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(2) });
+		await new Promise((r) => setTimeout(r, 150));
+
+		const geometry = viewerRef.current?.getExportPairGeometryMm(15);
+		if (!geometry) {
+			setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(2).map((p, i) => i === 2 ? { ...p, status: 'error' } : p), error: 'Geen steunzoolpaar beschikbaar om te exporteren.' });
+			return;
+		}
+
+		setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(3) });
 		await new Promise((r) => setTimeout(r, 200));
 
 		exportGeometryToSTLBinary(geometry, `${patientName}_pair_${projectId}.stl`);
 		geometry.dispose();
 
-		setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(3) });
+		setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(4) });
 		await new Promise((r) => setTimeout(r, 200));
 
 		setExportProgress({ title: 'STL (paar) gedownload', phases: steps.map((label) => ({ label, status: 'done' })), done: true });
-	}, [patientName, projectId, validateExportDimensions]);
+	}, [patientName, projectId, recordExportCredit, validateExportDimensions]);
 
 	const handleExportGcode = useCallback(async () => {
 		const steps = [
@@ -2991,6 +3110,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				headers: {
 					'Content-Type': 'application/octet-stream',
 					'x-filename': `${patientName}_pair_${projectId}.stl`,
+					'x-project-id': projectId,
 					'x-printer-settings': JSON.stringify(printerSettings),
 				},
 				body: stlArrayBuffer,
@@ -4275,9 +4395,12 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 											visibleSteps={scansActive ? undefined : [1]}
 										/>
 
-										<div className="flex-1 overflow-y-auto px-4 pb-4 pr-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-[rgba(255,255,255,0.18)]">
+										<UiScrollArea
+											className="flex-1"
+											contentClassName="px-4 pb-4 pr-2"
+										>
 											{renderStepContent()}
-										</div>
+										</UiScrollArea>
 										<div className="border-t border-ui-border px-4 py-3 flex items-center justify-between">
 											{/* Autosave status */}
 											<div className="flex items-center gap-1.5 text-[11px]">
@@ -4444,14 +4567,16 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			</BaseModal>
 
 			{/* Elements modal */}
-			<ElementsModal
-				open={elementsModalOpen}
-				onClose={() => setElementsModalOpen(false)}
-				side={elementsModalSide}
-				onAdd={(libraryKey) => {
-					addPlacedElement(libraryKey, elementsModalSide);
-				}}
-			/>
+			{elementsModalOpen && (
+				<ElementsModal
+					open={elementsModalOpen}
+					onClose={() => setElementsModalOpen(false)}
+					side={elementsModalSide}
+					onAdd={(libraryKey) => {
+						addPlacedElement(libraryKey, elementsModalSide);
+					}}
+				/>
+			)}
 
 			{/* Milling mode selector modal (Frezen: EVA) */}
 			{showMillingModeSelector && (

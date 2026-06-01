@@ -7,14 +7,28 @@ export type OrgSettings = {
 	patientView?: 'compact' | 'standard';
 	defaultExportPath?: string;
 
-	// MDR
-	mdrEnabled?: boolean;
+	// MDR — Annex XIII standaardteksten
 	companyName?: string;
 	companyAddress?: string;
-	logoUrl?: string;
 	introParagraph?: string;
 	outroParagraph?: string;
 	disclaimerParagraph?: string;
+	mdr?: {
+		manufacturer?: string;
+		prrc?: string;
+		kvkVat?: string;
+		srn?: string;
+		authorizedRep?: string;
+		importer?: string;
+		notifiedBody?: string;
+		ceStatus?: string;
+		nationalRegistrationNl?: string;
+		seriesUdi?: string;
+		vigilanceContact?: string;
+		lastPmsReport?: string;
+		softwareVersion?: string;
+		samdClassification?: string;
+	};
 
 	// CNC / Frezen EVA settings (Mekanika CNC Pro + PlanetCNC)
 	cnc?: {

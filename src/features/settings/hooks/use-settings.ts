@@ -2,18 +2,15 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-	getOrgSettings,
 	getUserSettings,
 	updateOrgSettings,
 	updateUserSettings,
 } from '../server/actions';
+import { orgSettingsQueryOptions } from '../queries/settings-query-options';
 import type { OrgSettings } from '../types/settings';
 
 export function useOrgSettings() {
-	return useQuery({
-		queryKey: ['settings', 'org'],
-		queryFn: () => getOrgSettings(),
-	});
+	return useQuery(orgSettingsQueryOptions());
 }
 
 export function useUserSettings() {

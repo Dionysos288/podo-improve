@@ -1,11 +1,12 @@
 'use client';
 
+import { Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { signOut } from '@/src/shared/core/auth';
 import { Button } from '@/src/shared/components/ui/button';
 import { ShieldX, LogOut, Mail } from 'lucide-react';
 
-export default function OrganizationClosedPage() {
+function OrganizationClosedContent() {
 	const searchParams = useSearchParams();
 	const org = searchParams.get('org') ?? undefined;
 	const reason = searchParams.get('reason') ?? undefined;
@@ -61,5 +62,19 @@ export default function OrganizationClosedPage() {
 				</p>
 			</div>
 		</div>
+	);
+}
+
+export default function OrganizationClosedPage() {
+	return (
+		<Suspense
+			fallback={
+				<div className="flex min-h-screen items-center justify-center bg-background px-6 py-12">
+					<div className="h-96 w-full max-w-lg animate-pulse rounded-3xl border border-ui-border bg-ui-panel" />
+				</div>
+			}
+		>
+			<OrganizationClosedContent />
+		</Suspense>
 	);
 }

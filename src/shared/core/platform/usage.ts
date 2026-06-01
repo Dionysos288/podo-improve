@@ -1,17 +1,15 @@
-import type { Prisma } from '@prisma/client';
+import { UsageEventType, type Prisma } from '@prisma/client';
 import { prisma } from '@/src/shared/core/db/prisma';
 
-export type UsageEventType =
-	| 'STL_UPLOADED'
-	| 'PRINT_STARTED'
-	| 'PROJECT_OPENED'
-	| 'DESIGN_OPENED'
-	| 'DESIGN_CREATED';
+export { UsageEventType };
 
-export type UsageSummary = Record<UsageEventType, number>;
+type UsageEventTypeName = (typeof UsageEventType)[keyof typeof UsageEventType];
 
-export const USAGE_EVENT_LABELS: Record<UsageEventType, string> = {
+export type UsageSummary = Record<UsageEventTypeName, number>;
+
+export const USAGE_EVENT_LABELS: Record<UsageEventTypeName, string> = {
 	STL_UPLOADED: 'STL uploads',
+	STL_EXPORTED: 'STL / G-code exports',
 	PRINT_STARTED: 'Prints gestart',
 	PROJECT_OPENED: 'Projecten geopend',
 	DESIGN_OPENED: 'Ontwerpen geopend',
@@ -21,6 +19,7 @@ export const USAGE_EVENT_LABELS: Record<UsageEventType, string> = {
 export function createEmptyUsageSummary(): UsageSummary {
 	return {
 		STL_UPLOADED: 0,
+		STL_EXPORTED: 0,
 		PRINT_STARTED: 0,
 		PROJECT_OPENED: 0,
 		DESIGN_OPENED: 0,
@@ -31,7 +30,7 @@ export function createEmptyUsageSummary(): UsageSummary {
 export async function recordUsageEvent(input: {
 	orgId: string;
 	userId?: string | null;
-	eventType: UsageEventType;
+	eventType: UsageEventTypeName;
 	quantity?: number;
 	resourceId?: string | null;
 	metadata?: Prisma.InputJsonValue;
@@ -58,7 +57,7 @@ export async function recordUsageEvent(input: {
 export async function getOrganizationUsageSummary(orgId: string) {
 	const prismaAny = prisma as unknown as {
 		usageEvent: {
-			groupBy: (args: Record<string, unknown>) => Promise<Array<{ eventType: UsageEventType; _sum: { quantity: number | null } }>>;
+			groupBy: (args: Record<string, unknown>) => Promise<Array<{ eventType: UsageEventTypeName; _sum: { quantity: number | null } }>>;
 		};
 	};
 
@@ -78,7 +77,7 @@ export async function getOrganizationUsageSummary(orgId: string) {
 export async function getUserUsageSummary(orgId: string, userId: string) {
 	const prismaAny = prisma as unknown as {
 		usageEvent: {
-			groupBy: (args: Record<string, unknown>) => Promise<Array<{ eventType: UsageEventType; _sum: { quantity: number | null } }>>;
+			groupBy: (args: Record<string, unknown>) => Promise<Array<{ eventType: UsageEventTypeName; _sum: { quantity: number | null } }>>;
 		};
 	};
 
@@ -98,7 +97,7 @@ export async function getUserUsageSummary(orgId: string, userId: string) {
 export async function getOrganizationUsageByUser(orgId: string) {
 	const prismaAny = prisma as unknown as {
 		usageEvent: {
-			groupBy: (args: Record<string, unknown>) => Promise<Array<{ userId: string | null; eventType: UsageEventType; _sum: { quantity: number | null } }>>;
+			groupBy: (args: Record<string, unknown>) => Promise<Array<{ userId: string | null; eventType: UsageEventTypeName; _sum: { quantity: number | null } }>>;
 		};
 	};
 
@@ -119,12 +118,19 @@ export async function getOrganizationUsageByUser(orgId: string) {
 }
 
 export async function getCurrentStlUsage(orgId: string) {
-	return prisma.scan.count({
-		where: {
-			project: {
-				patient: { orgId },
-				deletedAt: null,
+	const [scanCount, exportAggregate] = await Promise.all([
+		prisma.scan.count({
+			where: {
+				project: {
+					patient: { orgId },
+					deletedAt: null,
+				},
 			},
-		},
-	});
+		}),
+		prisma.usageEvent.aggregate({
+			where: { orgId, eventType: UsageEventType.STL_EXPORTED },
+			_sum: { quantity: true },
+		}),
+	]);
+	return scanCount + (exportAggregate._sum.quantity ?? 0);
 }

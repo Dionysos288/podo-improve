@@ -33,9 +33,14 @@ const getDashboardStats = unstable_cache(
 					patient: { orgId },
 					deletedAt: null,
 				},
-				include: {
-					patient: true,
-					doctor: true,
+				select: {
+					id: true,
+					name: true,
+					status: true,
+					createdAt: true,
+					patient: {
+						select: { firstName: true, lastName: true },
+					},
 				},
 				orderBy: { createdAt: 'desc' },
 				take: 5,
@@ -62,6 +67,7 @@ export default async function DashboardPage({ params }: DashboardPageProps) {
 	// Get the organization
 	const organization = await prisma.organization.findUnique({
 		where: { slug: orgSlug },
+		select: { id: true },
 	});
 
 	if (!organization) {

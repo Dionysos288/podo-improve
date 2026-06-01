@@ -4,6 +4,17 @@ import { prisma } from '@/src/shared/core/db/prisma';
 import { requireOrganization } from '@/src/shared/core/auth/get-session';
 import type { PrinterListItem, PrinterSettings } from '../types/printers';
 
+const printerListSelect = {
+	id: true,
+	orgId: true,
+	name: true,
+	brand: true,
+	model: true,
+	settings: true,
+	createdAt: true,
+	updatedAt: true,
+} as const;
+
 function asObject(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== 'object') return {};
 	return value as Record<string, unknown>;
@@ -52,22 +63,47 @@ export async function getPrinters(): Promise<PrinterListItem[]> {
 	const printers = await prisma.printer.findMany({
 		where: { orgId },
 		orderBy: { createdAt: 'asc' },
-		select: {
-			id: true,
-			orgId: true,
-			name: true,
-			brand: true,
-			model: true,
-			settings: true,
-			createdAt: true,
-			updatedAt: true,
-		},
+		select: printerListSelect,
 	});
 
 	return printers.map((p) => ({
 		...p,
 		settings: (p.settings as PrinterSettings) ?? {},
 	}));
+}
+
+export async function getPrintersWithDefault(): Promise<PrinterListItem[]> {
+	const { orgId } = await requireOrganization();
+	const printers = await prisma.printer.findMany({
+		where: { orgId },
+		orderBy: { createdAt: 'asc' },
+		select: printerListSelect,
+	});
+
+	if (printers.length > 0) {
+		return printers.map((p) => ({
+			...p,
+			settings: (p.settings as PrinterSettings) ?? {},
+		}));
+	}
+
+	const created = await prisma.printer.create({
+		data: {
+			orgId,
+			name: 'Raise3D E2',
+			brand: 'Raise3D',
+			model: 'E2',
+			settings: defaultPrinterSettings(),
+		},
+		select: printerListSelect,
+	});
+
+	return [
+		{
+			...created,
+			settings: (created.settings as PrinterSettings) ?? {},
+		},
+	];
 }
 
 export async function updatePrinterSettings(params: {

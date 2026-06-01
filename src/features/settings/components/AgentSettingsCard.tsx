@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useTransition } from 'react';
+import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 import { Button } from '@/src/shared/components/ui/button';
 import { Input } from '@/src/shared/components/ui/input';
 
@@ -30,7 +30,7 @@ export function AgentSettingsCard() {
 		isDirtyRef.current = isDirty;
 	}, [isDirty]);
 
-	const refreshStatus = () => {
+	const refreshStatus = useCallback(() => {
 		fetch('/api/settings/user')
 			.then((r) => r.json())
 			.then((settings: AgentUserSettings) => {
@@ -43,14 +43,28 @@ export function AgentSettingsCard() {
 			})
 			.catch((err) => console.error('Failed to refresh agent status:', err))
 			.finally(() => setLoaded(true));
-	};
+	}, []);
 
 	useEffect(() => {
 		refreshStatus();
-		// Poll every 5 seconds to check if agent has pinged
-		const interval = setInterval(refreshStatus, 5000);
-		return () => clearInterval(interval);
-	}, []);
+		const interval = setInterval(() => {
+			if (document.visibilityState === 'visible') {
+				refreshStatus();
+			}
+		}, 30_000);
+
+		const handleVisibilityChange = () => {
+			if (document.visibilityState === 'visible') {
+				refreshStatus();
+			}
+		};
+
+		document.addEventListener('visibilitychange', handleVisibilityChange);
+		return () => {
+			clearInterval(interval);
+			document.removeEventListener('visibilitychange', handleVisibilityChange);
+		};
+	}, [refreshStatus]);
 
 	const save = () => {
 		startTransition(async () => {
