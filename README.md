@@ -1,36 +1,116 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Podo Improve
+
+Open source platform for foot health assessment, custom insole optimization, and patient management.
+
+## Overview
+
+Podo Improve helps podiatrists, clinics, and foot care specialists streamline their workflow by providing digital tools for:
+
+- Patient management
+- Foot assessment tracking
+- Insole recommendations
+- Treatment progress monitoring
+- Reporting and documentation
+- Data-driven insights
+
+Our mission is to make modern foot care technology accessible to everyone through open source software.
+
+## Features
+
+### Patient Management
+- Create and manage patient profiles
+- Store assessment history
+- Track treatment progress over time
+
+### Foot Health Assessments
+- Record foot measurements and observations
+- Monitor changes between visits
+- Generate structured reports
+
+### Insole Optimization
+- Manage custom insole configurations
+- Track modifications and improvements
+- Store recommendations and outcomes
+
+### AI-Powered Tools (Upcoming)
+- Automated assessment summaries
+- Personalized improvement recommendations
+- Intelligent documentation assistance
+- Clinical insights and analytics
+
+## Tech Stack
+
+- Next.js
+- TypeScript
+- PostgreSQL
+- Supabase
+- OpenAI API
+- Tailwind CSS
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 20+
+- npm, pnpm, or yarn
+- PostgreSQL database
+
+### Installation
+
+```bash
+git clone https://github.com/Dionysos288/podo-improve.git
+
+cd podo-improve
+
+npm install
+```
+
+Create a `.env.local` file:
+
+```env
+DATABASE_URL=
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+OPENAI_API_KEY=
+```
+
+Run the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```text
+http://localhost:3000
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Contributing
 
-## Learn More
+Contributions are welcome.
 
-To learn more about Next.js, take a look at the following resources:
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Open a Pull Request
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Please open an issue before implementing major changes.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Roadmap
 
-## Deploy on Vercel
+- [ ] Patient dashboard
+- [ ] Assessment management
+- [ ] Insole recommendation engine
+- [ ] AI-powered clinical assistant
+- [ ] Report generation
+- [ ] Multi-clinic support
+- [ ] Mobile application
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Vision
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+We believe healthcare software should be accessible, transparent, and collaborative. Podo Improve aims to become the leading open source platform for digital foot care and custom insole management.
+
+## License
+
+MIT License
