@@ -30,8 +30,14 @@ export default function LoginPage() {
 				return;
 			}
 
-			// Redirect to home, middleware will handle org routing
-			router.push('/');
+			const callbackUrl = new URLSearchParams(window.location.search).get(
+				'callbackUrl',
+			);
+			const destination =
+				callbackUrl?.startsWith('/') && !callbackUrl.startsWith('//')
+					? callbackUrl
+					: '/';
+			router.push(destination);
 			router.refresh();
 		} catch {
 			setError('Er is een fout opgetreden bij het inloggen');

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { hasSessionCookie } from '@/src/shared/core/auth/session-cookie';
 
 // Public routes that don't require authentication
 const publicRoutes = ['/login', '/register', '/join'];
@@ -27,9 +28,7 @@ export default async function proxy(request: NextRequest) {
 		(route) => pathname === route || pathname.startsWith(`${route}/`)
 	);
 
-	// Get the session token from cookies
-	const sessionToken = request.cookies.get('better-auth.session_token')?.value;
-	const isAuthenticated = !!sessionToken;
+	const isAuthenticated = hasSessionCookie(request.cookies);
 
 	// Redirect unauthenticated users to login
 	if (!isAuthenticated && !isPublicRoute && pathname !== '/') {

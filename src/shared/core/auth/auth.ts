@@ -4,6 +4,8 @@ import { prisma } from '@/src/shared/core/db/prisma';
 import { resolveAppUrl } from './resolve-app-url';
 
 const appUrl = resolveAppUrl(process.env.BETTER_AUTH_URL);
+const publicAppUrl = resolveAppUrl(process.env.NEXT_PUBLIC_APP_URL, appUrl);
+const trustedOrigins = [...new Set([appUrl, publicAppUrl])];
 
 export const auth = betterAuth({
 	secret: process.env.BETTER_AUTH_SECRET,
@@ -48,7 +50,7 @@ export const auth = betterAuth({
 			},
 		},
 	},
-	trustedOrigins: [appUrl],
+	trustedOrigins,
 });
 
 export type Session = typeof auth.$Infer.Session;
