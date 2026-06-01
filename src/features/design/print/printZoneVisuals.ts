@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import {
-	createHeelToToeMapper,
 	getAxisValue,
 	getGeometryAxes,
+	getMaxForAxis,
+	getMinForAxis,
 } from '@/src/features/design/utils/geometryAxes';
 import type { PrintZoneId } from '@/src/features/design/print/printZones';
 import { T_BACK_UPPER, T_MIDDLE_UPPER } from '@/src/features/design/print/printZones';
@@ -28,39 +29,53 @@ export function zoneBlendWeightsFromT(t: number): { back: number; middle: number
 	return { back: back / sum, middle: middle / sum, front: front / sum };
 }
 
-/** Undertint used when idle / base body */
-const BASE_SOLE = new THREE.Color('#dfb89a');
-/** Hover — cool mint veil (no harsh RGB banding) */
-const HOVER_TINT = new THREE.Color('#7ecfb0');
-/** Selected zone — softer medical green than legacy diagnostic reds */
-const SELECTION_GREEN = new THREE.Color('#4eb89a');
+/**
+ * Vertex colors are written as the natural insole color outside the active zone,
+ * and a darkened version inside it. This keeps the rest of the insole looking
+ * the same and just darkens the hovered/selected region.
+ */
+/** Brightness multiplier at the center of the selected zone */
+const SELECTED_DARKEN = 0.5;
+/** Brightness multiplier at the center of a hovered (non-selected) zone */
+const HOVER_DARKEN = 0.78;
+/** Fallback base color when the caller doesn't supply one */
+const DEFAULT_BASE_COLOR_HEX = '#e2e6ec';
 
 export type PrintSplitVisualState = {
 	hoveredZone: PrintZoneId | null;
 	selectedZone: PrintZoneId | null;
+	/** Material color the insole renders in when no zone is active (hex or THREE.Color). */
+	baseColor?: string | THREE.Color;
 };
 
-/** Build once when entering print split overlay mode */
+/** Build or refresh per-vertex heel→toe when geometry positions change */
 export function ensurePrintHeelToeAttribute(geometry: THREE.BufferGeometry): void {
-	const existing = geometry.getAttribute(PRINT_HEEL_TOE_ATTR);
-	if (existing) return;
+	const positions = geometry.attributes.position as THREE.BufferAttribute | undefined;
+	if (!positions?.count) return;
 
-	const positions = geometry.attributes.position as THREE.BufferAttribute;
-	const { lengthAxis, widthAxis, bbox, lengthSpan } = getGeometryAxes(geometry);
-	const heelToToe = createHeelToToeMapper({
-		positions,
-		lengthAxis,
-		widthAxis,
-		bbox,
-		lengthSpan,
-	});
+	const existing = geometry.getAttribute(PRINT_HEEL_TOE_ATTR) as
+		| THREE.BufferAttribute
+		| undefined;
+	if (existing?.count === positions.count) {
+		const cachedVersion = geometry.userData._printHeelToePosVersion as number | undefined;
+		if (cachedVersion === positions.version) return;
+	}
+
+	// Match agent.mjs `resolveHardnessRegion` and `resolvePrintZoneFromLocalPoint`:
+	// raw T with lengthMin = heel = back, no wider-end flip.
+	const { lengthAxis, bbox, lengthSpan } = getGeometryAxes(geometry);
+	const minLength = getMinForAxis(bbox, lengthAxis);
+	const maxLength = getMaxForAxis(bbox, lengthAxis);
+	const span = Math.max(1e-6, lengthSpan || maxLength - minLength);
 
 	const arr = new Float32Array(positions.count);
 	for (let i = 0; i < positions.count; i++) {
 		const lv = getAxisValue(positions, i, lengthAxis);
-		arr[i] = heelToToe.getT(lv);
+		const raw = (lv - minLength) / span;
+		arr[i] = Math.max(0, Math.min(1, raw));
 	}
 	geometry.setAttribute(PRINT_HEEL_TOE_ATTR, new THREE.Float32BufferAttribute(arr, 1));
+	geometry.userData._printHeelToePosVersion = positions.version;
 }
 
 export function removePrintPrepAttributes(geometry: THREE.BufferGeometry): void {
@@ -83,43 +98,55 @@ export function applyPrintSplitZoneColors(
 
 	const heelToeAttr = geometry.getAttribute(PRINT_HEEL_TOE_ATTR) as THREE.BufferAttribute;
 	const count = heelToeAttr.count;
-	const colors = new Float32Array(count * 3);
 
-	const out = new THREE.Color();
+	const existing = geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+	let colors: Float32Array;
+	if (
+		existing &&
+		existing.array instanceof Float32Array &&
+		existing.itemSize === 3 &&
+		existing.count === count
+	) {
+		colors = existing.array as Float32Array;
+	} else {
+		colors = new Float32Array(count * 3);
+		geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+	}
+
+	const colorAttr = geometry.getAttribute('color') as THREE.BufferAttribute;
+
 	const hovered = state.hoveredZone;
 	const selected = state.selectedZone;
+	const base = new THREE.Color(state.baseColor ?? DEFAULT_BASE_COLOR_HEX);
+
+	// Avoid a black flash when vertexColors turns on before the first darken pass
+	for (let i = 0; i < count; i++) {
+		colors[i * 3] = base.r;
+		colors[i * 3 + 1] = base.g;
+		colors[i * 3 + 2] = base.b;
+	}
 
 	for (let i = 0; i < count; i++) {
 		const t = heelToeAttr.getX(i);
 		const zw = zoneBlendWeightsFromT(t);
 
-		out.copy(BASE_SOLE);
-
-		if (!selected && hovered != null) {
-			const hw = weightOf(hovered, zw);
-			const amt = THREE.MathUtils.clamp(hw * 1.05, 0, 1) * 0.085;
-			out.lerp(HOVER_TINT, amt);
-		} else if (selected != null) {
+		let mul = 1;
+		if (selected != null) {
 			const sw = THREE.MathUtils.clamp(weightOf(selected, zw), 0, 1);
-			out.lerp(SELECTION_GREEN, sw * 0.19);
-
-			// Gentle quieting of non-selected regions (orthogonal contributions)
-			const other =
-				selected === 'front' ? zw.middle + zw.back * 1.08
-					: selected === 'middle' ? zw.front * 1.03 + zw.back * 1.03
-						: zw.middle + zw.front * 1.08;
-			const damp = THREE.MathUtils.clamp(other * 0.085, 0, 1);
-			out.multiplyScalar(THREE.MathUtils.lerp(1, 0.94, damp));
+			mul = THREE.MathUtils.lerp(mul, SELECTED_DARKEN, sw);
 			if (hovered != null && hovered !== selected) {
-				const hlw = THREE.MathUtils.clamp(weightOf(hovered, zw), 0, 1) * 0.05;
-				out.lerp(HOVER_TINT, hlw);
+				const hw = THREE.MathUtils.clamp(weightOf(hovered, zw), 0, 1);
+				mul = THREE.MathUtils.lerp(mul, HOVER_DARKEN, hw * 0.5);
 			}
+		} else if (hovered != null) {
+			const hw = THREE.MathUtils.clamp(weightOf(hovered, zw), 0, 1);
+			mul = THREE.MathUtils.lerp(mul, HOVER_DARKEN, hw);
 		}
 
-		colors[i * 3] = out.r;
-		colors[i * 3 + 1] = out.g;
-		colors[i * 3 + 2] = out.b;
+		colors[i * 3] = base.r * mul;
+		colors[i * 3 + 1] = base.g * mul;
+		colors[i * 3 + 2] = base.b * mul;
 	}
 
-	geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+	colorAttr.needsUpdate = true;
 }

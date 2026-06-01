@@ -3,6 +3,13 @@ export type LatticeOffsetVec = { du: number; dv: number; dh: number };
 export const BOX_GRID_COLS = 9;
 export const BOX_GRID_ROWS = 13;
 export const BOX_GRID_LAYERS = 4;
+/** Single height layer for orthotic element box editing (insole box keeps BOX_GRID_LAYERS). */
+export const ELEMENT_BOX_GRID_LAYERS = 1;
+/** Extra lattice height below/above element mesh so control handles sit inside the frame. */
+export const ELEMENT_BOX_HEIGHT_PAD_BELOW_MM = 2;
+export const ELEMENT_BOX_HEIGHT_PAD_ABOVE_MM = 10;
+/** Sink handles slightly below the element top so spheres read on the surface, not above it. */
+export const ELEMENT_BOX_HANDLE_SINK_BELOW_SURFACE_MM = 3;
 
 export interface BoxGridSavedOffsets {
 	cols: number;

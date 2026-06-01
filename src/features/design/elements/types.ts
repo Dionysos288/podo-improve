@@ -130,4 +130,6 @@ export interface PlacedElement {
 	trimlineHandleProfile?: TrimlineHandleProfile | null;
 	/** Optional saved box-grid deformation for interactive element box mode */
 	boxGridOffsets?: BoxGridSavedOffsets | null;
+	/** Stacking order for displacement + draw order (lower = under). */
+	stackOrder: number;
 }

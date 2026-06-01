@@ -9,13 +9,49 @@
  */
 import * as THREE from 'three';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { PlacedElement, ElementProfile } from './types';
+import type {
+	PlacedElement,
+	ElementProfile,
+	ElementColorGroup,
+} from './types';
 import {
 	getElementByKey,
 	getElementPreferredStlUrl,
 	ELEMENT_COLORS,
 } from './catalog';
 import { getDefaultPlacementForSide } from './placement';
+import { normalizeElementFloorMode } from './normalizeFloorMode';
+import { sortPlacedElementsByStack } from './sortPlacedElements';
+import {
+	smoothElementOverlayGeometry,
+	tessellateAndWeldGeometry,
+} from '../viewer/smoothOverlayGeometry';
+
+const THICKNESS_ONLY_COLORS = new Set<ElementColorGroup>(['blue', 'orange']);
+
+export function isThicknessOnlyElement(
+	item: { color?: ElementColorGroup } | null | undefined,
+): boolean {
+	return Boolean(item?.color && THICKNESS_ONLY_COLORS.has(item.color));
+}
+
+const stlMissWarnedKeys = new Set<string>();
+
+function warnStlMissOnce(libraryKey: string): void {
+	if (process.env.NODE_ENV === 'production') return;
+	if (stlMissWarnedKeys.has(libraryKey)) return;
+	stlMissWarnedKeys.add(libraryKey);
+	console.warn(
+		`Element overlay: STL not loaded for "${libraryKey}", using procedural fallback.`,
+	);
+}
+
+function warnTrimFallbackOnce(elementId: string): void {
+	if (process.env.NODE_ENV === 'production') return;
+	console.warn(
+		`Element overlay: trim removed all triangles for "${elementId}", keeping untrimmed geometry.`,
+	);
+}
 
 /* ── helpers (same as insoleCorrections.ts) ──── */
 
@@ -178,22 +214,24 @@ function distToPolygonEdge(
  */
 type InsoleBoundarySampler = (uNorm: number) => { minV: number; maxV: number };
 
-/** Distance (mm) from a UV point to the nearest insole edge. Negative = outside. */
-function distToInsoleEdgeMm(
-	u: number,
-	v: number,
-	sampler: InsoleBoundarySampler,
-	widthSpan: number,
-	mmToWorld: number,
-): number {
-	const { minV, maxV } = sampler(Math.max(0, Math.min(1, u)));
-	const distToMin = ((v - minV) * widthSpan) / Math.max(mmToWorld, 1e-6);
-	const distToMax = ((maxV - v) * widthSpan) / Math.max(mmToWorld, 1e-6);
-	return Math.min(distToMin, distToMax);
-}
-
 /** Default insole-edge blend zone (mm). Height tapers to 0 within this margin. */
 const INSOLE_EDGE_BLEND_MM = 3.0;
+
+/** Larger edge blend for wide stabiliser pads that intentionally overshoot the insole. */
+const WIDE_PAD_EDGE_BLEND_MM = 8.0;
+
+function quinticEase(t: number): number {
+	const clamped = Math.max(0, Math.min(1, t));
+	const t3 = clamped * clamped * clamped;
+	return t3 * (clamped * (clamped * 6 - 15) + 10);
+}
+
+function getAdditiveInsoleEdgeBlendMm(libraryKey: string | undefined): number {
+	if (libraryKey === 'spsa-vlak' || libraryKey === 'ppsa') {
+		return WIDE_PAD_EDGE_BLEND_MM;
+	}
+	return INSOLE_EDGE_BLEND_MM;
+}
 
 /**
  * Clip a single vertex to the insole boundary.
@@ -212,6 +250,7 @@ function clipVertexToInsole(
 	widthSpan: number,
 	mmToWorld: number,
 	blendMm: number = INSOLE_EDGE_BLEND_MM,
+	softOutside = false,
 ): { clippedV: number; clippedWorldWidth: number; heightMultiplier: number } {
 	const uClamped = Math.max(0, Math.min(1, sampleU));
 	const { minV, maxV } = sampler(uClamped);
@@ -223,31 +262,58 @@ function clipVertexToInsole(
 	const distToEdgeMm = Math.min(distToMinMm, distToMaxMm);
 
 	if (distToEdgeMm < 0) {
-		// Outside insole — snap to nearest edge, zero height
 		const clippedV = Math.max(minV, Math.min(maxV, sampleV));
+		if (!softOutside) {
+			return {
+				clippedV,
+				clippedWorldWidth: widthMin + clippedV * widthSpan,
+				heightMultiplier: 0,
+			};
+		}
+		const overshootMm = -distToEdgeMm;
+		const fadeSpan = blendMm * 2;
+		const heightMultiplier =
+			overshootMm >= fadeSpan ? 0 : quinticEase(1 - overshootMm / fadeSpan);
 		return {
 			clippedV,
 			clippedWorldWidth: widthMin + clippedV * widthSpan,
-			heightMultiplier: 0,
+			heightMultiplier,
 		};
 	}
 	if (distToEdgeMm < blendMm) {
-		// Near the edge — quintic ease taper
-		const t = distToEdgeMm / blendMm;
-		const t3 = t * t * t;
-		const smooth = t3 * (t * (t * 6 - 15) + 10);
 		return {
 			clippedV: sampleV,
 			clippedWorldWidth: worldWidth,
-			heightMultiplier: smooth,
+			heightMultiplier: quinticEase(distToEdgeMm / blendMm),
 		};
 	}
-	// Fully inside
 	return {
 		clippedV: sampleV,
 		clippedWorldWidth: worldWidth,
 		heightMultiplier: 1,
 	};
+}
+
+function computeOutlineProfileWeight(
+	u: number,
+	v: number,
+	outline: [number, number][],
+	blendNorm: number,
+	profile: ElementProfile,
+): number {
+	const { inside, edgeDist } = measurePreparedPolygon(u, v, preparePolygon(outline));
+
+	if (inside) {
+		if (blendNorm > 0.001) {
+			const normEdgeDist = Math.min(edgeDist / blendNorm, 1);
+			return profileMultiplier(profile, 1 - normEdgeDist);
+		}
+		return 1;
+	}
+
+	if (edgeDist >= blendNorm || blendNorm <= 0.001) return 0;
+	const normEdgeDist = edgeDist / blendNorm;
+	return profileMultiplier(profile, 1) * (1 - smoothstep(0, 1, normEdgeDist));
 }
 
 /**
@@ -307,7 +373,7 @@ function transformOutline(
 
 	return outline.map(([ox, oy]) => {
 		// Centre the outline at origin (-0.5..+0.5)
-		let lx = (ox - 0.5) * elementSizeU * el.scaleU;
+		const lx = (ox - 0.5) * elementSizeU * el.scaleU;
 		let ly = (oy - 0.5) * elementSizeV * el.scaleV;
 		if (mirrorWidth) {
 			ly = -ly;
@@ -771,7 +837,7 @@ function getPreparedOverlayStlGeometry(
 		position.needsUpdate = true;
 	}
 
-	prepared.computeVertexNormals();
+	prepared = tessellateAndWeldGeometry(prepared, 1);
 	prepared.computeBoundingBox();
 	prepared.computeBoundingSphere();
 	perGeometryCache.set(cacheKey, prepared);
@@ -2106,6 +2172,7 @@ export function applyElements(
 ): void {
 	if (!elements || elements.length === 0) return;
 
+	const sortedElements = sortPlacedElementsByStack(elements);
 	const mmToWorld = options?.mmToWorld ?? 1;
 	const geometryAnalysis = getCachedInsoleOverlayAnalysis(geometry);
 	const {
@@ -2125,7 +2192,8 @@ export function applyElements(
 	}
 
 	// Precompute transformed outlines and bounding boxes for each element
-	const prepared = elements.map((el) => {
+	const prepared = sortedElements.map((el) => {
+		const floorMode = normalizeElementFloorMode(el.floorMode);
 		const item = getElementByKey(el.libraryKey);
 		const resolved = resolveElementLayout(item, el, {
 			positions,
@@ -2187,12 +2255,13 @@ export function applyElements(
 		const blendNorm = Math.max(blendU, blendV);
 		const heightWorld = el.heightMm * mmToWorld;
 		const baseSurfaceHeight =
-			heightWorld > 0 && el.floorMode !== 'sole'
+			heightWorld > 0 && floorMode !== 'sole'
 				? sampleSurfaceHeight(resolved.positionU, resolved.positionV)
 				: undefined;
 
 		return {
 			el,
+			floorMode,
 			item,
 			resolved,
 			polygon,
@@ -2247,6 +2316,8 @@ export function applyElements(
 		let totalDisplacement = 0;
 
 		for (const p of prepared) {
+			if (isThicknessOnlyElement(p.item) && p.heightWorld > 0) continue;
+
 			// Early bounding-box reject
 			if (u < p.bboxMinU || u > p.bboxMaxU || v < p.bboxMinV || v > p.bboxMaxV)
 				continue;
@@ -2276,7 +2347,7 @@ export function applyElements(
 
 			if (
 				p.heightWorld > 0 &&
-				p.el.floorMode !== 'sole' &&
+				p.floorMode !== 'sole' &&
 				p.baseSurfaceHeight !== undefined
 			) {
 				const desiredTopHeight = p.baseSurfaceHeight + p.heightWorld * weight;
@@ -2318,6 +2389,7 @@ export interface ElementOverlayData {
 	geometry: THREE.BufferGeometry;
 	colorHex: string;
 	elementId: string;
+	stackOrder: number;
 	isInset?: boolean;
 }
 
@@ -2332,6 +2404,8 @@ export function buildElementOverlayGeometries(
 ): ElementOverlayData[] {
 	if (!elements || elements.length === 0) return [];
 
+	const sortedElements = sortPlacedElementsByStack(elements);
+
 	if (!insoleGeometry.getAttribute('normal')) {
 		insoleGeometry.computeVertexNormals();
 	}
@@ -2341,8 +2415,6 @@ export function buildElementOverlayGeometries(
 		axes,
 		lengthMin,
 		widthMin,
-		heightMin,
-		heightSpan,
 		heelAtMin,
 		sampleHeight,
 		sampleInsoleExtent,
@@ -2392,8 +2464,8 @@ export function buildElementOverlayGeometries(
 
 		const spanU = Math.max(1e-4, maxU - minU);
 		const spanV = Math.max(1e-4, maxV - minV);
-		const gridU = Math.max(12, Math.min(34, Math.ceil(spanU / 0.012)));
-		const gridV = Math.max(12, Math.min(34, Math.ceil(spanV / 0.012)));
+		const gridU = Math.max(12, Math.min(36, Math.ceil(spanU / 0.012)));
+		const gridV = Math.max(12, Math.min(36, Math.ceil(spanV / 0.012)));
 		const stepU = spanU / gridU;
 		const stepV = spanV / gridV;
 		const edgePad = Math.max(stepU, stepV) * 0.9;
@@ -2457,8 +2529,8 @@ export function buildElementOverlayGeometries(
 
 		const spanU = Math.max(1e-4, maxU - minU);
 		const spanV = Math.max(1e-4, maxV - minV);
-		const gridU = Math.max(10, Math.min(28, Math.ceil(spanU / 0.018)));
-		const gridV = Math.max(10, Math.min(28, Math.ceil(spanV / 0.018)));
+		const gridU = Math.max(10, Math.min(36, Math.ceil(spanU / 0.018)));
+		const gridV = Math.max(10, Math.min(36, Math.ceil(spanV / 0.018)));
 		const stepU = spanU / gridU;
 		const stepV = spanV / gridV;
 		const edgePad = Math.max(stepU, stepV) * 0.9;
@@ -2526,6 +2598,269 @@ export function buildElementOverlayGeometries(
 		return smoothed;
 	};
 
+	const buildRaisedElementTopSurfaceOverlay = (
+		outline: [number, number][],
+		heightMm: number,
+		blendMm: number,
+		profile: ElementProfile,
+	): THREE.BufferGeometry | null => {
+		if (outline.length < 3 || heightMm <= 0) return null;
+
+		const heightWorld = Math.max(0.2, heightMm) * mmToWorld;
+		const blendU = (blendMm * mmToWorld) / lengthSpan;
+		const blendV = (blendMm * mmToWorld) / widthSpan;
+		const blendNorm = Math.max(blendU, blendV);
+
+		let perimeter = 0;
+		for (let i = 0; i < outline.length; i++) {
+			const [u0, v0] = outline[i]!;
+			const [u1, v1] = outline[(i + 1) % outline.length]!;
+			const du = (u1 - u0) * lengthSpan;
+			const dv = (v1 - v0) * widthSpan;
+			perimeter += Math.hypot(du, dv);
+		}
+		const samples = Math.max(
+			48,
+			Math.min(144, Math.ceil(perimeter / Math.max(1.5 * mmToWorld, 1e-6))),
+		);
+		const ringCount = Math.max(
+			10,
+			Math.min(28, Math.ceil(Math.sqrt(samples) * 2.2)),
+		);
+
+		const centroid = outline.reduce(
+			(acc, [u, v]) => {
+				acc[0] += u;
+				acc[1] += v;
+				return acc;
+			},
+			[0, 0] as [number, number],
+		);
+		centroid[0] /= outline.length;
+		centroid[1] /= outline.length;
+
+		const resampledOutline: [number, number][] = [];
+		for (let sample = 0; sample < samples; sample++) {
+			const target = (sample / samples) * perimeter;
+			let walked = 0;
+			for (let i = 0; i < outline.length; i++) {
+				const [u0, v0] = outline[i]!;
+				const [u1, v1] = outline[(i + 1) % outline.length]!;
+				const duWorld = (u1 - u0) * lengthSpan;
+				const dvWorld = (v1 - v0) * widthSpan;
+				const segmentLength = Math.hypot(duWorld, dvWorld);
+				if (walked + segmentLength >= target || i === outline.length - 1) {
+					const t =
+						segmentLength > 1e-8
+							? Math.max(0, Math.min(1, (target - walked) / segmentLength))
+							: 0;
+					resampledOutline.push([
+						u0 + (u1 - u0) * t,
+						v0 + (v1 - v0) * t,
+					]);
+					break;
+				}
+				walked += segmentLength;
+			}
+		}
+		if (resampledOutline.length < 3) return null;
+
+		const verts: number[] = [];
+		const indices: number[] = [];
+
+		const pushVertex = (u: number, v: number): number => {
+				const weight = computeOutlineProfileWeight(
+					u,
+					v,
+					outline,
+					blendNorm,
+					profile,
+				);
+				const surfaceH = sampleHeight(u, v);
+				const topH = surfaceH + heightWorld * weight + SURFACE_EPSILON;
+				const index = verts.length / 3;
+				verts.push(...uvToWorld(u, v, topH));
+				return index;
+		};
+
+		const centerIndex = pushVertex(centroid[0], centroid[1]);
+		let previousRing: number[] = [];
+
+		for (let ring = 1; ring <= ringCount; ring++) {
+			const t = ring / ringCount;
+			const currentRing = resampledOutline.map(([outlineU, outlineV]) =>
+				pushVertex(
+					centroid[0] + (outlineU - centroid[0]) * t,
+					centroid[1] + (outlineV - centroid[1]) * t,
+				),
+			);
+
+			for (let i = 0; i < currentRing.length; i++) {
+				const next = (i + 1) % currentRing.length;
+				if (ring === 1) {
+					indices.push(centerIndex, currentRing[i]!, currentRing[next]!);
+				} else {
+					indices.push(previousRing[i]!, currentRing[i]!, previousRing[next]!);
+					indices.push(previousRing[next]!, currentRing[i]!, currentRing[next]!);
+				}
+			}
+
+			previousRing = currentRing;
+		}
+
+		if (verts.length < 9 || indices.length < 3) return null;
+
+		const geom = new THREE.BufferGeometry();
+		geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+		geom.setIndex(indices);
+		return geom;
+	};
+
+	const buildRaisedElementVolumeOverlay = (
+		outline: [number, number][],
+		heightMm: number,
+		blendMm: number,
+		profile: ElementProfile,
+	): THREE.BufferGeometry | null => {
+		if (outline.length < 3 || heightMm <= 0) return null;
+
+		let minU = Infinity,
+			maxU = -Infinity,
+			minV = Infinity,
+			maxV = -Infinity;
+		for (const [u, v] of outline) {
+			if (u < minU) minU = u;
+			if (u > maxU) maxU = u;
+			if (v < minV) minV = v;
+			if (v > maxV) maxV = v;
+		}
+
+		const spanU = Math.max(1e-4, maxU - minU);
+		const spanV = Math.max(1e-4, maxV - minV);
+		const gridU = Math.max(14, Math.min(40, Math.ceil(spanU / 0.012)));
+		const gridV = Math.max(14, Math.min(40, Math.ceil(spanV / 0.012)));
+		const stepU = spanU / gridU;
+		const stepV = spanV / gridV;
+		const edgePad = Math.max(stepU, stepV) * 0.85;
+
+		const heightWorld = Math.max(0.2, heightMm) * mmToWorld;
+		const blendU = (blendMm * mmToWorld) / lengthSpan;
+		const blendV = (blendMm * mmToWorld) / widthSpan;
+		const blendNorm = Math.max(blendU, blendV);
+
+		const verts: number[] = [];
+		const indexGrid = Array.from({ length: gridU + 1 }, () =>
+			Array<number>(gridV + 1).fill(-1),
+		);
+
+		for (let gu = 0; gu <= gridU; gu++) {
+			for (let gv = 0; gv <= gridV; gv++) {
+				const u = minU + stepU * gu;
+				const v = minV + stepV * gv;
+				const inside = pointInPolygon(u, v, outline);
+				const edgeDist = distToPolygonEdge(u, v, outline);
+				if (!inside && edgeDist > edgePad) continue;
+
+				const weight = computeOutlineProfileWeight(
+					u,
+					v,
+					outline,
+					blendNorm,
+					profile,
+				);
+				if (weight <= 1e-4) continue;
+
+				const surfaceH = sampleHeight(u, v);
+				const topH = surfaceH + heightWorld * weight + SURFACE_EPSILON;
+				indexGrid[gu][gv] = verts.length / 3;
+				verts.push(...uvToWorld(u, v, topH));
+			}
+		}
+
+		const indices: number[] = [];
+		for (let gu = 0; gu < gridU; gu++) {
+			for (let gv = 0; gv < gridV; gv++) {
+				const a = indexGrid[gu][gv];
+				const b = indexGrid[gu + 1][gv];
+				const c = indexGrid[gu][gv + 1];
+				const d = indexGrid[gu + 1][gv + 1];
+
+				if (a >= 0 && b >= 0 && c >= 0) indices.push(a, b, c);
+				if (b >= 0 && d >= 0 && c >= 0) indices.push(b, d, c);
+			}
+		}
+
+		const topRing: number[] = [];
+		const bottomRing: number[] = [];
+		for (const [u, v] of outline) {
+			const weight = computeOutlineProfileWeight(
+				u,
+				v,
+				outline,
+				blendNorm,
+				profile,
+			);
+			const surfaceH = sampleHeight(u, v);
+			const topH = surfaceH + heightWorld * weight + SURFACE_EPSILON;
+			bottomRing.push(...uvToWorld(u, v, surfaceH + SURFACE_EPSILON * 0.35));
+			topRing.push(...uvToWorld(u, v, topH));
+		}
+
+		const topOffset = verts.length / 3;
+		verts.push(...topRing, ...bottomRing);
+
+		const outlineCount = outline.length;
+		for (let i = 0; i < outlineCount; i++) {
+			const next = (i + 1) % outlineCount;
+			const topA = topOffset + i;
+			const topB = topOffset + next;
+			const bottomA = topOffset + outlineCount + i;
+			const bottomB = topOffset + outlineCount + next;
+			indices.push(topA, bottomB, bottomA);
+			indices.push(topA, topB, bottomB);
+		}
+
+		if (verts.length < 9 || indices.length < 3) return null;
+
+		const geom = new THREE.BufferGeometry();
+		geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+		geom.setIndex(indices);
+		return geom;
+	};
+
+	const buildProceduralRaisedOverlay = (
+		outline: [number, number][],
+		heightMm: number,
+		blendMm: number,
+		profile: ElementProfile,
+		item: ReturnType<typeof getElementByKey>,
+		floorMode: ReturnType<typeof normalizeElementFloorMode>,
+		overlayBaseHeight: number,
+	): THREE.BufferGeometry | null => {
+		if (isThicknessOnlyElement(item)) {
+			return buildRaisedElementTopSurfaceOverlay(
+				outline,
+				heightMm,
+				blendMm,
+				profile,
+			);
+		}
+
+		if (floorMode !== 'sole') {
+			return (
+				buildTrimmedAdditiveSurfaceOverlay(outline, overlayBaseHeight) ??
+				buildRaisedElementVolumeOverlay(outline, heightMm, blendMm, profile)
+			);
+		}
+
+		return buildRaisedElementVolumeOverlay(
+			outline,
+			heightMm,
+			blendMm,
+			profile,
+		);
+	};
+
 	const result: ElementOverlayData[] = [];
 	const placementContext: PlacementContext = {
 		positions,
@@ -2540,19 +2875,26 @@ export function buildElementOverlayGeometries(
 		mmToWorld,
 	};
 
-	for (const el of elements) {
+	for (const el of sortedElements) {
 		const item = getElementByKey(el.libraryKey);
 		if (!item) continue;
+		const floorMode = normalizeElementFloorMode(el.floorMode);
+		const stackOrder = el.stackOrder ?? 0;
 		const preferredStlUrl = getElementPreferredStlUrl(item);
 		const resolved = resolveElementLayout(item, el, placementContext);
 		const isInset = el.heightMm < 0;
 		const baseSurfaceHeight =
-			!isInset && el.floorMode !== 'sole'
+			!isInset && floorMode !== 'sole'
 				? sampleHeight(resolved.positionU, resolved.positionV)
 				: undefined;
 
 		// ── STL-based overlay (preferred when stlUrl is available) ──
-		if (preferredStlUrl && stlGeometries?.has(preferredStlUrl) && !isInset) {
+		if (
+			preferredStlUrl &&
+			stlGeometries?.has(preferredStlUrl) &&
+			!isInset &&
+			!isThicknessOnlyElement(item)
+		) {
 			const srcGeom = stlGeometries.get(preferredStlUrl)!;
 			const cachedDistanceField = getCachedStlDistanceField(
 				srcGeom,
@@ -2645,6 +2987,8 @@ export function buildElementOverlayGeometries(
 			const cos = Math.cos(resolved.rotationRad);
 			const sin = Math.sin(resolved.rotationRad);
 
+			const insoleEdgeBlendMm = getAdditiveInsoleEdgeBlendMm(item.key);
+
 			// Transform each vertex:
 			// 1. Centre the STL at origin
 			// 2. Scale mm → world
@@ -2715,6 +3059,8 @@ export function buildElementOverlayGeometries(
 					widthMin,
 					widthSpan,
 					mmToWorld,
+					insoleEdgeBlendMm,
+					true,
 				);
 				sampleVValue = clip.clippedV;
 				worldWidth = clip.clippedWorldWidth;
@@ -2732,8 +3078,7 @@ export function buildElementOverlayGeometries(
 					Math.max(mmToWorld, 1e-6);
 				const distToUEdgeMm = Math.min(distToHeelMm, distToToeMm);
 				if (distToUEdgeMm < 0) {
-					// Outside the insole — snap U to nearest edge and zero height
-					localHeight = 0;
+					const overshootMm = -distToUEdgeMm;
 					const clampedU = Math.max(
 						insoleMinUAtV,
 						Math.min(insoleMaxUAtV, sampleUValue),
@@ -2741,10 +3086,14 @@ export function buildElementOverlayGeometries(
 					sampleUValue = clampedU;
 					const clampedRawU = heelAtMin ? clampedU : 1 - clampedU;
 					worldLength = lengthMin + clampedRawU * lengthSpan;
-				} else if (distToUEdgeMm < INSOLE_EDGE_BLEND_MM) {
-					const tU = distToUEdgeMm / INSOLE_EDGE_BLEND_MM;
-					const tU3 = tU * tU * tU;
-					localHeight *= tU3 * (tU * (tU * 6 - 15) + 10);
+					const fadeSpan = insoleEdgeBlendMm * 2;
+					if (overshootMm >= fadeSpan) {
+						localHeight = 0;
+					} else {
+						localHeight *= quinticEase(1 - overshootMm / fadeSpan);
+					}
+				} else if (distToUEdgeMm < insoleEdgeBlendMm) {
+					localHeight *= quinticEase(distToUEdgeMm / insoleEdgeBlendMm);
 				}
 
 				const sampleVClamped = Math.max(0, Math.min(1, sampleVValue));
@@ -2760,7 +3109,7 @@ export function buildElementOverlayGeometries(
 				// Invert: at edges sit at surface, at centre push deepest into insole.
 				c[heightAxis] = isInset
 					? surfaceH - localHeight + SURFACE_EPSILON * 0.5
-					: (el.floorMode === 'sole'
+					: (floorMode === 'sole'
 							? surfaceH
 							: (baseSurfaceHeight ?? surfaceH)) +
 						localHeight +
@@ -2769,7 +3118,7 @@ export function buildElementOverlayGeometries(
 				pos.setXYZ(i, c.x, c.y, c.z);
 			}
 
-			if (el.floorMode !== 'sole') {
+			if (floorMode !== 'sole') {
 				const trimmedGeom = trimAdditiveOverlayGeometry({
 					geometry: geom,
 					lengthAxis,
@@ -2783,33 +3132,29 @@ export function buildElementOverlayGeometries(
 					surfaceHeightSampler: sampleHeight,
 					epsilon: SURFACE_EPSILON,
 				});
-				if (!trimmedGeom) continue;
-				geom = trimmedGeom;
+				if (!trimmedGeom) {
+					warnTrimFallbackOnce(el.id);
+				} else {
+					geom = trimmedGeom;
+				}
 			}
 
 			pos.needsUpdate = true;
-			// Re-merge vertices after transform + optional trim to ensure smooth normals
-			try {
-				geom = mergeVertices(geom, 0.001);
-			} catch {
-				/* keep as-is */
-			}
-			geom.computeVertexNormals();
-			geom.computeBoundingBox();
+			geom = smoothElementOverlayGeometry(geom, mmToWorld);
 
 			result.push({
 				geometry: geom,
 				colorHex: ELEMENT_COLORS[item.color] ?? '#999',
 				elementId: el.id,
+				stackOrder,
 				isInset: false,
 			});
 			continue;
 		}
 
-		// If the element expects an STL overlay but that STL is not ready yet,
-		// skip rendering for now. The viewer preloads catalog STLs so this delay
-		// is normally brief, and it avoids flashing the procedural placeholder.
-		if (preferredStlUrl && !isInset) continue;
+		if (preferredStlUrl && !isInset && !stlGeometries?.has(preferredStlUrl)) {
+			warnStlMissOnce(el.libraryKey);
+		}
 
 		// ── Fallback: procedural polygon overlay ──
 		const resolvedElement = {
@@ -2846,68 +3191,58 @@ export function buildElementOverlayGeometries(
 			const insetGeom = buildInsetSurfaceOverlay(outline);
 			if (insetGeom) {
 				result.push({
-					geometry: insetGeom,
+					geometry: smoothElementOverlayGeometry(insetGeom, mmToWorld),
 					colorHex: ELEMENT_COLORS[item.color] ?? '#999',
 					elementId: el.id,
+					stackOrder,
 					isInset: true,
 				});
 			}
 			continue;
 		}
 
-		if (el.floorMode !== 'sole') {
-			const overlayBaseHeight =
-				baseSurfaceHeight ??
-				sampleHeight(resolved.positionU, resolved.positionV);
-			const trimmedGeom = buildTrimmedAdditiveSurfaceOverlay(
+		if (floorMode !== 'sole') {
+			const overlayGeom = buildProceduralRaisedOverlay(
 				outline,
-				overlayBaseHeight,
+				el.heightMm,
+				el.blendMm,
+				el.profile,
+				item,
+				floorMode,
+				baseSurfaceHeight ??
+					sampleHeight(resolved.positionU, resolved.positionV),
 			);
-			if (!trimmedGeom) continue;
+			if (!overlayGeom) {
+				warnTrimFallbackOnce(el.id);
+				continue;
+			}
 
 			result.push({
-				geometry: trimmedGeom,
+				geometry: smoothElementOverlayGeometry(overlayGeom, mmToWorld),
 				colorHex: ELEMENT_COLORS[item.color] ?? '#999',
 				elementId: el.id,
+				stackOrder,
 				isInset: false,
 			});
 			continue;
 		}
 
-		const n = outline.length;
-
-		// Triangulate polygon correctly (handles concave shapes like crescent/horseshoe)
-		const pts2d = outline.map(([u, v]) => new THREE.Vector2(u, v));
-		let triIndices: number[];
-		try {
-			triIndices = THREE.ShapeUtils.triangulateShape(pts2d, []).flat();
-		} catch {
-			// Fallback: simple fan from vertex 0
-			triIndices = [];
-			for (let i = 1; i < n - 1; i++) triIndices.push(0, i, i + 1);
-		}
-
-		// Build world-space vertices, each snapped to insole surface + lift
-		const verts: number[] = [];
-		for (const [u, v] of outline) {
-			const h =
-				el.floorMode === 'sole'
-					? sampleHeight(u, v) + SURFACE_EPSILON
-					: (baseSurfaceHeight ??
-							sampleHeight(resolved.positionU, resolved.positionV)) +
-						SURFACE_EPSILON;
-			verts.push(...uvToWorld(u, v, h));
-		}
-
-		const geom = new THREE.BufferGeometry();
-		geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-		geom.setIndex(triIndices);
-		geom.computeVertexNormals();
+		const volumeGeom = buildProceduralRaisedOverlay(
+			outline,
+			el.heightMm,
+			el.blendMm,
+			el.profile,
+			item,
+			floorMode,
+			sampleHeight(resolved.positionU, resolved.positionV),
+		);
+		if (!volumeGeom) continue;
 
 		result.push({
-			geometry: geom,
+			geometry: smoothElementOverlayGeometry(volumeGeom, mmToWorld),
 			colorHex: ELEMENT_COLORS[item.color] ?? '#999',
 			elementId: el.id,
+			stackOrder,
 			isInset: false,
 		});
 	}
@@ -2949,13 +3284,14 @@ export function applyElementColors(
 		return;
 	}
 
+	const sortedElements = sortPlacedElementsByStack(elements);
 	const geometryAnalysis = getCachedInsoleOverlayAnalysis(geometry);
 	const { axes, lengthMin, widthMin, heightMin, heightSpan, heelAtMin } =
 		geometryAnalysis;
 	const { lengthAxis, widthAxis, heightAxis, lengthSpan, widthSpan } = axes;
 
 	// Precompute transformed outlines + bounding boxes
-	const prepared = elements.map((el) => {
+	const prepared = sortedElements.map((el) => {
 		const item = getElementByKey(el.libraryKey);
 		const resolved = resolveElementLayout(item, el, {
 			positions,

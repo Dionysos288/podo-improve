@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useRef, useState, useCallback, useMemo, useEffect, useTransition } from 'react';
+import { useRef, useState, useCallback, useMemo, useEffect, useTransition, useDeferredValue } from 'react';
 import * as THREE from 'three';
 import { Card, CardContent } from '@/src/shared/components/ui/card';
 import { Button } from '@/src/shared/components/ui/button';
@@ -30,6 +30,9 @@ import {
 	type OntwerpCorrections,
 } from '@/src/shared/components/design/OntwerpPanel';
 import { BaseModal } from '@/src/shared/components/ui/modal';
+import { GeneralParamsFields } from '@/src/shared/components/design/GeneralParamsFields';
+import { ViewerStatusOverlay } from '@/src/features/design/components/ViewerStatusOverlay';
+import { useDebouncedLoading } from '@/src/features/design/hooks/useDebouncedLoading';
 import {
 	DEFAULT_ACTIVE_CORRECTIONS,
 	type CorrectionKey,
@@ -82,6 +85,7 @@ import {
 } from '@/src/shared/components/design/PrintContextPanel';
 import {
 	useElementsStore,
+	normalizeElementFloorMode,
 	ElementsModal,
 	ElementInspector,
 	ElementActionsPanel,
@@ -114,12 +118,12 @@ import { MillingModeSelector } from '@/src/shared/components/design/MillingModeS
 import { useDesignAutosave, type ClientSettingsGetter } from '@/src/features/design/hooks/useDesignAutosave';
 import { UploadScansModal } from '@/src/features/projects/components/UploadScansModal';
 import { useRouter } from 'next/navigation';
-import { Check, Loader2, AlertCircle, ArrowUp, ArrowDown, ArrowLeft, ArrowRight } from 'lucide-react';
+import { Check, Loader2, AlertCircle } from 'lucide-react';
 import { flushSync } from 'react-dom';
 
 type SavedBottomTextState = { text: string; sizeMm: number; depthMm: number };
 
-type ElementEditMode = 'move' | 'scale' | 'trimline' | 'box' | null;
+type ElementEditMode = 'scale' | 'trimline' | 'box' | null;
 const ELEMENT_MOVE_STEP_UV = 0.01;
 const ELEMENT_SCALE_STEP = 0.06;
 const ELEMENT_SCALE_MIN = 0.2;
@@ -220,14 +224,7 @@ const EnhancedSTLViewer = dynamic(
 		),
 	{
 		ssr: false,
-		loading: () => (
-			<div className="flex h-full items-center justify-center bg-gray-900">
-				<div className="text-center">
-					<div className="mb-2 h-8 w-8 animate-spin rounded-full border-2 border-ui-accent border-t-transparent mx-auto" />
-					<p className="text-ui-muted">3D Viewer laden...</p>
-				</div>
-			</div>
-		),
+		loading: () => null,
 	}
 );
 
@@ -816,6 +813,10 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const [pointPickFoot, setPointPickFoot] = useState<'right' | 'left'>('right');
 	const [rightPointSelections, setRightPointSelections] = useState<PickSelections>({});
 	const [leftPointSelections, setLeftPointSelections] = useState<PickSelections>({});
+	const pickedPointsForViewer = useMemo(
+		() => Object.values(pointPickFoot === 'right' ? rightPointSelections : leftPointSelections),
+		[pointPickFoot, rightPointSelections, leftPointSelections],
+	);
 	const [scansActive, setScansActive] = useState(false);
 	const [showOverlays, setShowOverlays] = useState(false);
 	const [soleWidthOverrideRatio, setSoleWidthOverrideRatio] = useState<{
@@ -1213,6 +1214,21 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 
 	const isEvaMethod = productionMethod === 'Frezen: EVA';
 
+	const prevStep3SideRef = useRef<'left' | 'right' | null>(null);
+	useEffect(() => {
+		if (activeDesignStep !== 3 || isEvaMethod) {
+			prevStep3SideRef.current = null;
+			return;
+		}
+		const prev = prevStep3SideRef.current;
+		prevStep3SideRef.current = step3Side;
+		if (prev === null || prev === step3Side) return;
+		const handle = requestAnimationFrame(() => {
+			viewerRef.current?.focusOnSide(step3Side);
+		});
+		return () => cancelAnimationFrame(handle);
+	}, [step3Side, activeDesignStep, isEvaMethod]);
+
 	const captureCncPreviewGeometry = useCallback(() => {
 		const left = viewerRef.current?.getExportInsoleGeometryMm('left') ?? null;
 		const right = viewerRef.current?.getExportInsoleGeometryMm('right') ?? null;
@@ -1308,7 +1324,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 
 	const [selectedBaseSTL, setSelectedBaseSTL] = useState<string | null>(null);
 	const [corrections, setCorrections] = useState<OntwerpCorrections>(createDefaultOntwerpCorrections);
-	const [, startCorrectionsTransition] = useTransition();
+	const [isCorrectionsPending, startCorrectionsTransition] = useTransition();
 	const [elementsModalOpen, setElementsModalOpen] = useState(false);
 	const [elementsModalSide, setElementsModalSide] = useState<'left' | 'right'>('left');
 	const placedElements = useElementsStore((state) => state.placedElements);
@@ -1333,8 +1349,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	});
 	const pendingElementTrimlineHandleProfileRef = useRef<TrimlineHandleProfile | null>(null);
 	const pendingElementBoxOffsetsRef = useRef<BoxGridSavedOffsets | null>(null);
-	const elementTrimlinePanelSyncRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-	const [, forceElementTrimlinePanelSync] = useState(0);
 	const elementBoxSnapshotRef = useRef<BoxGridSavedOffsets | null>(null);
 	const leftPlacedElements = useMemo(
 		() => placedElements.filter((el) => el.side === 'left'),
@@ -1353,14 +1367,26 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 
 	const effectiveLeftPlacedElements = useMemo(() => {
 		const vloeien = isEvaMethod ? cncState.evaSettings.elementsFlow : step3Left.elementsVloeien;
-		if (!vloeien) return leftPlacedElements;
-		return leftPlacedElements.map((el) => el.floorMode === 'sole' ? el : { ...el, floorMode: 'sole' as const });
+		const normalized = leftPlacedElements.map((el) => {
+			const floor = normalizeElementFloorMode(el.floorMode);
+			return floor === el.floorMode ? el : { ...el, floorMode: floor };
+		});
+		if (!vloeien) return normalized;
+		return normalized.map((el) =>
+			el.floorMode === 'sole' ? el : { ...el, floorMode: 'sole' as const },
+		);
 	}, [leftPlacedElements, isEvaMethod, cncState.evaSettings.elementsFlow, step3Left.elementsVloeien]);
 
 	const effectiveRightPlacedElements = useMemo(() => {
 		const vloeien = isEvaMethod ? cncState.evaSettings.elementsFlow : step3Right.elementsVloeien;
-		if (!vloeien) return rightPlacedElements;
-		return rightPlacedElements.map((el) => el.floorMode === 'sole' ? el : { ...el, floorMode: 'sole' as const });
+		const normalized = rightPlacedElements.map((el) => {
+			const floor = normalizeElementFloorMode(el.floorMode);
+			return floor === el.floorMode ? el : { ...el, floorMode: floor };
+		});
+		if (!vloeien) return normalized;
+		return normalized.map((el) =>
+			el.floorMode === 'sole' ? el : { ...el, floorMode: 'sole' as const },
+		);
 	}, [rightPlacedElements, isEvaMethod, cncState.evaSettings.elementsFlow, step3Right.elementsVloeien]);
 
 	const viewerHeelEdgeThicknessMm = useMemo(
@@ -1370,6 +1396,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		}),
 		[isEvaMethod, cncState.evaSettings.heelEdgeThicknessMm, step3Left.heelEdgeThicknessMm, step3Right.heelEdgeThicknessMm]
 	);
+	const deferredCorrections = useDeferredValue(corrections);
+	const deferredHeelEdgeThicknessMm = useDeferredValue(viewerHeelEdgeThicknessMm);
 	const viewerSelectedElementTrimlineEdit = useMemo(() => {
 		if (!elementTrimlineEditId || !selectedPlacedElement || selectedPlacedElement.id !== elementTrimlineEditId) {
 			return null;
@@ -1394,13 +1422,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			savedOffsets: pendingElementBoxOffsets,
 		};
 	}, [selectedPlacedElement, elementEditMode, elementBoxEditId, pendingElementBoxOffsets]);
-	const viewerElementPlacementMode = useMemo(() => {
-		if (!selectedPlacedElement || elementEditMode !== 'move') return null;
-		return {
-			elementId: selectedPlacedElement.id,
-			side: selectedPlacedElement.side,
-		};
-	}, [selectedPlacedElement, elementEditMode]);
 	const [activeCorrections, setActiveCorrections] = useState<CorrectionKey[]>(
 		DEFAULT_ACTIVE_CORRECTIONS
 	);
@@ -1442,7 +1463,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			elementBoxSnapshotRef.current = null;
 		}
 		setElementEditMode(mode);
-		if (mode === 'box' || mode === 'scale' || mode === 'trimline' || mode === 'move') {
+		if (mode === 'box' || mode === 'scale' || mode === 'trimline') {
 			setViewerViewPreset('top');
 		}
 	}, [selectedPlacedElement, elementTrimlineEditId, elementBoxEditId]);
@@ -1511,7 +1532,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		}
 	}, [selectedPlacedElement]);
 	useEffect(() => {
-		if (!selectedPlacedElement || elementEditMode !== 'move') return;
+		if (!selectedPlacedElement || activeDesignStep === 3) return;
+		if (elementEditMode === 'box' || elementEditMode === 'trimline') return;
 
 		const handleKeyDown = (event: KeyboardEvent) => {
 			const target = event.target as HTMLElement | null;
@@ -1537,7 +1559,12 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 
 		window.addEventListener('keydown', handleKeyDown);
 		return () => window.removeEventListener('keydown', handleKeyDown);
-	}, [elementEditMode, nudgeSelectedElement, selectedPlacedElement]);
+	}, [
+		activeDesignStep,
+		elementEditMode,
+		nudgeSelectedElement,
+		selectedPlacedElement,
+	]);
 	useEffect(() => {
 		if (!selectedPlacedElement || elementEditMode !== 'scale') return;
 
@@ -1617,18 +1644,18 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		sizeMm: 10,
 		depthMm: 0.6,
 	});
-	const [bottomTextMeshOk, setBottomTextMeshOk] = useState<{ left: boolean; right: boolean }>({
-		left: true,
-		right: true,
-	});
-	const [bottomTextIssue, setBottomTextIssue] = useState<{
-		left?: string;
-		right?: string;
-	}>({});
+	const [textValidityTick, bumpTextValidityForEditor] = useState(0);
+	const bottomTextMeshOkRef = useRef({ left: true, right: true });
+	const bottomTextIssueRef = useRef<{ left?: string; right?: string }>({});
+	const textEditorOpenRef = useRef(false);
 	const [bottomTextLoadingBySide, setBottomTextLoadingBySide] = useState<{
 		left: boolean;
 		right: boolean;
 	}>({ left: false, right: false });
+
+	useEffect(() => {
+		textEditorOpenRef.current = textEditorOpen;
+	}, [textEditorOpen]);
 
 	const [selectedInsoleSide, setSelectedInsoleSide] = useState<'left' | 'right' | null>(null);
 	const [boxEnabled, setBoxEnabled] = useState<{ left: boolean; right: boolean }>({
@@ -1700,30 +1727,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const [scanRotateEditSide, setScanRotateEditSide] = useState<'left' | 'right' | null>(
 		null,
 	);
-	const trimlinePanelSyncRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-	const [, forceTrimlinePanelSync] = useState(0);
-
-	const scheduleElementTrimlinePanelSync = useCallback(() => {
-		if (elementTrimlinePanelSyncRef.current) return;
-		elementTrimlinePanelSyncRef.current = setTimeout(() => {
-			elementTrimlinePanelSyncRef.current = null;
-			forceElementTrimlinePanelSync((value) => value + 1);
-		}, 90);
-	}, []);
-
-	const scheduleTrimlinePanelSync = useCallback(() => {
-		if (trimlinePanelSyncRef.current) return;
-		trimlinePanelSyncRef.current = setTimeout(() => {
-			trimlinePanelSyncRef.current = null;
-			forceTrimlinePanelSync((value) => value + 1);
-		}, 90);
-	}, []);
-	const primeBottomTextLoading = useCallback(() => {
-		setBottomTextLoadingBySide({
-			left: Boolean(selectedBaseInsoleAssets.leftUrl),
-			right: Boolean(selectedBaseInsoleAssets.rightUrl),
-		});
-	}, [selectedBaseInsoleAssets.leftUrl, selectedBaseInsoleAssets.rightUrl]);
 	const resetBottomTextLoading = useCallback(() => {
 		setBottomTextLoadingBySide({ left: false, right: false });
 	}, []);
@@ -1739,13 +1742,19 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	}, []);
 	const handleBottomTextValidityChange = useCallback(
 		(payload: { side: 'left' | 'right'; ok: boolean; reason?: string }) => {
-			setBottomTextMeshOk((prev) =>
-				prev[payload.side] === payload.ok ? prev : { ...prev, [payload.side]: payload.ok },
-			);
-			setBottomTextIssue((prev) => ({
-				...prev,
-				[payload.side]: payload.ok ? undefined : payload.reason,
-			}));
+			const { side: textSide, ok } = payload;
+			const prevOk = bottomTextMeshOkRef.current[textSide];
+			const prevIssue = bottomTextIssueRef.current[textSide];
+			bottomTextMeshOkRef.current = { ...bottomTextMeshOkRef.current, [textSide]: ok };
+			const nextIssue = ok ? undefined : payload.reason;
+			bottomTextIssueRef.current = {
+				...bottomTextIssueRef.current,
+				[textSide]: nextIssue,
+			};
+			if (!textEditorOpenRef.current) return;
+			if (prevOk !== ok || prevIssue !== nextIssue) {
+				bumpTextValidityForEditor((n) => n + 1);
+			}
 		},
 		[],
 	);
@@ -1802,7 +1811,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 					savedBottomText: savedBottomText ? { ...savedBottomText } : null,
 					draftBottomText: { ...initialBottomText },
 				};
-				primeBottomTextLoading();
 				setLeftPanelTab('view');
 				setViewerViewPreset('bottom');
 				setDraftBottomText(initialBottomText);
@@ -1811,7 +1819,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			}
 			return next;
 		});
-	}, [primeBottomTextLoading, savedBottomText]);
+	}, [savedBottomText]);
 
 	useEffect(() => {
 		pendingTrimlineAdjRef.current = pendingTrimlineAdj;
@@ -1825,6 +1833,77 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		pendingScanManualAlignmentsRef.current = pendingScanManualAlignments;
 	}, [pendingScanManualAlignments]);
 
+	const handleViewerSelectInsoleSide = useCallback((s: 'left' | 'right') => {
+		setSelectedInsoleSide(s);
+	}, []);
+	const handleViewerDeselectInsoleSide = useCallback(() => {
+		setSelectedInsoleSide(null);
+	}, []);
+	const handleViewerReady = useCallback(() => {
+		setIsViewerReady(true);
+	}, []);
+	const handlePrintZoneClickViewer = useCallback(
+		(zone: 'front' | 'middle' | 'back', sideSel: 'left' | 'right') => {
+			setSelectedZone(zone);
+			setStep3Side(sideSel);
+			selectPlacedElement(null);
+		},
+		[selectPlacedElement],
+	);
+	const handlePrintWholeInsoleClickViewer = useCallback(
+		(sideSel: 'left' | 'right') => {
+			printInteraction.onPrepWholeInsoleClick(sideSel);
+			setStep3Side(sideSel);
+			setSelectedZone(null);
+			selectPlacedElement(null);
+		},
+		[printInteraction, selectPlacedElement],
+	);
+	const handlePrintElementClickViewer = useCallback(
+		(elementId: string, sideSel: 'left' | 'right') => {
+			selectPlacedElement(elementId);
+			setStep3Side(sideSel);
+			setSelectedZone(null);
+			printInteraction.resetHover();
+		},
+		[printInteraction, selectPlacedElement],
+	);
+	const handleDesignElementClickViewer = useCallback(
+		(elementId: string, _sideSel: 'left' | 'right') => {
+			selectPlacedElement(elementId);
+		},
+		[selectPlacedElement],
+	);
+	const handlePrintInteractionDeselectViewer = useCallback(() => {
+		printInteraction.deselectInteraction();
+		setSelectedZone(null);
+		selectPlacedElement(null);
+	}, [printInteraction, selectPlacedElement]);
+	const handlePendingScanAlignmentChangeViewer = useCallback(
+		(sideSel: 'left' | 'right', alignment: ScanManualAlignment | null) => {
+			setPendingScanManualAlignments((prev) => ({
+				...prev,
+				[sideSel]: alignment,
+			}));
+		},
+		[],
+	);
+	const handlePendingTrimlineProfileViewer = useCallback(
+		(sideSel: 'left' | 'right', profile: TrimlineHandleProfile) => {
+			const next = cloneTrimlineProfile(profile);
+			pendingTrimlineHandleProfilesRef.current = {
+				...pendingTrimlineHandleProfilesRef.current,
+				[sideSel]: next,
+			};
+			setPendingTrimlineHandleProfiles((prev) => ({ ...prev, [sideSel]: next }));
+		},
+		[],
+	);
+	const handlePendingElementTrimlineProfileViewer = useCallback((profile: TrimlineHandleProfile) => {
+		const next = cloneTrimlineProfile(profile);
+		pendingElementTrimlineHandleProfileRef.current = next;
+		setPendingElementTrimlineHandleProfile(next);
+	}, []);
 	const editorTrimlineHandleProfiles = useMemo(() => {
 		if (!trimlineEditSide) return trimlineHandleProfiles;
 		return {
@@ -1832,13 +1911,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			[trimlineEditSide]: pendingTrimlineHandleProfiles[trimlineEditSide],
 		};
 	}, [trimlineEditSide, trimlineHandleProfiles, pendingTrimlineHandleProfiles]);
-
-	useEffect(() => {
-		return () => {
-			if (trimlinePanelSyncRef.current) clearTimeout(trimlinePanelSyncRef.current);
-			if (elementTrimlinePanelSyncRef.current) clearTimeout(elementTrimlinePanelSyncRef.current);
-		};
-	}, []);
 
 	const bottomTextOverlay: BottomTextOverlay | undefined = useMemo(() => {
 		if (!activeCorrections.includes('tekst')) return undefined;
@@ -1864,11 +1936,12 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 
 	useEffect(() => {
 		if (!(textEditorOpen && activeCorrections.includes('tekst'))) return;
-		setBottomTextMeshOk({
+		bottomTextMeshOkRef.current = {
 			left: !selectedBaseInsoleAssets.leftUrl,
 			right: !selectedBaseInsoleAssets.rightUrl,
-		});
-		setBottomTextIssue({});
+		};
+		bottomTextIssueRef.current = {};
+		bumpTextValidityForEditor((n) => n + 1);
 	}, [
 		textEditorOpen,
 		activeCorrections,
@@ -1876,22 +1949,33 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		selectedBaseInsoleAssets.rightUrl,
 	]);
 
-	const textEditSaveDisabled =
-		(Boolean(selectedBaseInsoleAssets.leftUrl) && !bottomTextMeshOk.left) ||
-		(Boolean(selectedBaseInsoleAssets.rightUrl) && !bottomTextMeshOk.right);
+	const textEditSaveDisabled = useMemo(() => {
+		void textValidityTick;
+		const ok = bottomTextMeshOkRef.current;
+		return (
+			(Boolean(selectedBaseInsoleAssets.leftUrl) && !ok.left) ||
+			(Boolean(selectedBaseInsoleAssets.rightUrl) && !ok.right)
+		);
+	}, [
+		textValidityTick,
+		selectedBaseInsoleAssets.leftUrl,
+		selectedBaseInsoleAssets.rightUrl,
+	]);
 
 	const textEditWarning = useMemo(() => {
+		void textValidityTick;
+		const issue = bottomTextIssueRef.current;
 		const parts: string[] = [];
 		const label = { left: 'Links', right: 'Rechts' } as const;
-		(['left', 'right'] as const).forEach((side) => {
-			const r = bottomTextIssue[side];
+		(['left', 'right'] as const).forEach((issueSide) => {
+			const r = issue[issueSide];
 			if (!r) return;
-			if (r === 'font_loading') parts.push(`${label[side]}: lettertype laden…`);
-			else if (r === 'csg_failed') parts.push(`${label[side]}: gravering mislukt`);
-			else parts.push(`${label[side]}: geometrie niet gevalideerd`);
+			if (r === 'font_loading') parts.push(`${label[issueSide]}: lettertype laden…`);
+			else if (r === 'csg_failed') parts.push(`${label[issueSide]}: gravering mislukt`);
+			else parts.push(`${label[issueSide]}: geometrie niet gevalideerd`);
 		});
 		return parts.length ? parts.join(' ') : null;
-	}, [bottomTextIssue]);
+	}, [textValidityTick]);
 
 	useEffect(() => {
 		const timer = setTimeout(() => {
@@ -1905,10 +1989,38 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		resetBottomTextLoading();
 	}, [activeCorrections, resetBottomTextLoading]);
 
-	const isBottomTextLoading = activeCorrections.includes('tekst') && (
-		bottomTextLoadingBySide.left || bottomTextLoadingBySide.right
-	);
+	const textLoadingRaw =
+		textEditorOpen &&
+		activeCorrections.includes('tekst') &&
+		(bottomTextLoadingBySide.left || bottomTextLoadingBySide.right);
+	const textLoadingDebounced = useDebouncedLoading(textLoadingRaw);
 
+	const viewerBlockingOverlayMode = useMemo(() => {
+		if (!isViewerReady) return { kind: 'boot' } as const;
+		if (isFitting) {
+			return { kind: 'fitting', message: 'Berekenen… steunzool wordt aangepast' } as const;
+		}
+		if (autoDetectStatus === 'detecting') {
+			return {
+				kind: 'autoDetect',
+				message: autoDetectMessage || 'Landmarks automatisch detecteren...',
+			} as const;
+		}
+		if (textLoadingDebounced) {
+			return {
+				kind: 'textEditing',
+				message: 'Tekst laden op de steunzool…',
+				subtext: 'De onderkant wordt bijgewerkt met de nieuwe tekst op beide steunzolen.',
+			} as const;
+		}
+		return null;
+	}, [
+		isViewerReady,
+		isFitting,
+		autoDetectStatus,
+		autoDetectMessage,
+		textLoadingDebounced,
+	]);
 	const mirrorCorrectionsToOtherSide = useCallback(
 		(from: 'left' | 'right') => {
 			if (!corrections) return;
@@ -3121,133 +3233,15 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 									<h4 className="text-sm font-semibold text-ui-accent">
 										Algemeen
 									</h4>
-									<div className="mt-3 space-y-2 text-sm">
-										<div className="rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
-											<div className="flex items-center justify-between">
-												<span>Schoenmaat</span>
-												<span className="text-[11px] text-ui-muted">Links / Rechts</span>
-											</div>
-											<div className="mt-2 grid grid-cols-2 gap-2">
-												<input
-													type="number"
-													inputMode="decimal"
-													className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
-													value={generalNormalized.shoeSize.left}
-													onChange={(e) =>
-														updateGeneral({
-															shoeSize: {
-																...generalNormalized.shoeSize,
-																left: Number(e.target.value),
-															},
-														})
-													}
-													min={10}
-													max={60}
-													step={0.5}
-												/>
-												<input
-													type="number"
-													inputMode="decimal"
-													className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
-													value={generalNormalized.shoeSize.right}
-													onChange={(e) =>
-														updateGeneral({
-															shoeSize: {
-																...generalNormalized.shoeSize,
-																right: Number(e.target.value),
-															},
-														})
-													}
-													min={10}
-													max={60}
-													step={0.5}
-												/>
-											</div>
-										</div>
-										<div className="rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
-											<div className="flex items-center justify-between">
-												<span>Zooldikte</span>
-												<span className="text-[11px] text-ui-muted">Links / Rechts (mm)</span>
-											</div>
-											<div className="mt-2 grid grid-cols-2 gap-2">
-												<input
-													type="number"
-													inputMode="decimal"
-													className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
-													value={generalNormalized.soleThicknessMm.left}
-													onChange={(e) =>
-														updateGeneral({
-															soleThicknessMm: {
-																...generalNormalized.soleThicknessMm,
-																left: Number(e.target.value),
-															},
-														})
-													}
-													min={0.5}
-													max={10}
-													step={0.5}
-												/>
-												<input
-													type="number"
-													inputMode="decimal"
-													className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
-													value={generalNormalized.soleThicknessMm.right}
-													onChange={(e) =>
-														updateGeneral({
-															soleThicknessMm: {
-																...generalNormalized.soleThicknessMm,
-																right: Number(e.target.value),
-															},
-														})
-													}
-													min={0.5}
-													max={10}
-													step={0.5}
-												/>
-											</div>
-										</div>
-										<div className="rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
-											<div className="flex items-center justify-between">
-												<span>Steunzolen hoogte</span>
-												<span className="text-[11px] text-ui-muted">Links / Rechts (mm)</span>
-											</div>
-											<div className="mt-2 grid grid-cols-2 gap-2">
-												<input
-													type="number"
-													inputMode="decimal"
-													className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
-													value={generalNormalized.maxInsoleHeightMm.left}
-													onChange={(e) =>
-														updateGeneral({
-															maxInsoleHeightMm: {
-																...generalNormalized.maxInsoleHeightMm,
-																left: Number(e.target.value),
-															},
-														})
-													}
-													min={1}
-													max={40}
-													step={0.5}
-												/>
-												<input
-													type="number"
-													inputMode="decimal"
-													className="w-full rounded-md border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-right text-sm text-ui-text"
-													value={generalNormalized.maxInsoleHeightMm.right}
-													onChange={(e) =>
-														updateGeneral({
-															maxInsoleHeightMm: {
-																...generalNormalized.maxInsoleHeightMm,
-																right: Number(e.target.value),
-															},
-														})
-													}
-													min={1}
-													max={40}
-													step={0.5}
-												/>
-											</div>
-										</div>
+									<div className="mt-3 text-sm">
+										<GeneralParamsFields
+											values={{
+												shoeSize: generalNormalized.shoeSize,
+												soleThicknessMm: generalNormalized.soleThicknessMm,
+												maxInsoleHeightMm: generalNormalized.maxInsoleHeightMm,
+											}}
+											onCommit={updateGeneral}
+										/>
 									</div>
 								</div>
 
@@ -3354,7 +3348,9 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								}
 								heelEdgeThicknessMm={s.heelEdgeThicknessMm}
 								onHeelEdgeChange={(v) =>
-									setStep3Current((prev) => ({ ...prev, heelEdgeThicknessMm: v }))
+									startCorrectionsTransition(() =>
+										setStep3Current((prev) => ({ ...prev, heelEdgeThicknessMm: v }))
+									)
 								}
 								elementsSplit={s.elementsSplit}
 								onToggleSplit={() => {
@@ -3554,9 +3550,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								>
 									Direct produceren
 								</Button>
-								<Button className="w-full" variant="outline" disabled>
-									Plaats in productie
-								</Button>
 							</div>
 						</CardContent>
 					</Card>
@@ -3614,7 +3607,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								hideScans={false}
 								pointPickMode
 								onPickPoint={handlePointPicked}
-								pickedPoints={Object.values(pointPickFoot === 'right' ? rightPointSelections : leftPointSelections)}
+								pickedPoints={pickedPointsForViewer}
 							/>
 							{crosshair && (
 								<>
@@ -3760,7 +3753,12 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 					)}
 
 					{workflowStep === 'base' && (
-						<div className="relative h-full w-full">
+						<div
+							className={cn(
+								'relative h-full w-full transition-opacity duration-150',
+								isCorrectionsPending && isViewerReady && 'opacity-[0.93]'
+							)}
+						>
 							{/* When CNC planning is active, show fixture layout */}
 							{isEvaMethod && cncPlanningActive ? (
 								<CncFixtureView
@@ -3800,20 +3798,16 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										controlMode={viewerControlMode}
 										analysisEnabled={leftPanelTab === 'analysis'}
 										onProbe={handleAnalysisProbe}
-										corrections={corrections}
+										corrections={deferredCorrections}
 										activeCorrections={activeCorrections}
 										bottomTextOverlay={bottomTextOverlay}
 										textPlacementEnabled={false}
 										selectedSide={activeDesignStep === 3 ? null : selectedInsoleSide}
-										onSelectSide={activeDesignStep === 3 ? undefined : (side) => setSelectedInsoleSide(side)}
-										onDeselectSide={activeDesignStep === 3 ? undefined : () => setSelectedInsoleSide(null)}
+										onSelectSide={activeDesignStep === 3 ? undefined : handleViewerSelectInsoleSide}
+										onDeselectSide={activeDesignStep === 3 ? undefined : handleViewerDeselectInsoleSide}
 										onZoneClick={
 											activeDesignStep === 3 && !isEvaMethod && step3Current.elementsSplit
-												? (zone, side) => {
-														setSelectedZone(zone);
-														setStep3Side(side);
-														selectPlacedElement(null);
-													}
+												? handlePrintZoneClickViewer
 												: undefined
 										}
 										printPrepInteractive={activeDesignStep === 3 && !isEvaMethod}
@@ -3827,39 +3821,34 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										onPrintPrepZoneHover={printInteraction.onPrepZoneHover}
 										onPrintWholeInsoleClick={
 											activeDesignStep === 3 && !isEvaMethod && !step3Current.elementsSplit
-												? (side) => {
-														printInteraction.onPrepWholeInsoleClick(side);
-														setStep3Side(side);
-														setSelectedZone(null);
-														selectPlacedElement(null);
-													}
+												? handlePrintWholeInsoleClickViewer
 												: undefined
 										}
 										onPrintElementClick={
 											activeDesignStep === 3 && !isEvaMethod
-												? (elementId, side) => {
-														selectPlacedElement(elementId);
-														setStep3Side(side);
-														setSelectedZone(null);
-														printInteraction.resetHover();
-													}
-												: undefined
+												? handlePrintElementClickViewer
+												: (activeDesignStep === 1 || activeDesignStep === 2) && !isEvaMethod
+													? handleDesignElementClickViewer
+													: undefined
 										}
 										printSelectedElementId={
-											activeDesignStep === 3 ? selectedElementId : null
+											activeDesignStep === 3 ||
+											activeDesignStep === 1 ||
+											activeDesignStep === 2
+												? selectedElementId
+												: null
+										}
+										printElementSelectionHighlight={
+											activeDesignStep === 3 && !isEvaMethod
 										}
 										onPrintInteractionDeselect={
 											activeDesignStep === 3 && !isEvaMethod
-												? () => {
-														printInteraction.deselectInteraction();
-														setSelectedZone(null);
-														selectPlacedElement(null);
-													}
+												? handlePrintInteractionDeselectViewer
 												: undefined
 										}
 										boxEnabled={boxEnabled}
 										gridEditMode={isSelectedGridModeOn || isElementBoxGridModeOn}
-										heelEdgeThicknessMm={viewerHeelEdgeThicknessMm}
+										heelEdgeThicknessMm={deferredHeelEdgeThicknessMm}
 										savedBoxGridOffsets={boxGridPoints}
 										onBoxGridSave={handleBoxGridSave}
 										leftPlacedElements={effectiveLeftPlacedElements}
@@ -3872,129 +3861,26 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										scanRotateEditSide={scanRotateEditSide}
 										scanManualAlignments={scanManualAlignments}
 										editorScanManualAlignments={pendingScanManualAlignments}
-										onPendingScanAlignmentChange={(side, alignment) => {
-											const nextAlignment = alignment;
-											pendingScanManualAlignmentsRef.current = {
-												...pendingScanManualAlignmentsRef.current,
-												[side]: nextAlignment,
-											};
-											setPendingScanManualAlignments((prev) => ({
-												...prev,
-												[side]: nextAlignment,
-											}));
-										}}
-										onPendingTrimlineProfileChange={(side, profile) => {
-											const next = cloneTrimlineProfile(profile);
-											pendingTrimlineHandleProfilesRef.current = {
-												...pendingTrimlineHandleProfilesRef.current,
-												[side]: next,
-											};
-											setPendingTrimlineHandleProfiles((prev) => ({ ...prev, [side]: next }));
-											scheduleTrimlinePanelSync();
-										}}
+										onPendingScanAlignmentChange={handlePendingScanAlignmentChangeViewer}
+										onPendingTrimlineProfileChange={handlePendingTrimlineProfileViewer}
 										selectedElementTrimlineEdit={viewerSelectedElementTrimlineEdit}
-										onPendingElementTrimlineProfileChange={(profile) => {
-											const next = cloneTrimlineProfile(profile);
-											pendingElementTrimlineHandleProfileRef.current = next;
-											setPendingElementTrimlineHandleProfile(next);
-											scheduleElementTrimlinePanelSync();
-										}}
+										onPendingElementTrimlineProfileChange={handlePendingElementTrimlineProfileViewer}
 										selectedElementBoxEdit={viewerSelectedElementBoxEdit}
 										onElementBoxGridSave={handleElementBoxGridSave}
-										onReady={() => setIsViewerReady(true)}
+										onReady={handleViewerReady}
 										onBottomTextLoadingChange={handleBottomTextLoadingChange}
 										onBottomTextValidityChange={handleBottomTextValidityChange}
 										disableInteraction={
 											!scansActive || (!!selectedPlacedElement && activeDesignStep !== 3)
 										}
-										elementPlacementMode={viewerElementPlacementMode}
-										onElementPlace={selectedPlacedElement ? ({ side, u, v }) => {
-											if (selectedPlacedElement.side !== side) return;
-											updatePlacedElement(selectedPlacedElement.id, { positionU: u, positionV: v });
-											setElementEditMode(null);
-										} : undefined}
 									/>
-									{/* ── Viewer loading overlay ── */}
-									{!isViewerReady && (
-										<div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-gray-900/80 backdrop-blur-sm">
-											{/* Animated insole silhouette */}
-											<div className="relative mb-6">
-												<svg width="80" height="160" viewBox="0 0 80 160" className="animate-insole-shimmer drop-shadow-[0_0_24px_rgba(99,247,214,0.25)]">
-													<path
-														d="M40 8 C22 8 14 28 12 48 C10 68 12 88 16 108 C20 128 28 148 40 152 C52 148 60 128 64 108 C68 88 70 68 68 48 C66 28 58 8 40 8Z"
-														fill="none"
-														stroke="var(--ui-accent)"
-														strokeWidth="1.5"
-														opacity="0.6"
-													/>
-													<path
-														d="M40 16 C26 16 20 32 18 48 C16 64 18 84 22 104 C26 124 32 140 40 144 C48 140 54 124 58 104 C62 84 64 64 62 48 C60 32 54 16 40 16Z"
-														fill="var(--ui-accent)"
-														opacity="0.08"
-													/>
-												</svg>
-												{/* Orbiting dot */}
-												<div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-													<div className="animate-orbit-dot">
-														<div className="h-2 w-2 rounded-full bg-ui-accent shadow-[0_0_8px_rgba(99,247,214,0.6)]" />
-													</div>
-												</div>
-											</div>
-											<p className="animate-fade-in-up text-sm font-medium text-ui-muted">
-												3D model laden…
-											</p>
-											{/* Progress bar */}
-											<div className="mt-3 h-0.5 w-32 overflow-hidden rounded-full bg-ui-border/40">
-												<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
-											</div>
-										</div>
-									)}
-									{/* ── Fitting / processing overlay ── */}
-									{isFitting && (
-										<div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-900/50 backdrop-blur-[2px]">
-											<div className="animate-fade-in-up flex flex-col items-center gap-3 rounded-2xl border border-ui-border bg-ui-panel/95 px-6 py-5 shadow-xl">
-												<div className="relative h-8 w-8">
-													<div className="absolute inset-0 rounded-full border-2 border-ui-border" />
-													<div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ui-accent" />
-												</div>
-												<p className="text-xs font-semibold text-ui-text">Berekenen… steunzool wordt aangepast</p>
-												<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
-													<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
-												</div>
-											</div>
-										</div>
-									)}
-									{isBottomTextLoading && !isFitting && autoDetectStatus !== 'detecting' && (
-										<div className="absolute inset-0 z-35 flex items-center justify-center bg-gray-900/55 backdrop-blur-[2px]">
-											<div className="animate-fade-in-up flex flex-col items-center gap-3 rounded-2xl border border-ui-border bg-ui-panel/95 px-6 py-5 shadow-xl">
-												<div className="relative h-8 w-8">
-													<div className="absolute inset-0 rounded-full border-2 border-ui-border" />
-													<div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ui-accent" />
-												</div>
-												<p className="text-xs font-semibold text-ui-text">Tekst laden op de steunzool…</p>
-												<p className="text-center text-[11px] text-ui-muted">De onderkant wordt bijgewerkt met de nieuwe tekst op beide steunzolen.</p>
-												<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
-													<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
-												</div>
-											</div>
-										</div>
-									)}
-									{autoDetectStatus === 'detecting' && !isFitting && (
-										<div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-900/40 backdrop-blur-[1px]">
-											<div className="animate-fade-in-up flex flex-col items-center gap-3 rounded-2xl border border-ui-border bg-ui-panel/95 px-6 py-5 shadow-xl">
-												<div className="relative h-8 w-8">
-													<div className="absolute inset-0 rounded-full border-2 border-ui-border" />
-													<div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-ui-accent" />
-												</div>
-												<p className="text-xs font-semibold text-ui-text">
-													{autoDetectMessage || 'Landmarks automatisch detecteren...'}
-												</p>
-												<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
-													<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
-												</div>
-											</div>
-										</div>
-									)}
+									{isCorrectionsPending && isViewerReady ? (
+										<div
+											className="pointer-events-none absolute left-1/2 top-2 z-[45] h-0.5 w-40 -translate-x-1/2 rounded-full bg-ui-accent/50"
+											aria-hidden
+										/>
+									) : null}
+									<ViewerStatusOverlay mode={viewerBlockingOverlayMode} />
 									{autoDetectStatus === 'success' && !isFitting && (
 										<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-emerald-500/30 bg-emerald-950/80 px-4 py-2 text-xs font-semibold text-emerald-300 shadow-lg">
 											✓ {autoDetectMessage}
@@ -4034,8 +3920,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										analysisSide={analysisProbe?.side ?? null}
 										className="absolute left-6 top-6 z-20"
 									/>
-									{/* Element action panel – bottom-right corner of canvas */}
-									{selectedPlacedElement && !selectedInsoleSide && (
+									{/* Element action panel – bottom-right corner of canvas (hidden in print step) */}
+									{selectedPlacedElement && !selectedInsoleSide && activeDesignStep !== 3 && (
 										<ElementActionsPanel
 											element={selectedPlacedElement}
 											editMode={elementEditMode}
@@ -4043,43 +3929,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 											className="absolute bottom-6 right-6 z-20 w-[280px]"
 										/>
 									)}
-									{selectedPlacedElement && !selectedInsoleSide && elementEditMode === 'move' && (
-										<div className="absolute bottom-6 right-[310px] z-20 ui-overlay-card w-[320px] rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
-											<div className="flex items-center justify-between">
-												<div>
-													<div className="text-[11px] font-semibold uppercase tracking-wide text-(--ui-muted)">Verplaatsen</div>
-													<div className="mt-0.5 text-xs text-(--ui-muted)">Gebruik de pijlen of pijltjestoetsen om het element te verplaatsen</div>
-												</div>
-												<button type="button" onClick={() => setElementEditMode(null)} className="rounded-lg border border-(--ui-border) px-3 py-1.5 text-xs text-(--ui-text)">Annuleren</button>
-											</div>
-											<div className="mt-4 flex justify-center">
-												<div className="grid grid-cols-3 gap-2">
-													<div />
-													<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('up'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Voor">
-														<ArrowUp className="h-4 w-4" />
-													</button>
-													<div />
-													<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('left'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Links">
-														<ArrowLeft className="h-4 w-4" />
-													</button>
-													<div className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.02)] text-[10px] font-semibold uppercase tracking-wide text-(--ui-muted)">Move</div>
-													<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('right'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Rechts">
-														<ArrowRight className="h-4 w-4" />
-													</button>
-													<div />
-													<button type="button" onPointerDown={(e) => { e.preventDefault(); nudgeSelectedElement('down'); }} className="flex h-12 w-12 items-center justify-center rounded-xl border border-(--ui-border) bg-[rgba(255,255,255,0.04)] text-(--ui-text) transition hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.98]" aria-label="Achter">
-														<ArrowDown className="h-4 w-4" />
-													</button>
-													<div />
-												</div>
-											</div>
-											<div className="mt-3 grid grid-cols-2 gap-2 text-xs text-(--ui-muted)">
-												<div className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.02)] px-3 py-2 text-center">Links / Rechts</div>
-												<div className="rounded-lg border border-(--ui-border) bg-[rgba(255,255,255,0.02)] px-3 py-2 text-center">Voor / Achter</div>
-											</div>
-										</div>
-									)}
-									{selectedPlacedElement && !selectedInsoleSide && elementEditMode === 'scale' && (
+									{selectedPlacedElement && !selectedInsoleSide && activeDesignStep !== 3 && elementEditMode === 'scale' && (
 										<div className="absolute bottom-6 right-[310px] z-20 ui-overlay-card w-[320px] rounded-2xl border border-(--ui-border) bg-(--ui-overlay)/92 p-4 text-(--ui-text) shadow-xl backdrop-blur">
 											<div className="flex items-center justify-between gap-2">
 												<div>
@@ -4184,7 +4034,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 											</div>
 										</div>
 									)}
-									{selectedPlacedElement && !selectedInsoleSide && elementTrimlineEditId === selectedPlacedElement.id && elementEditMode === 'trimline' && (
+									{selectedPlacedElement && !selectedInsoleSide && activeDesignStep !== 3 && elementTrimlineEditId === selectedPlacedElement.id && elementEditMode === 'trimline' && (
 										<TrimlineEditCard
 											className="absolute left-6 bottom-6 z-20"
 											title="Trimline aanpassen"
@@ -4228,12 +4078,13 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										!isSelectedGridModeOn &&
 										!trimlineEditSide &&
 										!scanRotateEditSide && (
-											<GeneratedInsoleOverlay
-												selectedSide={selectedInsoleSide}
-												boxEnabled={boxEnabled}
-												onToggleBox={handleToggleBoxMode}
-												onMirrorToOther={mirrorCorrectionsToOtherSide}
-												onTrimlineEdit={(side) => {
+										<GeneratedInsoleOverlay
+											selectedSide={selectedInsoleSide}
+											boxEnabled={boxEnabled}
+											onToggleBox={handleToggleBoxMode}
+											onMirrorToOther={mirrorCorrectionsToOtherSide}
+											scanRotateAvailable={viewSettings.showModel}
+											onTrimlineEdit={(side) => {
 													setScanRotateEditSide(null);
 													setTrimlineEditSide(side);
 													pendingTrimlineAdjRef.current = { ...trimlineAdjustments };
@@ -4397,19 +4248,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								selectedPlacedElement &&
 								activeDesignStep !== 3 && (
 								<div className="absolute right-4 top-4 z-20 w-[320px]">
-									<ElementInspector
-										element={selectedPlacedElement}
-										standalone
-										editMode={elementEditMode}
-										onClose={() => selectPlacedElement(null)}
-									/>
-								</div>
-							)}
-							{leftPanelTab !== 'analysis' &&
-								!selectedInsoleSide &&
-								selectedPlacedElement &&
-								activeDesignStep === 3 && (
-								<div className="absolute right-[458px] top-4 z-20 w-[320px] max-w-[calc(100vw-500px)]">
 									<ElementInspector
 										element={selectedPlacedElement}
 										standalone

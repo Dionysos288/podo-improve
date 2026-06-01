@@ -74,7 +74,7 @@ export function getMaxForAxis(bbox: THREE.Box3, axis: string): number {
 }
 
 /**
- * Infer heel-to-toe direction: heel is typically the narrower end of the length axis.
+ * Infer heel-to-toe direction using the same wider-end heuristic as STL canonicalization.
  */
 export function createHeelToToeMapper(params: {
 	positions: THREE.BufferAttribute;
@@ -125,7 +125,7 @@ export function createHeelToToeMapper(params: {
 
 	const heelAtMin =
 		Number.isFinite(minEndWidthSpan) && Number.isFinite(maxEndWidthSpan)
-			? minEndWidthSpan <= maxEndWidthSpan
+			? minEndWidthSpan >= maxEndWidthSpan
 			: true;
 
 	return {

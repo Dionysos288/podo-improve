@@ -9,13 +9,14 @@ import {
 	forwardRef,
 	useMemo,
 	useEffect,
+	useLayoutEffect,
+	memo,
 } from 'react';
 import { Canvas, useLoader, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Text } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { TessellateModifier } from 'three/examples/jsm/modifiers/TessellateModifier.js';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import * as THREE from 'three';
 // Note: Full THREE import needed for react-three-fiber compatibility
@@ -34,12 +35,27 @@ import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpP
 import type { CorrectionKey } from '@/src/shared/components/design/correctionsCatalog';
 import type { PlacedElement } from '@/src/features/design/elements/types';
 import { applyElements, applyElementColors, buildElementOverlayGeometries, DIEPELEMENTEN_ITEMS, ELEMENTEN_ITEMS, getElementByKey, getElementPreferredStlUrl, getElementStlLoadUrls, type ElementOverlayData } from '@/src/features/design/elements';
+import { VIEWER_MATERIALS } from '@/src/features/design/viewer/viewerMaterialProfile';
+import {
+	getScanOverlayMaterialProps,
+	INSOLE_SCAN_DEPTH_PREPASS_RENDER_ORDER,
+	SCAN_OVERLAY_RENDER_ORDER,
+	type ScanOverlayViewerMode,
+} from '@/src/features/design/viewer/scanOverlayRender';
+import { tessellateAndWeldGeometry } from '@/src/features/design/viewer/smoothOverlayGeometry';
+import { applyTrimlineRimSilhouette } from '@/src/features/design/viewer/trimlineRimSilhouette';
+import { ViewerPostFX } from '@/src/features/design/viewer/ViewerPostFX';
 import type { PrintZoneId } from '@/src/features/design/print/printZones';
 import { resolvePrintZoneFromLocalPoint } from '@/src/features/design/print/printZones';
 import {
 	applyPrintSplitZoneColors,
 	removePrintPrepAttributes,
 } from '@/src/features/design/print/printZoneVisuals';
+import {
+	getViewerPerfSnapshot,
+	recordFinalGeometryRebuild,
+	recordOverlayRebuild,
+} from '@/src/features/design/perf/viewerPerfTelemetry';
 import type {
 	TrimlineAdjustments,
 	TrimlineHandleProfile,
@@ -61,6 +77,10 @@ import {
 	BOX_GRID_COLS,
 	BOX_GRID_ROWS,
 	BOX_GRID_LAYERS,
+	ELEMENT_BOX_GRID_LAYERS,
+	ELEMENT_BOX_HEIGHT_PAD_ABOVE_MM,
+	ELEMENT_BOX_HEIGHT_PAD_BELOW_MM,
+	ELEMENT_BOX_HANDLE_SINK_BELOW_SURFACE_MM,
 	latticeVecsToSavePayload,
 	normalizeSavedOffsets,
 } from '@/src/features/design/types/boxGrid';
@@ -78,6 +98,7 @@ interface STLMeshProps {
 	color?: string;
 	position?: [number, number, number];
 	meshRole?: 'scan' | 'overlayScan' | 'insole';
+	viewerOverlayMode?: ScanOverlayViewerMode;
 	flipLongAxis?: boolean;
 	targetForefootWidthMm?: number;
 	targetTrimlineProfile?: TrimlineProfile | null;
@@ -98,8 +119,9 @@ interface STLMeshProps {
 	clampDebug?: boolean;
 	deviationMap?: boolean;
 	transparentMode?: boolean;
-	/** Links/Rechts technical profile overlay + inspection opacity (insole only) */
+	/** Links/Rechts technical profile overlay + inspection opacity */
 	sideInspectionActive?: boolean;
+	sideInspectionView?: 'left' | 'right';
 	probeEnabled?: boolean;
 	onProbe?: (payload: {
 		point: THREE.Vector3;
@@ -161,6 +183,8 @@ interface STLMeshProps {
 	onPrintWholeInsoleClick?: (side: 'left' | 'right') => void;
 	onPrintElementClick?: (elementId: string, side: 'left' | 'right') => void;
 	printSelectedElementId?: string | null;
+	/** When true (print prep), selected/hovered elements use highlight emissive; design uses base color only. */
+	printElementSelectionHighlight?: boolean;
 }
 
 function getAxisValueFromVector(v: THREE.Vector3, axis: 'x' | 'y' | 'z') {
@@ -252,6 +276,7 @@ function getPlacedElementsSignature(elements: PlacedElement[] | undefined): stri
 				formatSignatureNumber(element.blendMm),
 				formatSignatureNumber(element.trimOffsetMm),
 				element.floorMode,
+				String(element.stackOrder ?? 0),
 				element.split ? '1' : '0',
 				formatSignatureNumber(element.positionU),
 				formatSignatureNumber(element.positionV),
@@ -358,23 +383,7 @@ function createTessellatedBoxBaseGeometry(
 	baseGeometry: THREE.BufferGeometry,
 	mmToWorld: number,
 ): THREE.BufferGeometry {
-	const base = baseGeometry.clone();
-	const posA = base.getAttribute('position') as THREE.BufferAttribute | undefined;
-	if (!posA || posA.count >= 500000) {
-		return base;
-	}
-	try {
-		const targetEdge = 0.55 * mmToWorld;
-		const mod = new TessellateModifier(targetEdge, 6);
-		const tessellated = mod.modify(base);
-		base.dispose();
-		const welded = BufferGeometryUtils.mergeVertices(tessellated, 1e-4);
-		welded.computeVertexNormals();
-		if (tessellated !== welded) tessellated.dispose();
-		return welded;
-	} catch {
-		return base;
-	}
+	return tessellateAndWeldGeometry(baseGeometry, mmToWorld);
 }
 
 function boxOffsetsAreNontrivial(offsets: BoxGridSavedOffsets | null | undefined) {
@@ -399,17 +408,10 @@ function applySavedBoxGridOffsetsToGeometry(
 	let finalGeometry = geometry;
 	const posA = finalGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
 	if (posA && posA.count < 500000) {
-		try {
-			const targetEdge = 0.55 * mmToWorld;
-			const mod = new TessellateModifier(targetEdge, 6);
-			const tessellated = mod.modify(finalGeometry);
-			const welded = BufferGeometryUtils.mergeVertices(tessellated, 1e-4);
-			welded.computeVertexNormals();
-			if (tessellated !== welded) tessellated.dispose();
+		const welded = tessellateAndWeldGeometry(finalGeometry, mmToWorld);
+		if (welded !== finalGeometry) {
 			if (finalGeometry !== geometry) finalGeometry.dispose();
 			finalGeometry = welded;
-		} catch {
-			//
 		}
 	}
 	const cols = offsets!.cols;
@@ -448,19 +450,6 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 	return t * t * (3 - 2 * t);
 }
 
-function smoothTrimlineScalarBins(binCount: number, src: Float32Array): Float32Array {
-	const out = new Float32Array(binCount);
-	for (let i = 0; i < binCount; i++) {
-		const a = src[Math.max(0, i - 2)]!;
-		const b = src[Math.max(0, i - 1)]!;
-		const c = src[i]!;
-		const d = src[Math.min(binCount - 1, i + 1)]!;
-		const e = src[Math.min(binCount - 1, i + 2)]!;
-		out[i] = a * 0.1 + b * 0.2 + c * 0.4 + d * 0.2 + e * 0.1;
-	}
-	return out;
-}
-
 function trimlineHeightOffsetsNeedApply(profile: TrimlineHandleProfile): boolean {
 	const { bins } = profile;
 	const r = profile.rightHeightOffsetsMm;
@@ -473,249 +462,6 @@ function trimlineHeightOffsetsNeedApply(profile: TrimlineHandleProfile): boolean
 		if (Math.abs(rv) > 1e-9 || Math.abs(lv) > 1e-9) return true;
 	}
 	return false;
-}
-
-/** Axis-aligned displacement along rim height histogram; width pass stays legacy. */
-function applyTrimlineRimAxisHeightOffsets(
-	posAttr: THREE.BufferAttribute,
-	profile: TrimlineHandleProfile,
-	mmToWorld: number,
-	lengthAxis: 'x' | 'y' | 'z',
-	widthAxis: 'x' | 'y' | 'z',
-	heightAxis: 'x' | 'y' | 'z',
-	heelAtMin: boolean,
-	minLen: number,
-	maxLen: number,
-	lenSpan: number,
-	centerW: number,
-	sampleCurrentHalfWidth: (t: number) => number,
-	sampleRimHeightAtT: (t: number) => number,
-): void {
-	const EDGE_OUTER_THRESH = 0.65;
-	const RIM_BAND_MM = 6;
-
-	const bins = profile.bins;
-	const rPack = new Float32Array(bins);
-	const lPack = new Float32Array(bins);
-	const rSrc = profile.rightHeightOffsetsMm;
-	const lSrc = profile.leftHeightOffsetsMm;
-	for (let i = 0; i < bins; i++) {
-		rPack[i] = rSrc?.length === bins ? rSrc[i]! : 0;
-		lPack[i] = lSrc?.length === bins ? lSrc[i]! : 0;
-	}
-	const smoothedRight = smoothTrimlineScalarBins(bins, rPack);
-	const smoothedLeft = smoothTrimlineScalarBins(bins, lPack);
-	let anySignal = false;
-	for (let i = 0; i < bins; i++) {
-		if (Math.abs(smoothedRight[i]!) > 1e-9 || Math.abs(smoothedLeft[i]!) > 1e-9) {
-			anySignal = true;
-			break;
-		}
-	}
-	if (!anySignal) return;
-
-	const ss = (edge0: number, edge1: number, xv: number) => {
-		const tt = Math.max(0, Math.min(1, (xv - edge0) / Math.max(1e-9, edge1 - edge0)));
-		return tt * tt * (3 - 2 * tt);
-	};
-
-	const sampleHeightOffsetWorld = (t: number, widthSign: number) => {
-		const arr = widthSign >= 0 ? smoothedRight : smoothedLeft;
-		const tt = Math.max(0, Math.min(1, t));
-		const xf = tt * Math.max(1, bins - 1);
-		const i0 = Math.floor(xf);
-		const i1 = Math.min(bins - 1, i0 + 1);
-		const f = xf - i0;
-		const mm = arr[i0]! + (arr[i1]! - arr[i0]!) * f;
-		return mm * mmToWorld;
-	};
-
-	for (let i = 0; i < posAttr.count; i++) {
-		const x = posAttr.getX(i);
-		const y = posAttr.getY(i);
-		const z = posAttr.getZ(i);
-		const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
-		const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
-		const tLen = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
-		const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
-		const hVal = heightAxis === 'x' ? x : heightAxis === 'y' ? y : z;
-		const dist = wVal - centerW;
-		const absDist = Math.abs(dist);
-		if (absDist < 1e-6) continue;
-
-		const curHalf = Math.max(1e-6, sampleCurrentHalfWidth(tLen));
-		const ratio = Math.min(1, absDist / curHalf);
-		if (ratio < EDGE_OUTER_THRESH) continue;
-		const edgeBlend = ss(EDGE_OUTER_THRESH, 1.0, ratio);
-
-		const rimHTop = sampleRimHeightAtT(tLen);
-		const rimDistMm = Math.max(0, (rimHTop - hVal) / mmToWorld);
-		if (rimDistMm >= RIM_BAND_MM) continue;
-		const topBlend = 1 - ss(0, RIM_BAND_MM, rimDistMm);
-
-		const wBlend = edgeBlend * topBlend;
-		if (wBlend < 1e-4) continue;
-
-		const hShift = sampleHeightOffsetWorld(tLen, dist >= 0 ? 1 : -1) * wBlend;
-
-		if (heightAxis === 'x') posAttr.setX(i, x + hShift);
-		else if (heightAxis === 'y') posAttr.setY(i, y + hShift);
-		else posAttr.setZ(i, z + hShift);
-	}
-	posAttr.needsUpdate = true;
-}
-
-function applyTrimlineRimHeightAfterSmoothing(
-	geom: THREE.BufferGeometry,
-	profile: TrimlineHandleProfile,
-	mmToWorld: number,
-): void {
-	const posAttr = geom.getAttribute('position') as THREE.BufferAttribute | undefined;
-	if (!posAttr) return;
-
-	geom.computeBoundingBox();
-	const bbox = geom.boundingBox;
-	if (!bbox) return;
-
-	const size = bbox.getSize(new THREE.Vector3());
-	const axes: Array<'x' | 'y' | 'z'> = ['x', 'y', 'z'];
-	const sizes = { x: size.x, y: size.y, z: size.z };
-	axes.sort((a, b) => sizes[a] - sizes[b]);
-	const heightAxis = axes[0]!;
-	const widthAxis = axes[1]!;
-	const lengthAxis = axes[2]!;
-
-	const minLen = lengthAxis === 'x' ? bbox.min.x : lengthAxis === 'y' ? bbox.min.y : bbox.min.z;
-	const maxLen = lengthAxis === 'x' ? bbox.max.x : lengthAxis === 'y' ? bbox.max.y : bbox.max.z;
-	const lenSpan = Math.max(1e-6, maxLen - minLen);
-
-	const centerW =
-		widthAxis === 'x'
-			? (bbox.min.x + bbox.max.x) * 0.5
-			: widthAxis === 'y'
-				? (bbox.min.y + bbox.max.y) * 0.5
-				: (bbox.min.z + bbox.max.z) * 0.5;
-
-	const slice = Math.max(lenSpan * 0.08, 1e-6);
-	let minEndMinWidth = Number.POSITIVE_INFINITY;
-	let minEndMaxWidth = Number.NEGATIVE_INFINITY;
-	let minEndCount = 0;
-	let maxEndMinWidth = Number.POSITIVE_INFINITY;
-	let maxEndMaxWidth = Number.NEGATIVE_INFINITY;
-	let maxEndCount = 0;
-
-	for (let i = 0; i < posAttr.count; i++) {
-		const x = posAttr.getX(i);
-		const y = posAttr.getY(i);
-		const z = posAttr.getZ(i);
-		const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
-		const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
-		if (lenVal <= minLen + slice) {
-			minEndMinWidth = Math.min(minEndMinWidth, wVal);
-			minEndMaxWidth = Math.max(minEndMaxWidth, wVal);
-			minEndCount++;
-		}
-		if (lenVal >= maxLen - slice) {
-			maxEndMinWidth = Math.min(maxEndMinWidth, wVal);
-			maxEndMaxWidth = Math.max(maxEndMaxWidth, wVal);
-			maxEndCount++;
-		}
-	}
-	const minEndWidthSpan =
-		minEndCount > 10 ? Math.max(0, minEndMaxWidth - minEndMinWidth) : Number.POSITIVE_INFINITY;
-	const maxEndWidthSpan =
-		maxEndCount > 10 ? Math.max(0, maxEndMaxWidth - maxEndMinWidth) : Number.POSITIVE_INFINITY;
-	const heelAtMin =
-		Number.isFinite(minEndWidthSpan) && Number.isFinite(maxEndWidthSpan)
-			? minEndWidthSpan >= maxEndWidthSpan
-			: true;
-
-	const bins = profile.bins;
-	const currentHalfW = new Float32Array(bins).fill(0);
-	const binHits = new Uint16Array(bins);
-
-	for (let i = 0; i < posAttr.count; i++) {
-		const x = posAttr.getX(i);
-		const y = posAttr.getY(i);
-		const z = posAttr.getZ(i);
-		const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
-		const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
-		const t = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
-		const idx = Math.min(bins - 1, Math.max(0, Math.round(t * (bins - 1))));
-		const wVal = widthAxis === 'x' ? x : widthAxis === 'y' ? y : z;
-		const halfW = Math.abs(wVal - centerW);
-		if (halfW > currentHalfW[idx]!) currentHalfW[idx] = halfW;
-		binHits[idx]++;
-	}
-
-	for (let i = 0; i < bins; i++) {
-		if (binHits[i]! > 0) continue;
-		let l = i - 1;
-		while (l >= 0 && binHits[l] === 0) l--;
-		let r = i + 1;
-		while (r < bins && binHits[r] === 0) r++;
-		if (l >= 0 && r < bins) currentHalfW[i] = (currentHalfW[l]! + currentHalfW[r]!) * 0.5;
-		else if (l >= 0) currentHalfW[i] = currentHalfW[l]!;
-		else if (r < bins) currentHalfW[i] = currentHalfW[r]!;
-	}
-
-	const smoothedCurrent = smoothTrimlineScalarBins(bins, currentHalfW);
-	const sampleCurrentHalfWidth = (t: number) => {
-		const tt = Math.max(0, Math.min(1, t));
-		const x = tt * (bins - 1);
-		const i0 = Math.floor(x);
-		const i1 = Math.min(bins - 1, i0 + 1);
-		return smoothedCurrent[i0]! + (smoothedCurrent[i1]! - smoothedCurrent[i0]!) * (x - i0);
-	};
-
-	const rimHRaw = new Float32Array(bins).fill(Number.NEGATIVE_INFINITY);
-	for (let i = 0; i < posAttr.count; i++) {
-		const x = posAttr.getX(i);
-		const y = posAttr.getY(i);
-		const z = posAttr.getZ(i);
-		const lenVal = lengthAxis === 'x' ? x : lengthAxis === 'y' ? y : z;
-		const heelDist = heelAtMin ? lenVal - minLen : maxLen - lenVal;
-		const tAlong = Math.max(0, Math.min(1, heelDist / Math.max(1e-6, lenSpan)));
-		const idx = Math.min(bins - 1, Math.max(0, Math.round(tAlong * (bins - 1))));
-		const hValAlong = heightAxis === 'x' ? x : heightAxis === 'y' ? y : z;
-		if (hValAlong > rimHRaw[idx]!) rimHRaw[idx] = hValAlong;
-	}
-	for (let ri = 0; ri < bins; ri++) {
-		if (Number.isFinite(rimHRaw[ri]!)) continue;
-		let l = ri - 1;
-		while (l >= 0 && !Number.isFinite(rimHRaw[l]!)) l--;
-		let r = ri + 1;
-		while (r < bins && !Number.isFinite(rimHRaw[r]!)) r++;
-		if (l >= 0 && r < bins) rimHRaw[ri] = (rimHRaw[l]! + rimHRaw[r]!) * 0.5;
-		else if (l >= 0) rimHRaw[ri] = rimHRaw[l]!;
-		else if (r < bins) rimHRaw[ri] = rimHRaw[r]!;
-		else rimHRaw[ri] = bbox.max[heightAxis];
-	}
-	const smoothedRimH = smoothTrimlineScalarBins(bins, rimHRaw);
-	const sampleRimHeightAtT = (t: number) => {
-		const tt = Math.max(0, Math.min(1, t));
-		const xf = tt * (bins - 1);
-		const i0 = Math.floor(xf);
-		const i1 = Math.min(bins - 1, i0 + 1);
-		return smoothedRimH[i0]! + (smoothedRimH[i1]! - smoothedRimH[i0]!) * (xf - i0);
-	};
-
-	applyTrimlineRimAxisHeightOffsets(
-		posAttr,
-		profile,
-		mmToWorld,
-		lengthAxis,
-		widthAxis,
-		heightAxis,
-		heelAtMin,
-		minLen,
-		maxLen,
-		lenSpan,
-		centerW,
-		sampleCurrentHalfWidth,
-		sampleRimHeightAtT,
-	);
-	geom.computeVertexNormals();
 }
 
 
@@ -2427,6 +2173,7 @@ function STLMesh({
 	color = '#e8b99a',
 	position = DEFAULT_VEC3,
 	meshRole = 'insole',
+	viewerOverlayMode = 'embedded',
 	flipLongAxis = false,
 	targetForefootWidthMm,
 	targetTrimlineProfile = null,
@@ -2445,6 +2192,7 @@ function STLMesh({
 	deviationMap = false,
 	transparentMode = false,
 	sideInspectionActive = false,
+	sideInspectionView = 'left',
 	probeEnabled = false,
 	onProbe,
 	selected = false,
@@ -2481,6 +2229,7 @@ function STLMesh({
 	onPrintWholeInsoleClick,
 	onPrintElementClick,
 	printSelectedElementId = null,
+	printElementSelectionHighlight = false,
 }: STLMeshProps) {
 	const rawGeometry = useLoader(STLLoader, url);
 	const general = useDesignStore((state) => state.parameters.general);
@@ -2490,6 +2239,12 @@ function STLMesh({
 	const lastEmittedPrintHoverRef = useRef<PrintZoneId | undefined>(undefined);
 	const pendingPrintPrepHoverRef = useRef<PrintZoneId | null>(null);
 	const printPrepHoverFlushRafRef = useRef<number | null>(null);
+	/** Synced on pointer move so vertexColors can turn on before parent hover state commits */
+	const [prepZoneColorsLive, setPrepZoneColorsLive] = useState(false);
+	const insoleLatticeDragRafRef = useRef<number | null>(null);
+	const pendingInsoleLatticeVecsRef = useRef<LatticeOffsetVec[] | null>(null);
+	const elementLatticeDragRafRef = useRef<number | null>(null);
+	const pendingElementLatticeVecsRef = useRef<LatticeOffsetVec[] | null>(null);
 	const isLRNumber = (value: unknown): value is { left: number; right: number } => {
 		if (!value || typeof value !== 'object') return false;
 		const maybe = value as Record<string, unknown>;
@@ -2529,6 +2284,14 @@ function STLMesh({
 			if (printPrepHoverFlushRafRef.current != null) {
 				cancelAnimationFrame(printPrepHoverFlushRafRef.current);
 				printPrepHoverFlushRafRef.current = null;
+			}
+			if (insoleLatticeDragRafRef.current != null) {
+				cancelAnimationFrame(insoleLatticeDragRafRef.current);
+				insoleLatticeDragRafRef.current = null;
+			}
+			if (elementLatticeDragRafRef.current != null) {
+				cancelAnimationFrame(elementLatticeDragRafRef.current);
+				elementLatticeDragRafRef.current = null;
 			}
 		};
 	}, []);
@@ -2587,8 +2350,7 @@ function STLMesh({
 	const correctedGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const correctedSignatureRef = useRef<string>('');
 	const generalRafRef = useRef<number | null>(null);
-	const bottomTextRebuildRafRef = useRef<number | null>(null);
-	const bottomTextReadyRafRef = useRef<number | null>(null);
+	const bottomOverlayRebuildRafRef = useRef<number | null>(null);
 	const baseGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const latticeBaseSourceGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const boxTessellatedBaseRef = useRef<THREE.BufferGeometry | null>(null);
@@ -2596,6 +2358,7 @@ function STLMesh({
 	const boxPreviewBasePositionsRef = useRef<Float32Array | null>(null);
 	const bottomTextBaseGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const bottomTextDetailSignatureRef = useRef<string>('');
+	const lastCommittedTextVisualSigRef = useRef<string>('');
 	const elementBoxBaseGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const elementBoxTessellatedBaseRef = useRef<THREE.BufferGeometry | null>(null);
 	const elementBoxPreviewGeometryRef = useRef<THREE.BufferGeometry | null>(null);
@@ -3494,6 +3257,7 @@ function STLMesh({
 
 	// Create a working geometry that includes corrections
 	const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
+	const [sideProfileGeometry, setSideProfileGeometry] = useState<THREE.BufferGeometry | null>(null);
 	useEffect(() => {
 		geometryRef.current = geometry;
 		return () => {
@@ -3503,6 +3267,11 @@ function STLMesh({
 			geometry?.dispose();
 		};
 	}, [geometry]);
+	useEffect(() => {
+		return () => {
+			sideProfileGeometry?.dispose();
+		};
+	}, [sideProfileGeometry]);
 
 	// Overlay meshes for each placed element (rendered on top of insole)
 	const [elementOverlays, setElementOverlays] = useState<ElementOverlayData[]>([]);
@@ -3521,10 +3290,34 @@ function STLMesh({
 	useEffect(() => {
 		setPrintElementHoverId(null);
 	}, [placedElementsSignature]);
+	useEffect(() => {
+		setPrintElementHoverId(null);
+	}, [printSelectedElementId]);
+	const applyPrintPrepZoneColorsToGeometry = useCallback(
+		(hovered: PrintZoneId | null, selected: PrintZoneId | null) => {
+			if (!geometry || meshRole !== 'insole' || !printPrepSplit) return;
+			if (selected == null && hovered == null) {
+				geometry.deleteAttribute('color');
+				return;
+			}
+			applyPrintSplitZoneColors(geometry, {
+				selectedZone: selected,
+				hoveredZone: hovered,
+				baseColor: color,
+			});
+		},
+		[geometry, meshRole, printPrepSplit, color],
+	);
 	const printPrepZoneTintActive =
 		Boolean(printPrepSplit) &&
 		meshRole === 'insole' &&
+		prepZoneColorsLive &&
 		(printPrepSelectedZone != null || printPrepHoveredZone != null);
+	useEffect(() => {
+		if (!printPrepSplit || meshRole !== 'insole') {
+			setPrepZoneColorsLive(false);
+		}
+	}, [printPrepSplit, meshRole]);
 	const clearElementOverlays = useCallback(() => {
 		lastRenderedOverlaySignatureRef.current = '';
 		setElementOverlays((prev) => {
@@ -3634,6 +3427,7 @@ function STLMesh({
 			if (placedElementsRafRef.current != null) cancelAnimationFrame(placedElementsRafRef.current);
 			if (overlayRafRef.current != null) cancelAnimationFrame(overlayRafRef.current);
 			if (generalRafRef.current != null) cancelAnimationFrame(generalRafRef.current);
+			if (bottomOverlayRebuildRafRef.current != null) cancelAnimationFrame(bottomOverlayRebuildRafRef.current);
 			elementOverlaysRef.current.forEach((overlay) => overlay.geometry.dispose());
 			elementOverlaysRef.current = [];
 			for (const geometry of elementStlGeometriesRef.current.values()) {
@@ -3735,6 +3529,7 @@ function STLMesh({
 				overlays: overlays.length,
 				signature: overlayBuildSignature,
 			});
+			recordOverlayRebuild(Number((performance.now() - startedAt).toFixed(1)));
 			invalidateRef.current();
 			return;
 		}
@@ -3748,6 +3543,7 @@ function STLMesh({
 			positionVersion,
 			signature: overlayBuildSignature,
 		});
+		recordOverlayRebuild(Number((performance.now() - startedAt).toFixed(1)));
 		setElementOverlays(prev => { prev.forEach(d => d.geometry.dispose()); return overlays; });
 		invalidateRef.current();
 	}, [clearElementOverlays, logViewerDebug]);
@@ -4102,7 +3898,7 @@ function STLMesh({
 				minEndCount > 10 ? Math.max(0, minEndMaxWidth - minEndMinWidth) : widthSpan;
 			const maxEndWidthSpan =
 				maxEndCount > 10 ? Math.max(0, maxEndMaxWidth - maxEndMinWidth) : widthSpan;
-			const heelAtMin = minEndWidthSpan <= maxEndWidthSpan;
+			const heelAtMin = minEndWidthSpan >= maxEndWidthSpan;
 
 			for (let i = 0; i < count; i++) {
 				const lenVal = getAxis(i, lengthAxis);
@@ -4159,6 +3955,7 @@ function STLMesh({
 				applyPrintSplitZoneColors(geometryToFinalize, {
 					selectedZone: ppSel,
 					hoveredZone: ppHov,
+					baseColor: color,
 				});
 			} else if (showZones) applyZoneColors(geometryToFinalize);
 			else if (heatmap) applyHeightmapColors(geometryToFinalize);
@@ -4259,7 +4056,6 @@ function STLMesh({
 	}, [gridEditMode, showZones, heatmap, clampDebug, deviationMap, hasPlacedElements, applyOrientation, mmToWorld, scheduleElementOverlayRebuild, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments, invalidate, savedBoxGridOffsetsSignature, bottomTextOverlaySignature, printPrepSplit, printPrepSelectedZone, printPrepHoveredZone]);
 
 	const rebuildFinalGeometryFromCorrected = useCallback(() => {
-		// Don't rebuild geometry while box-grid editing is active
 		if (gridEditMode) return;
 		const corrected = correctedGeometryRef.current;
 		if (!corrected) return;
@@ -4267,6 +4063,36 @@ function STLMesh({
 		const currentBottomTextOverlay = bottomTextOverlayRef.current;
 		const currentSavedBoxGridOffsets = savedBoxGridOffsetsRef.current;
 		const startedAt = performance.now();
+		const scheduleTextLoadingEndIfShown = (
+			showLoaderThisPassRef: { current: boolean },
+		) => {
+			if (!showLoaderThisPassRef.current) return;
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => {
+					onBottomTextLoadingChangeRef.current?.({ side, isLoading: false });
+					showLoaderThisPassRef.current = false;
+				});
+			});
+		};
+		const loaderShownRefObj = { current: false };
+
+		const tryShowBottomTextLoader = (visualSig: string) => {
+			const loadingForFontWait = Boolean(
+				hasOverlayTextPlaceholder(currentBottomTextOverlay) &&
+					!engravingFontReady
+			);
+			const loadingForTextChange =
+				visualSig !== lastCommittedTextVisualSigRef.current;
+			const shouldShow = loadingForFontWait || loadingForTextChange;
+			if (!shouldShow) return;
+			onBottomTextLoadingChangeRef.current?.({ side, isLoading: true });
+			loaderShownRefObj.current = true;
+		};
+
+		function hasOverlayTextPlaceholder(overlay: typeof currentBottomTextOverlay) {
+			return Boolean(overlay?.enabled && overlay.text.trim());
+		}
+
 		const workingGeometry = corrected.clone();
 		if (applyGeneral) {
 			applySoleThicknessAfterCorrections(workingGeometry);
@@ -4279,12 +4105,43 @@ function STLMesh({
 		if (corrected.userData.scanDeviations) {
 			finalGeometry.userData.scanDeviations = corrected.userData.scanDeviations;
 		}
+		const nextSideProfileGeometry =
+			meshRole === 'insole'
+				? workingGeometry.clone()
+				: null;
+		if (nextSideProfileGeometry) {
+			applyHeelEdgeThicknessBand(nextSideProfileGeometry, heelEdgeThicknessMm, mmToWorld || 1, side);
+		}
 		// Apply element height displacements (raised pads)
 		if (hasPlacedElements && currentPlacedElements) {
 			applyElements(finalGeometry, currentPlacedElements, { mmToWorld: mmToWorld || 1 });
 		}
 		applyHeelEdgeThicknessBand(finalGeometry, heelEdgeThicknessMm, mmToWorld || 1, side);
+		// Trimline rim cut runs LAST, in the same final space the gizmo edits, so the
+		// relative per-arc-length offsets reshape only the wall rim toward the drawn silhouette.
+		if (
+			applyGeneral &&
+			trimlineHandleProfile &&
+			trimlineHandleProfile.bins > 1 &&
+			trimlineHeightOffsetsNeedApply(trimlineHandleProfile)
+		) {
+			applyTrimlineRimSilhouette(finalGeometry, trimlineHandleProfile, mmToWorld || 1);
+		}
+		setSideProfileGeometry(nextSideProfileGeometry);
+		const hasEmbeddedBottomText =
+			meshRole === 'insole' &&
+			hasOverlayTextPlaceholder(currentBottomTextOverlay);
+
+		if (meshRole === 'insole' && !hasEmbeddedBottomText) {
+			lastCommittedTextVisualSigRef.current = '';
+			onBottomTextLoadingChangeRef.current?.({ side, isLoading: false });
+		}
+
 		if (meshRole === 'insole' && currentBottomTextOverlay?.enabled && currentBottomTextOverlay.text.trim()) {
+			const overlayVisualSig = getBottomTextOverlaySignature(currentBottomTextOverlay);
+			tryShowBottomTextLoader(overlayVisualSig);
+			let engravingCommitOk = false;
+
 			const textDetailSignature = [
 				correctedSignatureRef.current,
 				placedElementsSignature,
@@ -4330,6 +4187,7 @@ function STLMesh({
 						ok: v.ok,
 						reason: v.reason,
 					});
+					engravingCommitOk = v.ok;
 				} else {
 					console.warn(`[bottomTextEngrave:${side}] engraveTextIntoInsole returned null (see earlier [bottomTextEngrave:*] warnings)`, {
 						textPreview: currentBottomTextOverlay.text.trim().slice(0, 48),
@@ -4355,6 +4213,11 @@ function STLMesh({
 			}
 			finalGeometry = nextGeometry;
 			finalGeometry.computeVertexNormals();
+
+			scheduleTextLoadingEndIfShown(loaderShownRefObj);
+			if (engravingFontReady && engravingCommitOk) {
+				lastCommittedTextVisualSigRef.current = overlayVisualSig;
+			}
 		} else if (meshRole === 'insole') {
 			onBottomTextValidityChangeRef.current?.({ side, ok: true });
 		}
@@ -4374,63 +4237,58 @@ function STLMesh({
 			hasBottomText: Boolean(currentBottomTextOverlay?.enabled && currentBottomTextOverlay.text.trim()),
 			signature: placedElementsSignature,
 		});
-		animateGeometryTo(finalGeometry);
-	}, [applyGeneral, applyTotalInsoleHeightAfterCorrections, applySoleThicknessAfterCorrections, animateGeometryTo, hasPlacedElements, placedElementsSignature, mmToWorld, meshRole, bottomTextOverlaySignature, gridEditMode, savedBoxGridOffsetsSignature, heelEdgeThicknessMm, logViewerDebug, engravingFontReady, side]);
-
-	useEffect(() => {
-		if (!correctedGeometryRef.current) return;
-		const hasBottomText = Boolean(
-			bottomTextOverlayRef.current?.enabled &&
-			bottomTextOverlayRef.current.text.trim()
-		);
-		if (bottomTextRebuildRafRef.current != null) {
-			cancelAnimationFrame(bottomTextRebuildRafRef.current);
-			bottomTextRebuildRafRef.current = null;
-		}
-		if (bottomTextReadyRafRef.current != null) {
-			cancelAnimationFrame(bottomTextReadyRafRef.current);
-			bottomTextReadyRafRef.current = null;
-		}
-		if (!hasBottomText) {
-			onBottomTextLoadingChangeRef.current?.({ side, isLoading: false });
-			rebuildFinalGeometryFromCorrected();
-			return;
-		}
-		onBottomTextLoadingChangeRef.current?.({ side, isLoading: true });
-		bottomTextRebuildRafRef.current = requestAnimationFrame(() => {
-			bottomTextRebuildRafRef.current = null;
-			rebuildFinalGeometryFromCorrected();
-			bottomTextReadyRafRef.current = requestAnimationFrame(() => {
-				bottomTextReadyRafRef.current = null;
-				onBottomTextLoadingChangeRef.current?.({ side, isLoading: false });
-			});
+		const rebuildMs = Number((performance.now() - startedAt).toFixed(1));
+		recordFinalGeometryRebuild({
+			ms: rebuildMs,
+			vertices: finalPos?.count ?? 0,
 		});
-		return () => {
-			if (bottomTextRebuildRafRef.current != null) {
-				cancelAnimationFrame(bottomTextRebuildRafRef.current);
-				bottomTextRebuildRafRef.current = null;
-			}
-			if (bottomTextReadyRafRef.current != null) {
-				cancelAnimationFrame(bottomTextReadyRafRef.current);
-				bottomTextReadyRafRef.current = null;
-			}
-			onBottomTextLoadingChangeRef.current?.({ side, isLoading: false });
-		};
-	}, [bottomTextOverlaySignature, rebuildFinalGeometryFromCorrected]);
+		animateGeometryTo(finalGeometry);
+	}, [applyGeneral, applyTotalInsoleHeightAfterCorrections, applySoleThicknessAfterCorrections, animateGeometryTo, hasPlacedElements, placedElementsSignature, mmToWorld, meshRole, bottomTextOverlaySignature, gridEditMode, savedBoxGridOffsetsSignature, heelEdgeThicknessMm, logViewerDebug, engravingFontReady, side, soleThicknessMm, totalInsoleHeightMm, trimlineHandleProfile]);
 
-	useEffect(() => {
-		return () => {
-			if (bottomTextRebuildRafRef.current != null) {
-				cancelAnimationFrame(bottomTextRebuildRafRef.current);
-				bottomTextRebuildRafRef.current = null;
+	const rebuildFinalGeometryFromCorrectedRef = useRef(rebuildFinalGeometryFromCorrected);
+	rebuildFinalGeometryFromCorrectedRef.current = rebuildFinalGeometryFromCorrected;
+
+	const applyPendingCorrectionsGeometry = useCallback(() => {
+		const bg = baseGeometry;
+		if (!bg) return;
+
+		const pendingCorrections = pendingCorrectionsRef.current;
+		lastCorrectionsRef.current = pendingSignatureRef.current;
+
+		const workingGeometry = bg.clone();
+
+		if (applyGeneral && pendingCorrections) {
+			try {
+				applyAllCorrections(workingGeometry, pendingCorrections, side, {
+					mmToWorld,
+					activeCorrections,
+					trimlineHandleProfile,
+				});
+			} catch (err) {
+				console.error('Error applying corrections:', err);
 			}
-			if (bottomTextReadyRafRef.current != null) {
-				cancelAnimationFrame(bottomTextReadyRafRef.current);
-				bottomTextReadyRafRef.current = null;
+		}
+
+		const weldedWorking = smoothInsoleWalls(weldAndSmoothNormals(workingGeometry));
+
+		if (correctedGeometryRef.current) {
+			try {
+				correctedGeometryRef.current.dispose();
+			} catch {
+				// ignore
 			}
-			onBottomTextLoadingChangeRef.current?.({ side, isLoading: false });
-		};
-	}, [side]);
+		}
+		correctedGeometryRef.current = weldedWorking;
+		correctedSignatureRef.current = pendingSignatureRef.current;
+		rebuildFinalGeometryFromCorrectedRef.current();
+	}, [
+		applyGeneral,
+		side,
+		mmToWorld,
+		activeCorrections,
+		trimlineHandleProfile,
+		baseGeometry,
+	]);
 
 	// Initialize corrected geometry (base + corrections) when they change (debounced)
 	useEffect(() => {
@@ -4455,50 +4313,8 @@ function STLMesh({
 
 		// Debounce the expensive geometry update (150ms delay)
 		debounceTimerRef.current = setTimeout(() => {
-			const pendingCorrections = pendingCorrectionsRef.current;
-			lastCorrectionsRef.current = pendingSignatureRef.current;
-
-			// Clone base geometry for modifications
-			const workingGeometry = baseGeometry.clone();
-
-			// Apply corrections if provided
-			if (applyGeneral && pendingCorrections) {
-				try {
-					applyAllCorrections(workingGeometry, pendingCorrections, side, {
-						mmToWorld,
-						activeCorrections,
-						trimlineHandleProfile,
-					});
-				} catch (err) {
-					console.error('Error applying corrections:', err);
-				}
-			}
-
-			// Re-weld after corrections to keep one solid mesh
-			const weldedWorking = smoothInsoleWalls(weldAndSmoothNormals(workingGeometry));
-
-			if (
-				applyGeneral &&
-				trimlineHandleProfile &&
-				trimlineHandleProfile.bins > 1 &&
-				trimlineHandleProfile.rightOffsetsMm.length > 1 &&
-				trimlineHandleProfile.leftOffsetsMm.length > 1 &&
-				trimlineHeightOffsetsNeedApply(trimlineHandleProfile)
-			) {
-				applyTrimlineRimHeightAfterSmoothing(weldedWorking, trimlineHandleProfile, mmToWorld);
-			}
-
-			// Cache corrected geometry and rebuild final (thickness/rim) immediately.
-			if (correctedGeometryRef.current) {
-				try {
-					correctedGeometryRef.current.dispose();
-				} catch {
-					// ignore
-				}
-			}
-			correctedGeometryRef.current = weldedWorking;
-			correctedSignatureRef.current = pendingSignatureRef.current;
-			rebuildFinalGeometryFromCorrected();
+			debounceTimerRef.current = null;
+			applyPendingCorrectionsGeometry();
 		}, 150);
 
 		// Cleanup timer on unmount or re-render
@@ -4515,8 +4331,19 @@ function STLMesh({
 		mmToWorld,
 		applyGeneral,
 		trimlineHandleProfile,
-		rebuildFinalGeometryFromCorrected,
+		applyPendingCorrectionsGeometry,
 	]);
+
+	useEffect(() => {
+		const flush = () => {
+			if (!debounceTimerRef.current) return;
+			clearTimeout(debounceTimerRef.current);
+			debounceTimerRef.current = null;
+			applyPendingCorrectionsGeometry();
+		};
+		window.addEventListener('pointerup', flush, true);
+		return () => window.removeEventListener('pointerup', flush, true);
+	}, [applyPendingCorrectionsGeometry]);
 
 	useEffect(() => {
 		if (!correctedGeometryRef.current) return;
@@ -4525,7 +4352,7 @@ function STLMesh({
 		}
 		placedElementsRafRef.current = requestAnimationFrame(() => {
 			placedElementsRafRef.current = null;
-			rebuildFinalGeometryFromCorrected();
+			rebuildFinalGeometryFromCorrectedRef.current();
 		});
 		return () => {
 			if (placedElementsRafRef.current != null) {
@@ -4533,7 +4360,31 @@ function STLMesh({
 				placedElementsRafRef.current = null;
 			}
 		};
-	}, [placedElementsSignature, rebuildFinalGeometryFromCorrected]);
+	}, [placedElementsSignature]);
+
+	useEffect(() => {
+		void bottomTextOverlaySignature;
+		if (!correctedGeometryRef.current) return;
+		if (bottomOverlayRebuildRafRef.current != null) {
+			cancelAnimationFrame(bottomOverlayRebuildRafRef.current);
+		}
+		bottomOverlayRebuildRafRef.current = requestAnimationFrame(() => {
+			bottomOverlayRebuildRafRef.current = null;
+			rebuildFinalGeometryFromCorrectedRef.current();
+		});
+		return () => {
+			if (bottomOverlayRebuildRafRef.current != null) {
+				cancelAnimationFrame(bottomOverlayRebuildRafRef.current);
+				bottomOverlayRebuildRafRef.current = null;
+			}
+		};
+	}, [bottomTextOverlaySignature]);
+
+	useEffect(() => {
+		return () => {
+			onBottomTextLoadingChangeRef.current?.({ side, isLoading: false });
+		};
+	}, [side]);
 
 	useEffect(() => {
 		return () => {
@@ -4553,7 +4404,7 @@ function STLMesh({
 		}
 		generalRafRef.current = requestAnimationFrame(() => {
 			generalRafRef.current = null;
-			rebuildFinalGeometryFromCorrected();
+			rebuildFinalGeometryFromCorrectedRef.current();
 		});
 		return () => {
 			if (generalRafRef.current != null) {
@@ -4561,30 +4412,24 @@ function STLMesh({
 				generalRafRef.current = null;
 			}
 		};
-	}, [applyGeneral, soleThicknessMm, totalInsoleHeightMm, rebuildFinalGeometryFromCorrected]);
+	}, [applyGeneral, soleThicknessMm, totalInsoleHeightMm]);
 
-	// Apply zone colors / rebuild element overlays whenever visual mode changes
-	useEffect(() => {
+	// Apply zone colors before paint so vertexColors never renders an empty buffer
+	useLayoutEffect(() => {
 		if (!geometry) return;
 		const isPrepInsole = meshRole === 'insole' && printPrepSplit;
 		if (meshRole === 'insole' && !printPrepSplit) {
 			removePrintPrepAttributes(geometry);
 		}
 		if (isPrepInsole) {
-			if (printPrepSelectedZone != null || printPrepHoveredZone != null) {
-				applyPrintSplitZoneColors(geometry, {
-					selectedZone: printPrepSelectedZone,
-					hoveredZone: printPrepHoveredZone,
-				});
-			} else {
-				geometry.deleteAttribute('color');
-			}
+			const hasTint =
+				printPrepSelectedZone != null || printPrepHoveredZone != null;
+			applyPrintPrepZoneColorsToGeometry(
+				printPrepHoveredZone,
+				printPrepSelectedZone,
+			);
+			setPrepZoneColorsLive(hasTint);
 			invalidate();
-			if (hasPlacedElements) {
-				scheduleElementOverlayRebuild();
-			} else {
-				invalidate();
-			}
 			return;
 		}
 		if (showZones) {
@@ -4629,8 +4474,7 @@ function STLMesh({
 			clearElementOverlays();
 			invalidate();
 		}
-		invalidate();
-	}, [geometry, showZones, printPrepSplit, printPrepSelectedZone, printPrepHoveredZone, heatmap, clampDebug, deviationMap, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments, hasPlacedElements, mmToWorld, scheduleElementOverlayRebuild, clearElementOverlays, invalidate]);
+	}, [geometry, showZones, printPrepSplit, printPrepSelectedZone, printPrepHoveredZone, applyPrintPrepZoneColorsToGeometry, heatmap, clampDebug, deviationMap, meshRole, side, targetForefootWidthMm, targetTrimlineProfile, trimlineOffsetMm, trimlineAdjustments, hasPlacedElements, mmToWorld, scheduleElementOverlayRebuild, clearElementOverlays, invalidate]);
 
 	const probeRafRef = useRef<number | null>(null);
 	const pendingProbeInputRef = useRef<{
@@ -4782,14 +4626,25 @@ function STLMesh({
 			: null;
 		elementBoxPreviewGeometryRef.current = tess.clone();
 
-		const built = buildLattice(tess, BOX_GRID_COLS, BOX_GRID_ROWS, BOX_GRID_LAYERS, mw);
+		const built = buildLattice(
+			tess,
+			BOX_GRID_COLS,
+			BOX_GRID_ROWS,
+			ELEMENT_BOX_GRID_LAYERS,
+			mw,
+			{
+				belowMm: ELEMENT_BOX_HEIGHT_PAD_BELOW_MM,
+				aboveMm: ELEMENT_BOX_HEIGHT_PAD_ABOVE_MM,
+				handleSinkBelowSurfaceMm: ELEMENT_BOX_HANDLE_SINK_BELOW_SURFACE_MM,
+			},
+		);
 		if (!built) return;
 		const inf = precomputeVertexInfluences(
 			tess,
 			built.frame,
 			BOX_GRID_COLS,
 			BOX_GRID_ROWS,
-			BOX_GRID_LAYERS,
+			ELEMENT_BOX_GRID_LAYERS,
 			built.nodes,
 		);
 		if (!inf) return;
@@ -4798,7 +4653,7 @@ function STLMesh({
 			nodes: built.nodes,
 			cols: BOX_GRID_COLS,
 			rows: BOX_GRID_ROWS,
-			layers: BOX_GRID_LAYERS,
+			layers: ELEMENT_BOX_GRID_LAYERS,
 			influences: inf,
 		});
 	}, [
@@ -4827,11 +4682,15 @@ function STLMesh({
 		sideInspectionActive && meshRole === 'insole' && !pointPickMode && !evaBlockMode;
 	const transparentUser = Boolean(transparentMode);
 	const transparentGeometry = transparentUser || insoleSideInspection;
-	const effectiveOpacity = transparentUser
-		? (opacity ?? 0.35)
-		: insoleSideInspection
-			? 0.3
+	const effectiveOpacity = insoleSideInspection
+		? 0
+		: transparentUser
+			? (opacity ?? 0.35)
 			: (opacity ?? 1);
+	const scanOverlayMaterialProps =
+		meshRole === 'overlayScan'
+			? getScanOverlayMaterialProps(viewerOverlayMode)
+			: null;
 
 	return (
 		<>
@@ -4839,7 +4698,7 @@ function STLMesh({
 				ref={meshRef}
 				geometry={geometry}
 				position={position}
-				{...(meshRole === 'overlayScan' ? { renderOrder: 2 } : {})}
+				{...(meshRole === 'overlayScan' ? { renderOrder: SCAN_OVERLAY_RENDER_ORDER } : {})}
 				onPointerDown={interactive ? (event) => {
 					if (!textPlacementEnabled || !onTextPlace) return;
 					if (pointPickMode || gridEditMode) return;
@@ -4870,7 +4729,6 @@ function STLMesh({
 						printElementHoverId != null;
 					if (
 						printPrepSplit &&
-						onPrintPrepZoneHover &&
 						meshRole === 'insole' &&
 						geometry &&
 						!pointPickMode &&
@@ -4882,18 +4740,23 @@ function STLMesh({
 						if (meshRef.current) meshRef.current.worldToLocal(localPt);
 						const hz = resolvePrintZoneFromLocalPoint(geometry, localPt);
 						pendingPrintPrepHoverRef.current = hz;
-						if (printPrepHoverFlushRafRef.current == null) {
-							printPrepHoverFlushRafRef.current = requestAnimationFrame(() => {
-								printPrepHoverFlushRafRef.current = null;
-								const flushZ = pendingPrintPrepHoverRef.current;
-								if (
-									flushZ != null &&
-									lastEmittedPrintHoverRef.current !== flushZ
-								) {
-									lastEmittedPrintHoverRef.current = flushZ;
-									onPrintPrepZoneHover!(flushZ, side);
-								}
-							});
+						applyPrintPrepZoneColorsToGeometry(hz, printPrepSelectedZone);
+						setPrepZoneColorsLive(true);
+						invalidateRef.current();
+						if (onPrintPrepZoneHover) {
+							if (printPrepHoverFlushRafRef.current == null) {
+								printPrepHoverFlushRafRef.current = requestAnimationFrame(() => {
+									printPrepHoverFlushRafRef.current = null;
+									const flushZ = pendingPrintPrepHoverRef.current;
+									if (
+										flushZ != null &&
+										lastEmittedPrintHoverRef.current !== flushZ
+									) {
+										lastEmittedPrintHoverRef.current = flushZ;
+										onPrintPrepZoneHover(flushZ, side);
+									}
+								});
+							}
 						}
 					}
 					if (!probeEnabled || !onProbe) return;
@@ -4971,6 +4834,9 @@ function STLMesh({
 								}
 								pendingPrintPrepHoverRef.current = null;
 								lastEmittedPrintHoverRef.current = undefined;
+								applyPrintPrepZoneColorsToGeometry(null, printPrepSelectedZone);
+								setPrepZoneColorsLive(printPrepSelectedZone != null);
+								invalidateRef.current();
 								onPrintPrepZoneHover(null, side);
 							}
 						: undefined
@@ -5014,23 +4880,32 @@ function STLMesh({
 					}
 					side={THREE.DoubleSide}
 					shadowSide={THREE.DoubleSide}
-					roughness={printPrepSplit ? 0.35 : 0.4}
-					metalness={0.0}
-					flatShading={false}
+					roughness={
+						meshRole === 'overlayScan'
+							? VIEWER_MATERIALS.scanOverlay.roughness
+							: printPrepSplit
+								? 0.6
+								: VIEWER_MATERIALS.insoleBase.roughness
+					}
+					metalness={
+						meshRole === 'overlayScan'
+							? VIEWER_MATERIALS.scanOverlay.metalness
+							: VIEWER_MATERIALS.insoleBase.metalness
+					}
+					flatShading={VIEWER_MATERIALS.insoleBase.flatShading}
 					transparent={transparentGeometry}
 					opacity={effectiveOpacity}
-					{...(meshRole === 'overlayScan'
+					{...(insoleSideInspection
 						? ({
+								depthTest: true,
 								depthWrite: false,
-								polygonOffset: true,
-								polygonOffsetFactor: -0.5,
-								polygonOffsetUnits: -0.5,
 							} as const)
 						: {})}
+					{...(scanOverlayMaterialProps ?? {})}
 				/>
 
 				{/* Selection highlight — hide during box/lattice edit so the mesh reads clearly */}
-				{selected && !(showBoxGrid && gridEditMode) && (
+				{selected && !insoleSideInspection && !(showBoxGrid && gridEditMode) && (
 					<>
 						<mesh geometry={geometry}>
 							<meshStandardMaterial
@@ -5073,48 +4948,59 @@ function STLMesh({
 						onSave={onBoxGridSave}
 						onOffsetsLiveChange={(vecs: LatticeOffsetVec[]) => {
 							if (!geometry || !latticeEditKit || !boxPreviewGeometryRef.current) return;
-							const mw = mmToWorld || 1;
-							const working = boxPreviewGeometryRef.current;
-							const basePos = boxPreviewBasePositionsRef.current;
-							if (!basePos) return;
-							pendingBoxGridOffsetsRef.current = latticeVecsToSavePayload(
-								BOX_GRID_COLS,
-								BOX_GRID_ROWS,
-								BOX_GRID_LAYERS,
-								vecs,
-							);
-							restoreGeometryPositions(working, basePos);
-							const positions = working.getAttribute('position') as THREE.BufferAttribute;
-							const arr = positions.array as Float32Array;
-							applyLatticeDeformation(
-								arr,
-								basePos,
-								vecs,
-								latticeEditKit.influences,
-								latticeEditKit.frame,
-								mw,
-							);
-							positions.needsUpdate = true;
-							copyGeometryPositionsFast(geometry, working);
-							const ppSpl = Boolean(printPrepSplit);
-							const ppSel = printPrepSelectedZone;
-							const ppHov = printPrepHoveredZone;
-							const prepTint = ppSpl && (ppSel != null || ppHov != null);
-							if (prepTint && meshRole === 'insole') {
-								applyPrintSplitZoneColors(geometry, {
-									selectedZone: ppSel,
-									hoveredZone: ppHov,
-								});
-							} else if (showZones) applyZoneColors(geometry);
-							else if (heatmap) applyHeightmapColors(geometry);
-							else if (deviationMap) applyDeviationColors(geometry);
-							else geometry.deleteAttribute('color');
-							invalidateRef.current();
+							const kitSnap = latticeEditKit;
+							pendingInsoleLatticeVecsRef.current = vecs;
+							if (insoleLatticeDragRafRef.current != null) return;
+							insoleLatticeDragRafRef.current = requestAnimationFrame(() => {
+								insoleLatticeDragRafRef.current = null;
+								const snap = pendingInsoleLatticeVecsRef.current;
+								if (!snap || !geometry || !boxPreviewGeometryRef.current) return;
+								const mw = mmToWorld || 1;
+								const working = boxPreviewGeometryRef.current;
+								const basePos = boxPreviewBasePositionsRef.current;
+								if (!basePos) return;
+								pendingBoxGridOffsetsRef.current = latticeVecsToSavePayload(
+									BOX_GRID_COLS,
+									BOX_GRID_ROWS,
+									BOX_GRID_LAYERS,
+									snap,
+								);
+								restoreGeometryPositions(working, basePos);
+								const positions = working.getAttribute('position') as THREE.BufferAttribute;
+								const arr = positions.array as Float32Array;
+								applyLatticeDeformation(
+									arr,
+									basePos,
+									snap,
+									kitSnap.influences,
+									kitSnap.frame,
+									mw,
+								);
+								positions.needsUpdate = true;
+								copyGeometryPositionsFast(geometry, working);
+								if (showZones) applyZoneColors(geometry);
+								else if (heatmap) applyHeightmapColors(geometry);
+								else if (deviationMap) applyDeviationColors(geometry);
+								else geometry.deleteAttribute('color');
+								invalidateRef.current();
+							});
 						}}
 						onDragEnd={() => {
 							if (!geometry) return;
 							geometry.computeVertexNormals();
 							geometry.computeBoundingSphere();
+							const ppSpl = Boolean(printPrepSplit);
+							const ppSel = printPrepSelectedZone;
+							const ppHov = printPrepHoveredZone;
+							const prepTint =
+								meshRole === 'insole' && ppSpl && (ppSel != null || ppHov != null);
+							if (prepTint) {
+								applyPrintSplitZoneColors(geometry, {
+									selectedZone: ppSel,
+									hoveredZone: ppHov,
+									baseColor: color,
+								});
+							}
 							invalidateRef.current();
 						}}
 					/>
@@ -5123,14 +5009,23 @@ function STLMesh({
 				{elementOverlays.map((overlay) => {
 					const printHit = meshRole === 'insole' && Boolean(onPrintElementClick);
 					const selectedHere = printSelectedElementId === overlay.elementId;
-					const hoveredHere = printHit && printElementHoverId === overlay.elementId;
+					const hoveredHere =
+						printHit &&
+						printElementHoverId === overlay.elementId &&
+						!selectedHere;
+					const highlightSelected =
+						printElementSelectionHighlight && selectedHere;
+					const highlightHover = hoveredHere;
+					const highlightHere = highlightSelected || highlightHover;
 					const pickFriendly = Boolean(printHit);
 					return (
 						<mesh
 							key={overlay.elementId}
 							geometry={overlay.geometry}
 							frustumCulled={false}
-							renderOrder={printHit ? 20 : 4}
+							renderOrder={
+								printHit ? 20 + overlay.stackOrder : 10 + overlay.stackOrder
+							}
 							{...(printHit ? { cursor: 'pointer' as const } : {})}
 							onClick={
 								printHit
@@ -5159,18 +5054,43 @@ function STLMesh({
 									: undefined
 							}
 						>
-							<meshStandardMaterial
-								color={overlay.colorHex}
-								emissive={selectedHere || hoveredHere ? '#6bcda8' : '#000000'}
-								emissiveIntensity={selectedHere ? 0.26 : hoveredHere ? 0.14 : 0}
-								roughness={0.45}
-								metalness={0.0}
-								side={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
-								shadowSide={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
-								polygonOffset={!pickFriendly}
-								polygonOffsetFactor={pickFriendly ? 0 : overlay.isInset ? -1 : -3}
-								polygonOffsetUnits={pickFriendly ? 0 : overlay.isInset ? -1 : -3}
-							/>
+							{VIEWER_MATERIALS.elementOverlay.clearcoat != null ? (
+								<meshPhysicalMaterial
+									color={overlay.colorHex}
+									emissive={highlightHere ? '#6bcda8' : '#000000'}
+									emissiveIntensity={
+										highlightHere ? (highlightSelected ? 0.32 : 0.14) : 0
+									}
+									roughness={VIEWER_MATERIALS.elementOverlay.roughness}
+									metalness={VIEWER_MATERIALS.elementOverlay.metalness}
+									clearcoat={VIEWER_MATERIALS.elementOverlay.clearcoat}
+									clearcoatRoughness={
+										VIEWER_MATERIALS.elementOverlay.clearcoatRoughness ?? 0.2
+									}
+									flatShading={VIEWER_MATERIALS.elementOverlay.flatShading}
+									side={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
+									shadowSide={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
+									polygonOffset={!pickFriendly}
+									polygonOffsetFactor={pickFriendly ? 0 : overlay.isInset ? -1 : -3}
+									polygonOffsetUnits={pickFriendly ? 0 : overlay.isInset ? -1 : -3}
+								/>
+							) : (
+								<meshStandardMaterial
+									color={overlay.colorHex}
+									emissive={highlightHere ? '#6bcda8' : '#000000'}
+									emissiveIntensity={
+										highlightHere ? (highlightSelected ? 0.32 : 0.14) : 0
+									}
+									roughness={VIEWER_MATERIALS.elementOverlay.roughness}
+									metalness={VIEWER_MATERIALS.elementOverlay.metalness}
+									flatShading={VIEWER_MATERIALS.elementOverlay.flatShading}
+									side={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
+									shadowSide={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
+									polygonOffset={!pickFriendly}
+									polygonOffsetFactor={pickFriendly ? 0 : overlay.isInset ? -1 : -3}
+									polygonOffsetUnits={pickFriendly ? 0 : overlay.isInset ? -1 : -3}
+								/>
+							)}
 						</mesh>
 					);
 				})}
@@ -5190,17 +5110,30 @@ function STLMesh({
 								onSave={onElementBoxGridSave}
 								onOffsetsLiveChange={(vecs: LatticeOffsetVec[]) => {
 									if (!elementBoxPreviewGeometryRef.current) return;
-									const mw = mmToWorld || 1;
-									const working = elementBoxPreviewGeometryRef.current;
-									const basePos = elementBoxPreviewBasePositionsRef.current;
-									if (!basePos) return;
-									restoreGeometryPositions(working, basePos);
-									const positions = working.getAttribute('position') as THREE.BufferAttribute;
-									const arr = positions.array as Float32Array;
-									applyLatticeDeformation(arr, basePos, vecs, kit.influences, kit.frame, mw);
-									positions.needsUpdate = true;
-									copyGeometryPositionsFast(editingOverlay.geometry, working);
-									invalidateRef.current();
+									const kitSnap = kit;
+									const targetGeom = editingOverlay.geometry;
+									pendingElementLatticeVecsRef.current = vecs;
+									if (elementLatticeDragRafRef.current != null) return;
+									elementLatticeDragRafRef.current = requestAnimationFrame(() => {
+										elementLatticeDragRafRef.current = null;
+										const snap = pendingElementLatticeVecsRef.current;
+										if (
+											!snap ||
+											!elementBoxPreviewGeometryRef.current ||
+											!elementBoxPreviewBasePositionsRef.current
+										)
+											return;
+										const mw = mmToWorld || 1;
+										const working = elementBoxPreviewGeometryRef.current;
+										const basePos = elementBoxPreviewBasePositionsRef.current;
+										restoreGeometryPositions(working, basePos);
+										const positions = working.getAttribute('position') as THREE.BufferAttribute;
+										const arr = positions.array as Float32Array;
+										applyLatticeDeformation(arr, basePos, snap, kitSnap.influences, kitSnap.frame, mw);
+										positions.needsUpdate = true;
+										copyGeometryPositionsFast(targetGeom, working);
+										invalidateRef.current();
+									});
 								}}
 								onDragEnd={() => {
 									editingOverlay.geometry.computeVertexNormals();
@@ -5226,8 +5159,41 @@ function STLMesh({
 				})()}
 			</mesh>
 			{insoleSideInspection ? (
-				<SideInspectionLayers geometry={geometry} meshRef={meshRef} enabled />
+				<SideInspectionLayers
+					geometry={sideProfileGeometry ?? geometry}
+					meshRef={meshRef}
+					enabled
+					sideView={sideInspectionView}
+					style={{
+						topSurfaceColor: '#f8fafc',
+						topSurfaceOpacity: 0.98,
+						topSurfaceDepthWorld: 0.45,
+						bottomColor: '#020617',
+						showTopLine: false,
+						lineWidth: 2.6,
+						renderOrder: 9,
+					}}
+				/>
 			) : null}
+			{insoleSideInspection
+				? elementOverlays.map((overlay) => (
+						<SideInspectionLayers
+							key={`side-profile-${overlay.elementId}`}
+							geometry={overlay.geometry}
+							meshRef={meshRef}
+							enabled
+							sideView={sideInspectionView}
+							style={{
+								topColor: overlay.colorHex,
+								bottomColor: overlay.colorHex,
+								fillColor: overlay.colorHex,
+								fillOpacity: overlay.isInset ? 0.85 : 0.68,
+								lineWidth: 2.2,
+								renderOrder: 14 + overlay.stackOrder,
+							}}
+						/>
+					))
+				: null}
 		</>
 	);
 }
@@ -5318,6 +5284,7 @@ interface EnhancedSTLViewerProps {
 	onPrintWholeInsoleClick?: (side: 'left' | 'right') => void;
 	onPrintElementClick?: (elementId: string, side: 'left' | 'right') => void;
 	printSelectedElementId?: string | null;
+	printElementSelectionHighlight?: boolean;
 	onPrintInteractionDeselect?: () => void;
 	boxEnabled?: { left: boolean; right: boolean };
 	gridEditMode?: boolean;
@@ -5353,6 +5320,32 @@ interface EnhancedSTLViewerProps {
 	onReady?: () => void;
 	/** When true, pointer events on insole meshes are disabled (no click/select) */
 	disableInteraction?: boolean;
+}
+
+function ScanOcclusionDepthPrepass({
+	geometry,
+	position,
+}: {
+	geometry: THREE.BufferGeometry | null;
+	position: THREE.Vector3Tuple;
+}) {
+	if (!geometry) return null;
+
+	return (
+		<mesh
+			geometry={geometry}
+			position={position}
+			rotation={[-Math.PI / 2, 0, 0]}
+			renderOrder={INSOLE_SCAN_DEPTH_PREPASS_RENDER_ORDER}
+		>
+			<meshBasicMaterial
+				colorWrite={false}
+				depthTest={true}
+				depthWrite={true}
+				side={THREE.DoubleSide}
+			/>
+		</mesh>
+	);
 }
 
 function BaseInsolePreview({
@@ -5402,6 +5395,8 @@ export interface EnhancedSTLViewerRef {
 	getRightGeometry: () => THREE.BufferGeometry | null;
 	/** Conversion factor from real millimeters to world units for current right mesh */
 	getRightMmToWorld: () => number;
+	/** Smoothly orbit the camera to look at the given foot (preserves angle). */
+	focusOnSide: (side: 'left' | 'right') => void;
 }
 
 function DevPerformanceOverlay() {
@@ -5424,6 +5419,9 @@ function DevPerformanceOverlay() {
 		slowFrames: number;
 		longTasks: number;
 		heapMb: number | null;
+		finalRebuildMs: number | null;
+		finalRebuildVertices: number | null;
+		overlayRebuildMs: number | null;
 	}>({
 		fps: 0,
 		avgFrameMs: 0,
@@ -5431,6 +5429,9 @@ function DevPerformanceOverlay() {
 		slowFrames: 0,
 		longTasks: 0,
 		heapMb: null,
+		finalRebuildMs: null,
+		finalRebuildVertices: null,
+		overlayRebuildMs: null,
 	});
 
 	useEffect(() => {
@@ -5477,6 +5478,7 @@ function DevPerformanceOverlay() {
 				const heapMb = typeof perfWithMemory.memory?.usedJSHeapSize === 'number'
 					? perfWithMemory.memory.usedJSHeapSize / (1024 * 1024)
 					: null;
+				const geo = getViewerPerfSnapshot();
 				setStats({
 					fps: Number(fps.toFixed(1)),
 					avgFrameMs: Number(avgFrameMs.toFixed(1)),
@@ -5484,6 +5486,13 @@ function DevPerformanceOverlay() {
 					slowFrames,
 					longTasks,
 					heapMb: heapMb == null ? null : Number(heapMb.toFixed(1)),
+					finalRebuildMs:
+						geo.lastFinalRebuildMs != null ? Number(geo.lastFinalRebuildMs.toFixed(1)) : null,
+					finalRebuildVertices: geo.lastFinalRebuildVertices ?? null,
+					overlayRebuildMs:
+						geo.lastOverlayRebuildMs != null
+							? Number(geo.lastOverlayRebuildMs.toFixed(1))
+							: null,
 				});
 				lastFlush = now;
 				frameCount = 0;
@@ -5518,13 +5527,22 @@ function DevPerformanceOverlay() {
 				<span>Slow frames</span><span className="text-right text-ui-text">{stats.slowFrames}</span>
 				<span>Long tasks</span><span className="text-right text-ui-text">{stats.longTasks}</span>
 				<span>Heap</span><span className="text-right text-ui-text">{stats.heapMb == null ? 'n/a' : `${stats.heapMb} MB`}</span>
+				<span>Final geom</span>
+				<span className="text-right text-ui-text">
+					{stats.finalRebuildMs == null ? '—' : `${stats.finalRebuildMs} ms`}
+					{stats.finalRebuildVertices != null ? ` · ${stats.finalRebuildVertices.toLocaleString()}v` : ''}
+				</span>
+				<span>Overlays</span>
+				<span className="text-right text-ui-text">
+					{stats.overlayRebuildMs == null ? '—' : `${stats.overlayRebuildMs} ms`}
+				</span>
 			</div>
 			<div className="mt-2 text-[10px] text-ui-muted">Enable with <span className="text-ui-text">?perf=1</span></div>
 		</div>
 	);
 }
 
-export const EnhancedSTLViewer = forwardRef<
+const EnhancedSTLViewerInner = forwardRef<
 	EnhancedSTLViewerRef,
 	EnhancedSTLViewerProps
 >(
@@ -5609,6 +5627,7 @@ export const EnhancedSTLViewer = forwardRef<
 			onPrintWholeInsoleClick,
 			onPrintElementClick,
 			printSelectedElementId = null,
+			printElementSelectionHighlight = false,
 			onPrintInteractionDeselect,
 		},
 		ref
@@ -5618,14 +5637,16 @@ export const EnhancedSTLViewer = forwardRef<
 		const leftPrintSplitPrep = Boolean(
 			printPrepInteractive && ppSide === 'left' && printPrepElementsSplitLeft,
 		);
+		// Whole-insole clicks must be accepted on *either* foot so that clicking the
+		// inactive insole switches the print-prep side. Visual tint stays gated by side.
 		const leftPrintWholePrep = Boolean(
-			printPrepInteractive && ppSide === 'left' && !printPrepElementsSplitLeft,
+			printPrepInteractive && !printPrepElementsSplitLeft,
 		);
 		const rightPrintSplitPrep = Boolean(
 			printPrepInteractive && ppSide === 'right' && printPrepElementsSplitRight,
 		);
 		const rightPrintWholePrep = Boolean(
-			printPrepInteractive && ppSide === 'right' && !printPrepElementsSplitRight,
+			printPrepInteractive && !printPrepElementsSplitRight,
 		);
 
 		const [leftGeometry, setLeftGeometry] =
@@ -5851,6 +5872,59 @@ export const EnhancedSTLViewer = forwardRef<
 		}, []);
 		const cameraInitRef = useRef(false);
 		const prevPresetRef = useRef<string | undefined>(undefined);
+		const focusAnimRafRef = useRef<number | null>(null);
+
+		const focusOnSide = useCallback((targetSide: 'left' | 'right') => {
+			const cam = cameraRef.current;
+			const c = controlsRef.current;
+			if (!cam || !c) return;
+			const meshGroup =
+				targetSide === 'left' ? leftMeshRef.current : rightMeshRef.current;
+			if (!meshGroup) return;
+			const box = new THREE.Box3().setFromObject(meshGroup);
+			if (box.isEmpty()) return;
+			const newCenter = box.getCenter(new THREE.Vector3());
+			const startTarget = c.target.clone();
+			const startPos = cam.position.clone();
+			const delta = newCenter.clone().sub(startTarget);
+			if (delta.lengthSq() < 1e-3) return;
+			if (focusAnimRafRef.current != null) {
+				cancelAnimationFrame(focusAnimRafRef.current);
+				focusAnimRafRef.current = null;
+			}
+			const startTime =
+				typeof performance !== 'undefined' ? performance.now() : Date.now();
+			const duration = 360;
+			const ease = (t: number) =>
+				t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+			const step = () => {
+				const now =
+					typeof performance !== 'undefined' ? performance.now() : Date.now();
+				const linear = Math.min(1, (now - startTime) / duration);
+				const eased = ease(linear);
+				const dx = delta.x * eased;
+				const dy = delta.y * eased;
+				const dz = delta.z * eased;
+				c.target.set(startTarget.x + dx, startTarget.y + dy, startTarget.z + dz);
+				cam.position.set(startPos.x + dx, startPos.y + dy, startPos.z + dz);
+				c.update();
+				if (linear < 1) {
+					focusAnimRafRef.current = requestAnimationFrame(step);
+				} else {
+					focusAnimRafRef.current = null;
+				}
+			};
+			focusAnimRafRef.current = requestAnimationFrame(step);
+		}, []);
+
+		useEffect(() => {
+			return () => {
+				if (focusAnimRafRef.current != null) {
+					cancelAnimationFrame(focusAnimRafRef.current);
+					focusAnimRafRef.current = null;
+				}
+			};
+		}, []);
 
 		const effectiveShowGeneratedInsole = showGeneratedInsole;
 		const effectiveHideScans = hideScans;
@@ -5956,7 +6030,7 @@ export const EnhancedSTLViewer = forwardRef<
 					mmToWorld: MM_TO_WORLD,
 					embedScanHeightFraction: DEFAULT_EMBED_SCAN_HEIGHT_FRACTION,
 					sinkBiasMm: DEFAULT_SINK_BIAS_MM,
-					maxDeltaWorld: MM_TO_WORLD * 35,
+					maxDeltaWorld: MM_TO_WORLD * 70,
 				},
 			);
 			return [lateral, v.y, v.z];
@@ -5987,7 +6061,7 @@ export const EnhancedSTLViewer = forwardRef<
 					mmToWorld: MM_TO_WORLD,
 					embedScanHeightFraction: DEFAULT_EMBED_SCAN_HEIGHT_FRACTION,
 					sinkBiasMm: DEFAULT_SINK_BIAS_MM,
-					maxDeltaWorld: MM_TO_WORLD * 35,
+					maxDeltaWorld: MM_TO_WORLD * 70,
 				},
 			);
 			return [lateral, v.y, v.z];
@@ -6000,7 +6074,6 @@ export const EnhancedSTLViewer = forwardRef<
 			rightRegSig,
 			rightInsoleAxisWorld,
 		]);
-
 		const leftScanMatrix = useMemo(() => {
 			const upAxis = new THREE.Vector3(...leftInsoleAxisWorld).normalize();
 			if (upAxis.lengthSq() < 1e-12) upAxis.set(0, 1, 0);
@@ -6146,13 +6219,13 @@ export const EnhancedSTLViewer = forwardRef<
 		};
 
 		const repairForSlicing = (geometry: THREE.BufferGeometry) => {
-			// ── 0. Snap vertices to 0.1 µm grid ────────────────────────────
+			// ÔöÇÔöÇ 0. Snap vertices to 0.1 ┬Ám grid ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 			// Eliminates sub-micron floating-point noise that creates T-junctions
 			// and near-duplicate edges which PrusaSlicer flags as intersections.
 			snapVerticesToGrid(geometry, 1e-4);
 
-			// ── 1. Merge duplicate vertices ─────────────────────────────────
-			// Use 1e-4 mm tolerance (0.1 µm) – tight enough to preserve detail
+			// ÔöÇÔöÇ 1. Merge duplicate vertices ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+			// Use 1e-4 mm tolerance (0.1 ┬Ám) ÔÇô tight enough to preserve detail
 			// but loose enough to catch near-coincident verts from rounding.
 			let g = BufferGeometryUtils.mergeVertices(geometry, 1e-4);
 			if (!g.getIndex()) {
@@ -6163,31 +6236,31 @@ export const EnhancedSTLViewer = forwardRef<
 				}
 			}
 
-			// ── 2. Remove duplicate / overlapping faces ─────────────────────
+			// ÔöÇÔöÇ 2. Remove duplicate / overlapping faces ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 			// CSG operations and merge can produce doubled faces (same 3 verts,
 			// different winding).  These cause PrusaSlicer facet-intersection
 			// warnings and confuse winding analysis.
 			g = removeDuplicateFaces(g);
 
-			// ── 3. Fill ALL boundary holes (watertight for slicing) ──────────
+			// ÔöÇÔöÇ 3. Fill ALL boundary holes (watertight for slicing) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 			// The display pipeline keeps the outer perimeter open (fillAll=false)
 			// but PrusaSlicer needs a fully closed solid to determine inside/outside
 			// correctly and avoid fragmented perimeters with crossing travels.
 			g = fillMeshHoles(g, Infinity, true);
 
-			// ── 4. Remove degenerate triangles ──────────────────────────────
+			// ÔöÇÔöÇ 4. Remove degenerate triangles ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 			// Zero-area, NaN, or near-zero-area faces confuse slicer topology
 			// detection, causing extra shells and crossing travel lines.
 			// (returns non-indexed geometry, so we re-merge afterwards)
 			g = removeDegenerateTriangles(g);
 
-			// ── 5. Re-merge after degenerate removal ────────────────────────
+			// ÔöÇÔöÇ 5. Re-merge after degenerate removal ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 			g = BufferGeometryUtils.mergeVertices(g, 1e-4);
 
-			// ── 6. Remove duplicate faces (again after re-merge) ────────────
+			// ÔöÇÔöÇ 6. Remove duplicate faces (again after re-merge) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 			g = removeDuplicateFaces(g);
 
-			// ── 7. Fix winding order (consistent outward normals) ────────────
+			// ÔöÇÔöÇ 7. Fix winding order (consistent outward normals) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 			const index = g.getIndex();
 			if (index) {
 				const signedVol = estimateSignedVolume(g);
@@ -6202,7 +6275,7 @@ export const EnhancedSTLViewer = forwardRef<
 				}
 			}
 
-			// ── 8. Recompute clean normals ──────────────────────────────────
+			// ÔöÇÔöÇ 8. Recompute clean normals ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 			g.deleteAttribute('normal');
 			g.computeVertexNormals();
 			g.normalizeNormals();
@@ -6217,7 +6290,7 @@ export const EnhancedSTLViewer = forwardRef<
 			const worldToMm = 1 / Math.max(1e-6, mmToWorld || 1);
 			g.applyMatrix4(new THREE.Matrix4().makeScale(worldToMm, worldToMm, worldToMm));
 
-			// ── Auto-orient for slicer: X = length, Y = width, Z = thickness ──
+			// ÔöÇÔöÇ Auto-orient for slicer: X = length, Y = width, Z = thickness ÔöÇÔöÇ
 			// The viewer geometry has arbitrary axis mapping depending on the
 			// original STL.  We detect the axes by bounding-box span (longest =
 			// length, middle = width, thinnest = thickness/height) and remap so
@@ -6230,7 +6303,7 @@ export const EnhancedSTLViewer = forwardRef<
 					[size.x, 0], [size.y, 1], [size.z, 2],
 				];
 				axes.sort((a, b) => a[0] - b[0]);
-				// axes[0] = thinnest (→ Z), axes[1] = middle (→ Y), axes[2] = longest (→ X)
+				// axes[0] = thinnest (ÔåÆ Z), axes[1] = middle (ÔåÆ Y), axes[2] = longest (ÔåÆ X)
 				const thinnestIdx = axes[0][1];
 				const middleIdx = axes[1][1];
 				const longestIdx = axes[2][1];
@@ -6244,7 +6317,7 @@ export const EnhancedSTLViewer = forwardRef<
 						for (let i = 0; i < pos.count; i++) {
 							const off = i * 3;
 							const vals = [arr[off], arr[off + 1], arr[off + 2]];
-							// Map: longestIdx → X, middleIdx → Y, thinnestIdx → Z
+							// Map: longestIdx ÔåÆ X, middleIdx ÔåÆ Y, thinnestIdx ÔåÆ Z
 							tmp[off] = vals[longestIdx];
 							tmp[off + 1] = vals[middleIdx];
 							tmp[off + 2] = vals[thinnestIdx];
@@ -6322,6 +6395,7 @@ export const EnhancedSTLViewer = forwardRef<
 			},
 			getRightGeometry: () => rightGeometry,
 			getRightMmToWorld: () => rightMmToWorld || 1,
+			focusOnSide,
 		}), [
 			handleMatch,
 			handleReset,
@@ -6331,6 +6405,7 @@ export const EnhancedSTLViewer = forwardRef<
 			rightGeometry,
 			leftMmToWorld,
 			rightMmToWorld,
+			focusOnSide,
 		]);
 
 		/* eslint-disable react-hooks/set-state-in-effect -- landmark transform depends on mounted mesh matrices */
@@ -6402,11 +6477,11 @@ export const EnhancedSTLViewer = forwardRef<
 			const c = controlsRef.current;
 
 			if (lockTopView) {
-				// Strict 90° top-down view for point picking.
+				// Strict 90┬░ top-down view for point picking.
 				c.enableRotate = false;
 				c.enablePan = true;
 				c.enableZoom = true;
-				// Do NOT constrain polar/azimuth — those force the camera to +Y regardless
+				// Do NOT constrain polar/azimuth ÔÇö those force the camera to +Y regardless
 				c.minPolarAngle = 0;
 				c.maxPolarAngle = Math.PI;
 				c.minAzimuthAngle = -Infinity;
@@ -6455,12 +6530,21 @@ export const EnhancedSTLViewer = forwardRef<
 				}
 				const center = hasBox ? box.getCenter(new THREE.Vector3()) : new THREE.Vector3(0, 0, 0);
 				const size = hasBox ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(200, 200, 200);
-				const span = Math.max(size.x, size.y, size.z);
-				const dist = Math.max(180, span * 1.9);
-
-				// Behind-the-heel eye-level camera: along +Z (behind heel),
-				// nearly zero Y lift so we look straight into the heel edge-on, and closer.
-				const closeDist = dist * 0.40;
+				// Frame both insoles together with comfortable margin so the user can read
+				// the height profile of the pair, not just an extreme close-up.
+				const pairWidth = size.x;
+				const profileHeight = size.y;
+				const halfFovRad = THREE.MathUtils.degToRad((cam.fov || 50) / 2);
+				const aspect =
+					typeof window !== 'undefined' && window.innerHeight > 0
+						? window.innerWidth / window.innerHeight
+						: 16 / 9;
+				const distForWidth = (pairWidth * 0.5) / (Math.tan(halfFovRad) * aspect);
+				const distForHeight = (profileHeight * 0.5) / Math.tan(halfFovRad);
+				const fitDist = Math.max(distForWidth, distForHeight);
+				// 1.55× framing margin keeps both insoles fully visible without floating
+				// in a sea of empty space.
+				const closeDist = Math.max(260, fitDist * 1.55);
 				cam.position.set(center.x, center.y + closeDist * 0.02, center.z + closeDist);
 				cam.up.set(0, 1, 0);
 				cam.lookAt(center);
@@ -6545,11 +6629,11 @@ export const EnhancedSTLViewer = forwardRef<
 					cam.up.set(0, 1, 0);
 					break;
 				case 'left':
-					cam.position.set(center.x - closeDist, center.y + closeDist * 0.1, center.z);
+					cam.position.set(center.x - closeDist, center.y + closeDist * 0.03, center.z);
 					cam.up.set(0, 1, 0);
 					break;
 				case 'right':
-					cam.position.set(center.x + closeDist, center.y + closeDist * 0.1, center.z);
+					cam.position.set(center.x + closeDist, center.y + closeDist * 0.03, center.z);
 					cam.up.set(0, 1, 0);
 					break;
 				case 'iso':
@@ -6614,6 +6698,12 @@ export const EnhancedSTLViewer = forwardRef<
 				<Canvas
 					frameloop="demand"
 					performance={{ min: 0.6, debounce: 150 }}
+					gl={{
+						// Neutral (Khronos PBR-neutral) tone mapping keeps contrast and
+						// color on the bright near-white insole instead of ACES washing it out.
+						toneMapping: THREE.NeutralToneMapping,
+						toneMappingExposure: 1.28,
+					}}
 					onPointerMissed={() => {
 						if (pointPickMode) return;
 						if (printPrepInteractive && onPrintInteractionDeselect) {
@@ -6629,14 +6719,16 @@ export const EnhancedSTLViewer = forwardRef<
 						position={[0, -60, 180]}
 						fov={50}
 					/>
-					<ambientLight intensity={0.05} />
-					<hemisphereLight args={['#b0a8a0', '#111120', 0.18]} />
-					{/* Key light — upper-front-right */}
-					<directionalLight position={[40, 70, 80]} intensity={1.2} />
-					{/* Fill — very weak from left */}
-					<directionalLight position={[-60, 50, 30]} intensity={0.2} />
-					{/* Rim — from behind-below for edge definition */}
-					<directionalLight position={[0, -30, -50]} intensity={0.2} />
+					<ambientLight intensity={0.08} />
+					<hemisphereLight args={['#dfe1e6', '#1c2330', 0.2]} />
+					{/* Key light — raking from upper front-right; produces the strong
+					    diagonal gradient that defines arch ridge and heel cup walls. */}
+					<directionalLight position={[55, 40, 50]} intensity={1.7} />
+					{/* Single weak fill from upper-left — keeps the shadow side
+					    readable without flattening the form. Kept low on purpose. */}
+					<directionalLight position={[-55, 50, 25]} intensity={0.18} />
+					{/* Rim — cool, from behind-below for subtle edge separation */}
+					<directionalLight position={[0, -30, -50]} intensity={0.28} color="#cdd6e6" />
 
 					<Suspense fallback={null}>
 						<ScanInsoleUpAxisSampler
@@ -6674,6 +6766,7 @@ export const EnhancedSTLViewer = forwardRef<
 									deviationMap={deviationMap}
 									transparentMode={transparent}
 									sideInspectionActive={sideInspectionActive}
+									sideInspectionView={effectiveViewPreset === 'right' ? 'right' : 'left'}
 									probeEnabled={analysisEnabled}
 									onProbe={(payload) => {
 										const next = {
@@ -6719,12 +6812,9 @@ export const EnhancedSTLViewer = forwardRef<
 									onPrintWholeInsoleClick={
 										disableInteraction ? undefined : onPrintWholeInsoleClick
 									}
-									onPrintElementClick={
-										disableInteraction || !printPrepInteractive
-											? undefined
-											: onPrintElementClick
-									}
+									onPrintElementClick={onPrintElementClick}
 									printSelectedElementId={printSelectedElementId ?? null}
+									printElementSelectionHighlight={printElementSelectionHighlight}
 								/>
 							</group>
 						)}
@@ -6751,6 +6841,7 @@ export const EnhancedSTLViewer = forwardRef<
 									deviationMap={deviationMap}
 									transparentMode={transparent}
 									sideInspectionActive={sideInspectionActive}
+									sideInspectionView={effectiveViewPreset === 'right' ? 'right' : 'left'}
 									probeEnabled={analysisEnabled}
 									onProbe={(payload) => {
 										const next = {
@@ -6796,23 +6887,34 @@ export const EnhancedSTLViewer = forwardRef<
 									onPrintWholeInsoleClick={
 										disableInteraction ? undefined : onPrintWholeInsoleClick
 									}
-									onPrintElementClick={
-										disableInteraction || !printPrepInteractive
-											? undefined
-											: onPrintElementClick
-									}
+									onPrintElementClick={onPrintElementClick}
 									printSelectedElementId={printSelectedElementId ?? null}
+									printElementSelectionHighlight={printElementSelectionHighlight}
 								/>
 							</group>
 						)}
 
-						{/* Scan overlays (non-interactive) shown on top of base insoles */}
-						{!hideScans && effectiveShowModel && showLeft && leftOverlayUrl && (
+						{!hideScans && effectiveShowModel && showInsoles && showLeft && leftOverlayUrl && (
+							<ScanOcclusionDepthPrepass
+								geometry={leftGeometry}
+								position={[-30 + driekwartLeftOffset.x, driekwartLeftOffset.y, driekwartLeftOffset.z]}
+							/>
+						)}
+						{!hideScans && effectiveShowModel && showInsoles && showRight && rightOverlayUrl && (
+							<ScanOcclusionDepthPrepass
+								geometry={rightGeometry}
+								position={[30 + driekwartRightOffset.x, driekwartRightOffset.y, driekwartRightOffset.z]}
+							/>
+						)}
+
+						{/* Scan overlays (non-interactive) depth-test against the insole support */}
+						{!sideInspectionActive && !hideScans && effectiveShowModel && showLeft && leftOverlayUrl && (
 							<group ref={leftOverlayRootRef} position={leftScanOverlayAnchorTuple}>
 								<group matrixAutoUpdate={false} matrix={leftScanMatrix}>
 									<STLMesh
 										url={leftOverlayUrl}
 										meshRole="overlayScan"
+										viewerOverlayMode="embedded"
 										flipLongAxis={true}
 										color="#d9b5a1"
 										position={[0, 0, 0]}
@@ -6823,18 +6925,20 @@ export const EnhancedSTLViewer = forwardRef<
 										showZones={false}
 										heatmap={false}
 										pointPickMode={false}
+										sideInspectionActive={sideInspectionActive}
 										onGeometryReady={(geom) => setLeftOverlayGeometry(geom)}
 										side="left"
 									/>
 								</group>
 							</group>
 						)}
-						{!hideScans && effectiveShowModel && showRight && rightOverlayUrl && (
+						{!sideInspectionActive && !hideScans && effectiveShowModel && showRight && rightOverlayUrl && (
 							<group ref={rightOverlayRootRef} position={rightScanOverlayAnchorTuple}>
 								<group matrixAutoUpdate={false} matrix={rightScanMatrix}>
 									<STLMesh
 										url={rightOverlayUrl}
 										meshRole="overlayScan"
+										viewerOverlayMode="embedded"
 										flipLongAxis={true}
 										color="#d9b5a1"
 										position={[0, 0, 0]}
@@ -6845,6 +6949,7 @@ export const EnhancedSTLViewer = forwardRef<
 										showZones={false}
 										heatmap={false}
 										pointPickMode={false}
+										sideInspectionActive={sideInspectionActive}
 										onGeometryReady={(geom) => setRightOverlayGeometry(geom)}
 										side="right"
 									/>
@@ -7039,6 +7144,10 @@ export const EnhancedSTLViewer = forwardRef<
 						minAzimuthAngle={lockTopView ? 0 : undefined}
 						maxAzimuthAngle={lockTopView ? 0 : undefined}
 					/>
+
+					{/* Ambient occlusion for surface definition. Skipped during grid/box
+					    editing so the deformation widgets stay responsive. */}
+					<ViewerPostFX enabled={!gridEditMode} />
 				</Canvas>
 				{showRegistrationDebug && (
 					<div className="pointer-events-none absolute bottom-3 left-3 z-40 rounded-lg border border-ui-border bg-ui-panel/90 px-3 py-2 text-[11px] text-ui-text shadow">
@@ -7069,4 +7178,7 @@ export const EnhancedSTLViewer = forwardRef<
 	}
 );
 
+EnhancedSTLViewerInner.displayName = 'EnhancedSTLViewerInner';
+
+export const EnhancedSTLViewer = memo(EnhancedSTLViewerInner);
 EnhancedSTLViewer.displayName = 'EnhancedSTLViewer';

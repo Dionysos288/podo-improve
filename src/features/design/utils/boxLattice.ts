@@ -147,15 +147,32 @@ function buildProfileForSilhouette(
 	return { sampleProfile, uSpan, vSpan };
 }
 
+export type BuildLatticeHeightPadding = {
+	belowMm: number;
+	aboveMm: number;
+	/** Lower control points from the mesh top (mm). */
+	handleSinkBelowSurfaceMm?: number;
+};
+
 export function buildLattice(
 	geometry: THREE.BufferGeometry,
 	cols: number,
 	rows: number,
 	layers: number,
 	mmToWorld: number,
+	heightPadding?: BuildLatticeHeightPadding,
 ): { frame: ObLatticeFrame; nodes: LatticeNode[] } | null {
-	const frame = computeObLatticeFrame(geometry);
+	let frame = computeObLatticeFrame(geometry);
 	if (!frame) return null;
+	const surfaceHMax = frame.hMax;
+	if (heightPadding) {
+		const w = Math.max(1e-9, mmToWorld);
+		frame = {
+			...frame,
+			hMin: frame.hMin - heightPadding.belowMm * w,
+			hMax: frame.hMax + heightPadding.aboveMm * w,
+		};
+	}
 
 	const positions = geometry.attributes.position as THREE.BufferAttribute | undefined;
 	if (!positions) return null;
@@ -215,7 +232,11 @@ export function buildLattice(
 	for (let layer = 0; layer < L; layer++) {
 		const nh =
 			L === 1 ? 1 : layer / (L - 1);
-		const hCoord = frame.hMin + nh * (frame.hMax - frame.hMin);
+		const hCoord =
+			heightPadding && L === 1
+				? surfaceHMax -
+					(heightPadding.handleSinkBelowSurfaceMm ?? 0) * Math.max(1e-9, mmToWorld)
+				: frame.hMin + nh * (frame.hMax - frame.hMin);
 
 		for (let row = 0; row < rows; row++) {
 			for (let col = 0; col < cols; col++) {

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { Card, CardContent } from '@/src/shared/components/ui/card';
 import { Button } from '@/src/shared/components/ui/button';
 import { InlineSelect } from '@/src/shared/components/ui/select';
-import { ArrowLeft, ChevronDown } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import type { PrinterModel } from '@/src/features/settings/types/settings';
 
 interface PrinterConfig {
@@ -15,7 +15,6 @@ interface PrinterConfig {
 		agentLastSeenAt?: string | null;
 	};
 	prusaSlicer?: { configured?: boolean; usingBuiltInDefaultProfile?: boolean };
-	raiseCloud: { configured: boolean };
 }
 
 export interface PrinterSettings {
@@ -141,7 +140,6 @@ export function DirectProducePanel({
 				setPrinterConfig({
 					slicer: { engine: 'prusaslicer', configured: false, agentOnline: false },
 					prusaSlicer: { configured: false, usingBuiltInDefaultProfile: true },
-					raiseCloud: { configured: false },
 				});
 			});
 	}, []);
@@ -181,7 +179,6 @@ export function DirectProducePanel({
 		typeof printerConfig?.slicer?.agentOnline === 'boolean'
 			? !!printerConfig.slicer.agentOnline
 			: false;
-	const raiseCloudConfigured = printerConfig?.raiseCloud.configured ?? false;
 
 	return (
 		<Card>
@@ -401,41 +398,11 @@ export function DirectProducePanel({
 					</Button>
 				</div>
 
-				{/* Send to printer section */}
-				<div className="space-y-2 pt-2 border-t border-ui-border">
-					<h4 className="text-sm font-semibold text-ui-text pt-2">
-						Stuur naar printer
-					</h4>
-					<div className="flex items-center justify-between text-sm">
-						<span className="text-ui-muted">Printer</span>
-						<span className="text-ui-text flex items-center gap-1">
-							Onder (192.168.0.128)
-						<ChevronDown size={14} strokeWidth={2} className="text-ui-accent" />
-						</span>
-					</div>
-					<Button
-						className="w-full bg-ui-accent text-slate-900 hover:opacity-90"
-						disabled={!raiseCloudConfigured}
-						title={
-							!raiseCloudConfigured
-								? 'RaiseCloud API is niet geconfigureerd'
-								: undefined
-						}
-					>
-						Stuur naar printer
-					</Button>
-					{!raiseCloudConfigured && (
-						<p className="text-xs text-ui-muted">
-							Configureer RaiseCloud API credentials om naar de printer te
-							versturen.
-						</p>
-					)}
-					{!slicerConfigured && (
-						<p className="text-xs text-ui-muted">
-							Configureer PrusaSlicer om gcode te genereren.
-						</p>
-					)}
-				</div>
+				{!slicerConfigured && (
+					<p className="text-xs text-ui-muted">
+						Configureer PrusaSlicer om gcode te genereren.
+					</p>
+				)}
 			</CardContent>
 		</Card>
 	);

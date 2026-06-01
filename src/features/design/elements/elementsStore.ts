@@ -74,6 +74,7 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 			rotationRad: defaults.rotationRad,
 			scaleU: item.defaultScale?.[0] ?? 1,
 			scaleV: item.defaultScale?.[1] ?? 1,
+			stackOrder: get().placedElements.length,
 		};
 
 		set((state) => ({
@@ -123,6 +124,7 @@ export const useElementsStore = create<ElementsState>((set, get) => ({
 				? mirrorPlacedElementToSide(source, targetSide)
 				: structuredClone(source)),
 			id: genId(),
+			stackOrder: get().placedElements.length,
 		};
 
 		set((state) => ({

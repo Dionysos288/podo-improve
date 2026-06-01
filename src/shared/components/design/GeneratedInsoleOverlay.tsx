@@ -11,6 +11,8 @@ interface GeneratedInsoleOverlayProps {
 	onMirrorToOther: (side: InsoleSide) => void;
 	onTrimlineEdit?: (side: InsoleSide) => void;
 	onScanRotateEdit?: (side: InsoleSide) => void;
+	/** When false, the "3D scan draaien" action is hidden because the underlying 3D model is not visible. */
+	scanRotateAvailable?: boolean;
 	className?: string;
 }
 
@@ -21,6 +23,7 @@ export function GeneratedInsoleOverlay({
 	onMirrorToOther,
 	onTrimlineEdit,
 	onScanRotateEdit,
+	scanRotateAvailable = true,
 	className,
 }: GeneratedInsoleOverlayProps) {
 	const isBoxOn = selectedSide === 'left' ? boxEnabled.left : boxEnabled.right;
@@ -71,7 +74,7 @@ export function GeneratedInsoleOverlay({
 					</button>
 				)}
 
-				{onScanRotateEdit && (
+				{onScanRotateEdit && scanRotateAvailable && (
 					<button
 						type="button"
 						onClick={() => onScanRotateEdit(selectedSide)}

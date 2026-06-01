@@ -27,6 +27,9 @@ export {
 	mirrorTrimlineHandleProfileAcrossWidth,
 	mirrorPlacedElementToSide,
 } from './placement';
+export { normalizeElementFloorMode } from './normalizeFloorMode';
+export type { LegacyElementFloorMode, PersistedFloorMode } from './normalizeFloorMode';
+export { sortPlacedElementsByStack } from './sortPlacedElements';
 export {
 	applyElements,
 	applyElementColors,

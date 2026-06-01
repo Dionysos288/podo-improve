@@ -35,11 +35,14 @@ export interface CorrectionConfig {
 	defaultRightValue?: number | string;
 }
 
-function useBufferedNumber(
+export function useBufferedNumber(
 	value: number,
 	onChange: (value: number) => void,
 	commitDelayMs = 0,
+	options?: { flushOnPointerUp?: boolean },
 ) {
+	const flushOnPointerUp =
+		options?.flushOnPointerUp ?? (commitDelayMs > 0);
 	const [draftValue, setDraftValue] = useState(value);
 	const frameRef = useRef<number | null>(null);
 	const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -66,6 +69,32 @@ function useBufferedNumber(
 		};
 	}, []);
 
+	const flush = useCallback(() => {
+		let didCommit = false;
+		if (timeoutRef.current != null) {
+			clearTimeout(timeoutRef.current);
+			timeoutRef.current = null;
+			onChangeRef.current(pendingValueRef.current);
+			didCommit = true;
+		}
+		if (frameRef.current != null) {
+			cancelAnimationFrame(frameRef.current);
+			frameRef.current = null;
+			if (!didCommit) {
+				onChangeRef.current(pendingValueRef.current);
+			}
+		}
+	}, []);
+
+	useEffect(() => {
+		if (!flushOnPointerUp) return;
+		const onUp = () => {
+			flush();
+		};
+		window.addEventListener('pointerup', onUp, true);
+		return () => window.removeEventListener('pointerup', onUp, true);
+	}, [flushOnPointerUp, flush]);
+
 	const updateValue = useCallback((nextValue: number) => {
 		pendingValueRef.current = nextValue;
 		setDraftValue(nextValue);
@@ -87,7 +116,7 @@ function useBufferedNumber(
 		});
 	}, [commitDelayMs]);
 
-	return { draftValue, updateValue };
+	return { draftValue, updateValue, flush };
 }
 
 // Styled wrapper for collapsible sections
@@ -158,6 +187,8 @@ interface StyledNumberFieldProps {
 	label?: string;
 	className?: string;
 	commitDelayMs?: number;
+	/** When true (default: same as commitDelayMs &gt; 0), commits pending value on global pointerup */
+	flushOnPointerUp?: boolean;
 }
 
 export function StyledNumberField({
@@ -170,8 +201,12 @@ export function StyledNumberField({
 	label,
 	className,
 	commitDelayMs = 0,
+	flushOnPointerUp,
 }: StyledNumberFieldProps) {
-	const { draftValue, updateValue } = useBufferedNumber(value, onChange, commitDelayMs);
+	const flushPU = flushOnPointerUp ?? commitDelayMs > 0;
+	const { draftValue, updateValue } = useBufferedNumber(value, onChange, commitDelayMs, {
+		flushOnPointerUp: flushPU,
+	});
 
 	return (
 		<NumberField.Root
@@ -354,6 +389,7 @@ interface DualNumberInputProps {
 	unit?: string;
 	label?: string;
 	className?: string;
+	commitDelayMs?: number;
 }
 
 export function DualNumberInput({
@@ -367,6 +403,7 @@ export function DualNumberInput({
 	unit = 'mm',
 	label,
 	className,
+	commitDelayMs = 0,
 }: DualNumberInputProps) {
 	return (
 		<div className={cn('space-y-2', className)}>
@@ -381,6 +418,7 @@ export function DualNumberInput({
 						max={max}
 						step={step}
 						unit={unit}
+						commitDelayMs={commitDelayMs}
 					/>
 				</div>
 				<div className="flex-1">
@@ -392,6 +430,7 @@ export function DualNumberInput({
 						max={max}
 						step={step}
 						unit={unit}
+						commitDelayMs={commitDelayMs}
 					/>
 				</div>
 			</div>

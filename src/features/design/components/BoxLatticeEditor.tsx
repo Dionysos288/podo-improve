@@ -22,13 +22,22 @@ import {
 	MAX_ABS_DU_DV,
 } from '@/src/features/design/utils/boxLatticeSmoothing';
 
-const HANDLE_R = 0.22;
-const HANDLE_HOVER_R = 0.3;
-const HANDLE_SEL_R = 0.34;
-const COLOR_DEFAULT = new THREE.Color('#cbd5e1');
+// Control points are the primary affordance, so they read larger and brighter than the
+// lattice that frames them.
+const HANDLE_R = 0.3;
+const HANDLE_HOVER_R = 0.38;
+const HANDLE_SEL_R = 0.4;
+const COLOR_DEFAULT = new THREE.Color('#ffffff');
 const COLOR_SELECTED = new THREE.Color('#22d3ee');
 const COLOR_DIM = new THREE.Color('#334155');
-const COLOR_HOVER = new THREE.Color('#ffffff');
+const COLOR_HOVER = new THREE.Color('#a5f3fc');
+// Green lattice is context, not the focus: the interior grid is kept faint so layers
+// stay distinguishable without the lines blending into a solid mass, and the outer
+// frame is only slightly stronger so the editable box still reads.
+const COLOR_GRID_LINE = '#34d399';
+const COLOR_FRAME = '#34d399';
+const GRID_LINE_OPACITY = 0.22;
+const FRAME_OPACITY = 0.6;
 const SMOOTH_RADIUS = 3;
 
 const _sphere = new THREE.SphereGeometry(1, 6, 4);
@@ -192,10 +201,19 @@ export function BoxLatticeEditor({
 	onOffsetsLiveChange,
 	onDragEnd,
 }: BoxLatticeEditorProps) {
-	const { camera, gl, raycaster } = useThree();
+	const { camera, gl, raycaster, invalidate } = useThree();
 	const groupRef = useRef<THREE.Group>(null);
 	const instanceRef = useRef<THREE.InstancedMesh>(null);
 	const needsInstanceUpdate = useRef(true);
+
+	// The canvas renders on demand (frameloop="demand"), so any handle/selection change
+	// must request a frame or it won't paint until an unrelated render happens.
+	const invalidateRef = useRef(invalidate);
+	invalidateRef.current = invalidate;
+	const markDirty = useCallback(() => {
+		needsInstanceUpdate.current = true;
+		invalidateRef.current();
+	}, []);
 
 	const frame = latticeKit.frame;
 	const nodes = latticeKit.nodes;
@@ -248,7 +266,7 @@ export function BoxLatticeEditor({
 				dh: 0,
 			}));
 		}
-		needsInstanceUpdate.current = true;
+		markDirty();
 		if (
 			savedOffsets &&
 			Array.isArray(savedOffsets.offsets) &&
@@ -263,7 +281,7 @@ export function BoxLatticeEditor({
 		) {
 			setTimeout(() => onOffsetsLiveChangeRef.current?.([...offsetsRef.current]), 0);
 		}
-	}, [cols, rows, layers, keySuffix]);
+	}, [cols, rows, layers, keySuffix, markDirty]);
 
 	const cameraRef = useRef(camera);
 	cameraRef.current = camera;
@@ -323,6 +341,7 @@ export function BoxLatticeEditor({
 	const selectedSetRef = useRef<Set<number>>(new Set());
 
 	const dragging = useRef(false);
+	const dragMovedRef = useRef(false);
 	const dragSnap = useRef<LatticeOffsetVec[]>([]);
 	const dragHandles = useRef<number[]>([]);
 	const dragPlaneRef = useRef(new THREE.Plane());
@@ -500,14 +519,15 @@ export function BoxLatticeEditor({
 					const s = selectedSetRef.current;
 					if (s.has(hit)) s.delete(hit);
 					else s.add(hit);
-					needsInstanceUpdate.current = true;
+					markDirty();
 					return;
 				}
 				if (!selectedSetRef.current.has(hit)) {
 					selectedSetRef.current = new Set([hit]);
-					needsInstanceUpdate.current = true;
+					markDirty();
 				}
 				dragging.current = true;
+				dragMovedRef.current = false;
 				dragHandles.current =
 					selectedSetRef.current.has(hit) && selectedSetRef.current.size > 1
 						? Array.from(selectedSetRef.current)
@@ -524,7 +544,7 @@ export function BoxLatticeEditor({
 			if (!e.ctrlKey) {
 				if (selectedSetRef.current.size > 0) {
 					selectedSetRef.current = new Set();
-					needsInstanceUpdate.current = true;
+					markDirty();
 				}
 				return;
 			}
@@ -532,7 +552,7 @@ export function BoxLatticeEditor({
 			boxSelecting.current = true;
 			boxStartScreen.current = { x: e.clientX, y: e.clientY };
 			selectedSetRef.current = new Set();
-			needsInstanceUpdate.current = true;
+			markDirty();
 		};
 
 		const onMove = (e: PointerEvent) => {
@@ -555,14 +575,15 @@ export function BoxLatticeEditor({
 			}
 			if (dragging.current) {
 				movePlaneDrag(e.clientX, e.clientY, e);
-				needsInstanceUpdate.current = true;
+				dragMovedRef.current = true;
+				markDirty();
 				emitPreview();
 				return;
 			}
 			if (e.buttons !== 0) {
 				if (hoveredIdxRef.current !== -1) {
 					hoveredIdxRef.current = -1;
-					needsInstanceUpdate.current = true;
+					markDirty();
 					el.style.cursor = 'auto';
 				}
 				return;
@@ -574,12 +595,12 @@ export function BoxLatticeEditor({
 			if (h != null) {
 				if (h !== hoveredIdxRef.current) {
 					hoveredIdxRef.current = h;
-					needsInstanceUpdate.current = true;
+					markDirty();
 					el.style.cursor = 'grab';
 				}
 			} else if (hoveredIdxRef.current !== -1) {
 				hoveredIdxRef.current = -1;
-				needsInstanceUpdate.current = true;
+				markDirty();
 				el.style.cursor = 'auto';
 			}
 		};
@@ -618,15 +639,18 @@ export function BoxLatticeEditor({
 						}
 					}
 					selectedSetRef.current = sel;
-					needsInstanceUpdate.current = true;
+					markDirty();
 				}
 				return;
 			}
 			if (dragging.current) {
 				dragging.current = false;
 				el.style.cursor = 'auto';
-				needsInstanceUpdate.current = true;
-				emitCommit();
+				markDirty();
+				// Only a real move needs the expensive deform commit; a plain selection
+				// click must not trigger a full geometry rebuild.
+				if (dragMovedRef.current) emitCommit();
+				dragMovedRef.current = false;
 			}
 		};
 
@@ -646,6 +670,7 @@ export function BoxLatticeEditor({
 		movePlaneDrag,
 		emitPreview,
 		emitCommit,
+		markDirty,
 		nodes,
 	]);
 
@@ -688,10 +713,19 @@ export function BoxLatticeEditor({
 			let du = 0;
 			let dv = 0;
 			let dh = 0;
-			if (e.key === 'ArrowUp') dh = step;
-			else if (e.key === 'ArrowDown') dh = -step;
-			else if (e.key === 'ArrowLeft') dv = -step;
-			else if (e.key === 'ArrowRight') dv = step;
+			const planar = e.ctrlKey || e.metaKey;
+			if (planar) {
+				if (e.key === 'ArrowUp') du = -step;
+				else if (e.key === 'ArrowDown') du = step;
+				else if (e.key === 'ArrowLeft') dv = step;
+				else if (e.key === 'ArrowRight') dv = -step;
+			} else if (e.key === 'ArrowUp') {
+				dh = step;
+			} else if (e.key === 'ArrowDown') {
+				dh = -step;
+			} else {
+				return;
+			}
 			const mod = applyModifierLocks(du, dv, dh, e.shiftKey, e.altKey);
 			applyVecDeltaWithSmoothing(
 				nodes,
@@ -707,14 +741,14 @@ export function BoxLatticeEditor({
 				MAX_ABS_DU_DV,
 				maxDhRef.current,
 			);
-			needsInstanceUpdate.current = true;
+			markDirty();
 			onLiveRef.current?.(offsetsRef.current);
 			onSaveRef.current?.(saveDataRef.current());
 			onDragEndRef.current?.();
 		};
 		document.addEventListener('keydown', onKey, true);
 		return () => document.removeEventListener('keydown', onKey, true);
-	}, [active, gl, nodes]);
+	}, [active, gl, nodes, markDirty]);
 
 	useEffect(() => {
 		return () => {
@@ -727,19 +761,21 @@ export function BoxLatticeEditor({
 
 	return (
 		<group ref={groupRef}>
-			<lineSegments geometry={gridLinesGeo} renderOrder={10}>
+			<lineSegments geometry={gridLinesGeo} renderOrder={9}>
 				<lineBasicMaterial
-					color="#94a3b8"
-					transparent={false}
+					color={COLOR_GRID_LINE}
+					transparent
+					opacity={GRID_LINE_OPACITY}
 					depthTest={false}
 					depthWrite={false}
 					toneMapped={false}
 				/>
 			</lineSegments>
-			<lineSegments geometry={frameGeo} renderOrder={9}>
+			<lineSegments geometry={frameGeo} renderOrder={10}>
 				<lineBasicMaterial
-					color="#64748b"
-					transparent={false}
+					color={COLOR_FRAME}
+					transparent
+					opacity={FRAME_OPACITY}
 					depthTest={false}
 					depthWrite={false}
 					toneMapped={false}

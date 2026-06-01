@@ -11,14 +11,20 @@ import {
 	type ContourData,
 } from '@/src/features/design/utils/interactiveTrimlineContour';
 
-const MIN_MM = -5;
-const MAX_MM = 8;
+const MIN_WIDTH_MM = -5;
+const MAX_WIDTH_MM = 8;
+const MIN_HEIGHT_MM = -35;
+const MAX_HEIGHT_MM = 20;
 const BINS = 48;
 const SMOOTH_RADIUS = 4;
 const GAUSS_SIGMA = 2;
 
-function clampMm(v: number): number {
-	return Math.max(MIN_MM, Math.min(MAX_MM, v));
+function clampWidthMm(v: number): number {
+	return Math.max(MIN_WIDTH_MM, Math.min(MAX_WIDTH_MM, v));
+}
+
+function clampHeightMm(v: number): number {
+	return Math.max(MIN_HEIGHT_MM, Math.min(MAX_HEIGHT_MM, v));
 }
 
 function buildCurveFlatOrder(bins: number): number[] {
@@ -97,8 +103,8 @@ function buildTrimlineProfileFromPoints(
 		const nz = contour.rightNormals[ri + 2];
 		const dW = (dx * nx + dy * ny + dz * nz) / mw;
 		const dH = (dx * hxN + dy * hyN + dz * hzN) / mw;
-		rightOffsetsMm.push(clampMm((prevR?.[i] ?? 0) + dW));
-		rightHeightOffsetsMm.push(clampMm((prevRH?.[i] ?? 0) + dH));
+		rightOffsetsMm.push(clampWidthMm((prevR?.[i] ?? 0) + dW));
+		rightHeightOffsetsMm.push(clampHeightMm((prevRH?.[i] ?? 0) + dH));
 		points3D.push({ x: points[ri], y: points[ri + 1], z: points[ri + 2] });
 	}
 	for (let j = 0; j < bins; j++) {
@@ -112,8 +118,8 @@ function buildTrimlineProfileFromPoints(
 		const nz = contour.leftNormals[li + 2];
 		const dW = (dx * nx + dy * ny + dz * nz) / mw;
 		const dH = (dx * hxN + dy * hyN + dz * hzN) / mw;
-		leftOffsetsMm.push(clampMm((prevL?.[j] ?? 0) + dW));
-		leftHeightOffsetsMm.push(clampMm((prevLH?.[j] ?? 0) + dH));
+		leftOffsetsMm.push(clampWidthMm((prevL?.[j] ?? 0) + dW));
+		leftHeightOffsetsMm.push(clampHeightMm((prevLH?.[j] ?? 0) + dH));
 		points3D.push({ x: points[fi], y: points[fi + 1], z: points[fi + 2] });
 	}
 

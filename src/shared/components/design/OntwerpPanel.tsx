@@ -175,6 +175,7 @@ export function OntwerpPanel({
 			{/* ── 1. Kuip hoogte ── */}
 			<CollapsibleSection title="Kuip hoogte" defaultOpen={false}>
 					<DualNumberInput
+						commitDelayMs={120}
 						label="Kuip hoogte"
 						leftValue={corrections.kuipHoogte.left}
 						rightValue={corrections.kuipHoogte.right}
@@ -235,6 +236,7 @@ export function OntwerpPanel({
 					}
 				/>
 				<DualNumberInput
+					commitDelayMs={120}
 					label="Hiel heffing"
 					leftValue={corrections.hielHeffing.value.left}
 					rightValue={corrections.hielHeffing.value.right}
@@ -264,6 +266,7 @@ export function OntwerpPanel({
 			{/* ── 4. Mediale boog correctie ── */}
 			<CollapsibleSection title="Mediale boog correctie" defaultOpen={false}>
 				<DualNumberInput
+					commitDelayMs={120}
 					label="Mediale boog correctie"
 					leftValue={corrections.medialeBoogCorrectie.left}
 					rightValue={corrections.medialeBoogCorrectie.right}
@@ -321,6 +324,7 @@ export function OntwerpPanel({
 					}
 				/>
 				<DualNumberInput
+					commitDelayMs={120}
 					label="Correctie"
 					leftValue={corrections.pronatie.correctie.left}
 					rightValue={corrections.pronatie.correctie.right}
@@ -372,6 +376,7 @@ export function OntwerpPanel({
 					}
 				/>
 				<DualNumberInput
+					commitDelayMs={120}
 					label="Correctie"
 					leftValue={corrections.supinatie.correctie.left}
 					rightValue={corrections.supinatie.correctie.right}

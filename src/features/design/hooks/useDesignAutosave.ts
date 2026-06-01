@@ -2,7 +2,10 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useDesignStore } from '@/src/shared/core/store/designStore';
-import { useElementsStore } from '@/src/features/design/elements';
+import {
+	useElementsStore,
+	normalizeElementFloorMode,
+} from '@/src/features/design/elements';
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -454,15 +457,14 @@ export function useDesignAutosave(
 			const elements = design.elements as Array<Record<string, unknown>>;
 			if (Array.isArray(elements) && elements.length > 0) {
 				elementsStore.clearAll();
-				for (const el of elements) {
+				for (let index = 0; index < elements.length; index++) {
+					const el = elements[index];
 					const migratedElement = migrateLoadedElement(el);
-					// Migrate old floorMode values ('sole'|'scan'|'free') → 'vloeien'
-					if (
-						migratedElement.floorMode &&
-						migratedElement.floorMode !== 'vloeien' &&
-						migratedElement.floorMode !== 'niet-vloeien'
-					) {
-						migratedElement.floorMode = 'vloeien';
+					migratedElement.floorMode = normalizeElementFloorMode(
+						migratedElement.floorMode as string,
+					);
+					if (typeof migratedElement.stackOrder !== 'number') {
+						migratedElement.stackOrder = index;
 					}
 					// Directly populate placedElements rather than going through addElement
 					// since addElement requires a libraryKey lookup

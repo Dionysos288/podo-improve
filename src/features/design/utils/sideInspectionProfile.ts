@@ -3,33 +3,27 @@ import * as THREE from 'three';
 export type SideInspectionProfileBuffers = {
 	top: THREE.Vector3[];
 	bottom: THREE.Vector3[];
-	fillGeometry: THREE.BufferGeometry;
+};
+
+export type SideInspectionProfileBasis = {
+	up: THREE.Vector3;
+	lateral: THREE.Vector3;
 };
 
 const DEFAULT_BINS = 200;
 
-function snapOrthonormalBasis(
-	cameraPosition: THREE.Vector3,
-	viewTarget: THREE.Vector3,
-	cameraUp: THREE.Vector3,
-): { forward: THREE.Vector3; up: THREE.Vector3; lateral: THREE.Vector3 } | null {
-	const forward = new THREE.Vector3().subVectors(viewTarget, cameraPosition);
-	if (forward.lengthSq() < 1e-12) return null;
-	forward.normalize();
-
-	let up = cameraUp.clone();
+function normalizeProfileBasis(basis: SideInspectionProfileBasis): SideInspectionProfileBasis | null {
+	const up = basis.up.clone();
 	if (up.lengthSq() < 1e-12) up.set(0, 1, 0);
 	up.normalize();
 
-	let lateral = new THREE.Vector3().crossVectors(up, forward);
-	if (lateral.lengthSq() < 1e-10) {
-		up.set(0, 0, 1);
-		lateral.crossVectors(up, forward);
-	}
+	const lateral = basis.lateral.clone();
+	if (lateral.lengthSq() < 1e-12) return null;
+	lateral.addScaledVector(up, -lateral.dot(up));
+	if (lateral.lengthSq() < 1e-12) return null;
 	lateral.normalize();
-	up.crossVectors(forward, lateral).normalize();
 
-	return { forward, up, lateral };
+	return { up, lateral };
 }
 
 function smoothEnvelope(arr: Float32Array, hit: Uint8Array, n: number, passes = 2): void {
@@ -90,21 +84,19 @@ function worldFromUV(
 }
 
 /**
- * Builds camera-aligned top/bottom envelopes and a thin profile fill mesh (world space).
+ * Builds fixed-axis top/bottom envelopes in world space.
  * Per-bin min/max in the viewing plane — good for thickness readout; not a full CAD silhouette.
  */
 export function buildSideInspectionProfile(
 	geometry: THREE.BufferGeometry,
 	meshWorldMatrix: THREE.Matrix4,
-	cameraPosition: THREE.Vector3,
-	viewTarget: THREE.Vector3,
-	cameraUp: THREE.Vector3,
+	profileBasis: SideInspectionProfileBasis,
 	binCount = DEFAULT_BINS,
 ): SideInspectionProfileBuffers | null {
 	const pos = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
 	if (!pos || pos.count < 3) return null;
 
-	const basis = snapOrthonormalBasis(cameraPosition, viewTarget, cameraUp);
+	const basis = normalizeProfileBasis(profileBasis);
 	if (!basis) return null;
 	const { up, lateral } = basis;
 
@@ -173,43 +165,5 @@ export function buildSideInspectionProfile(
 		return null;
 	}
 
-	const verts: number[] = [];
-	const indices: number[] = [];
-	let vIdx = 0;
-	const pushVert = (v: THREE.Vector3) => {
-		verts.push(v.x, v.y, v.z);
-		return vIdx++;
-	};
-
-	const p00 = new THREE.Vector3();
-	const p01 = new THREE.Vector3();
-	const p10 = new THREE.Vector3();
-	const p11 = new THREE.Vector3();
-	for (let i = 0; i < bins - 1; i++) {
-		if (!hit[i] || !hit[i + 1]) continue;
-		const u0 = uMin + i * du;
-		const u1 = uMin + (i + 1) * du;
-		const b0 = bottom[i]!;
-		const b1 = bottom[i + 1]!;
-		const t0 = top[i]!;
-		const t1 = top[i + 1]!;
-
-		worldFromUV(origin, lateral, up, u0, b0, p00);
-		worldFromUV(origin, lateral, up, u1, b1, p01);
-		worldFromUV(origin, lateral, up, u0, t0, p10);
-		worldFromUV(origin, lateral, up, u1, t1, p11);
-
-		const i00 = pushVert(p00);
-		const i01 = pushVert(p01);
-		const i10 = pushVert(p10);
-		const i11 = pushVert(p11);
-		indices.push(i00, i01, i11, i00, i11, i10);
-	}
-
-	const fillGeometry = new THREE.BufferGeometry();
-	fillGeometry.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-	fillGeometry.setIndex(indices);
-	fillGeometry.computeVertexNormals();
-
-	return { top: topPts, bottom: botPts, fillGeometry };
+	return { top: topPts, bottom: botPts };
 }

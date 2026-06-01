@@ -1,5 +1,6 @@
 'use client';
 
+import { StyledNumberField } from '@/src/shared/components/design/CorrectionControls';
 import { cn } from '@/src/shared/lib/cn';
 
 export function PrintPreparationPanel(props: {
@@ -77,21 +78,16 @@ export function PrintPreparationPanel(props: {
 				<span className="text-xs font-medium uppercase tracking-wide text-(--ui-text)/70">
 					Hielrand dikte ({sideLabel})
 				</span>
-				<div className="flex items-center gap-2">
-					<input
-						type="number"
-						min={0}
-						max={10}
-						step={0.1}
-						value={heelEdgeThicknessMm}
-						onChange={(e) => {
-							const v = parseFloat(e.target.value);
-							if (!Number.isNaN(v)) onHeelEdgeChange(v);
-						}}
-						className="w-20 min-h-11 rounded-lg border border-ui-border bg-[rgba(255,255,255,0.04)] px-3 py-1.5 text-sm text-ui-text text-center focus:outline-none focus:border-ui-accent"
-					/>
-					<span className="text-xs text-ui-muted">mm</span>
-				</div>
+				<StyledNumberField
+					value={heelEdgeThicknessMm}
+					onChange={onHeelEdgeChange}
+					min={0}
+					max={10}
+					step={0.1}
+					unit="mm"
+					commitDelayMs={120}
+					className="min-h-11"
+				/>
 			</div>
 
 			<div className="space-y-2">

@@ -6,7 +6,7 @@ export type OverlayRegistrationLike = {
 };
 
 /** Defaults consumed by `EnhancedSTLViewer` scan overlay alignment. */
-export const DEFAULT_EMBED_SCAN_HEIGHT_FRACTION = 0.58;
+export const DEFAULT_EMBED_SCAN_HEIGHT_FRACTION = 0.68;
 export const DEFAULT_SINK_BIAS_MM = 2;
 
 /** Match EnhancedSTLViewer STLMesh rotations (no per-call allocation). */

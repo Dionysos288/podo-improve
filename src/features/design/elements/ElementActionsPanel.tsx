@@ -12,8 +12,8 @@ import { cn } from '@/src/shared/lib/cn';
 type Props = {
 	element: PlacedElement;
 	className?: string;
-	editMode?: 'move' | 'scale' | 'trimline' | 'box' | null;
-	onEditModeChange?: (mode: 'move' | 'scale' | 'trimline' | 'box' | null) => void;
+	editMode?: 'scale' | 'trimline' | 'box' | null;
+	onEditModeChange?: (mode: 'scale' | 'trimline' | 'box' | null) => void;
 };
 
 /**
@@ -45,7 +45,7 @@ export function ElementActionsPanel({ element, className, editMode = null, onEdi
 		updateElement(element.id, { rotationRad: newRad });
 	}, [element.id, element.rotationRad, updateElement]);
 
-	const toggleMode = useCallback((mode: 'move' | 'scale' | 'trimline' | 'box') => {
+	const toggleMode = useCallback((mode: 'scale' | 'trimline' | 'box') => {
 		onEditModeChange?.(editMode === mode ? null : mode);
 	}, [editMode, onEditModeChange]);
 
@@ -89,14 +89,6 @@ export function ElementActionsPanel({ element, className, editMode = null, onEdi
 			description: editMode === 'trimline' ? 'Actief' : 'Rand wijzigen',
 			onClick: () => toggleMode('trimline'),
 			active: editMode === 'trimline',
-			danger: false,
-		},
-		{
-			key: 'move',
-			label: 'Verplaatsen',
-			description: editMode === 'move' ? 'Pijlen actief' : 'Met pijlen verplaatsen',
-			onClick: () => toggleMode('move'),
-			active: editMode === 'move',
 			danger: false,
 		},
 		{

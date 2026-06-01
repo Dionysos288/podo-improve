@@ -818,7 +818,10 @@ export function applyZoolbreedte(
 }
 
 /**
- * Apply all corrections to a geometry
+ * Apply all corrections to a geometry.
+ *
+ * Correction steps mutate vertex positions sequentially; downstream passes must rebuild
+ * per-step spatial context — do not cache heel-to-length mappers across the full pipeline here.
  */
 export function applyAllCorrections(
 	geometry: THREE.BufferGeometry,

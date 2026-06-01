@@ -260,11 +260,6 @@ export function ViewOverlay({
 							Beweeg je muis over het model.
 						</p>
 					</div>
-
-					<p className="text-[11px] leading-snug">
-						Tip: gebruik <span className="text-(--ui-text)">Achter</span> voor een
-						stabiele meetweergave.
-					</p>
 				</div>
 			)}
 		</div>

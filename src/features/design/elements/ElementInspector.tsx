@@ -17,7 +17,7 @@ type Props = {
 	/** Callback to close / deselect (back button) */
 	onClose?: () => void;
 	/** Optional active element edit mode supplied by the action panel */
-	editMode?: 'move' | 'scale' | 'trimline' | 'box' | null;
+	editMode?: 'scale' | 'trimline' | 'box' | null;
 };
 
 /**
