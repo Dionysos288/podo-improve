@@ -7,6 +7,7 @@ import {
 } from '@/src/shared/core/auth/get-session';
 import { randomBytes } from 'crypto';
 import { sendInvitationEmail } from '@/src/shared/core/email/send-invitation';
+import { resolveAppUrl } from '@/src/shared/core/auth/resolve-app-url';
 
 function generateInviteCode(): string {
 	return randomBytes(4).toString('hex').toUpperCase();
@@ -48,7 +49,7 @@ export async function createInvitation(data: CreateInvitationData) {
 	});
 
 	if (data.type === 'email' && data.email) {
-		const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+		const appUrl = resolveAppUrl(process.env.NEXT_PUBLIC_APP_URL);
 		const inviteUrl = `${appUrl}/join/${invitation.code}`;
 		const expiresInDays = data.expiresInDays || 7;
 

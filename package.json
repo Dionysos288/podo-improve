@@ -7,8 +7,8 @@
 	},
 	"scripts": {
 		"dev": "next dev",
-		"postinstall": "prisma generate",
-		"build": "prisma generate && next build",
+		"postinstall": "node scripts/prisma-generate.mjs",
+		"build": "node scripts/prisma-generate.mjs && next build",
 		"start": "next start",
 		"lint": "eslint",
 		"test": "vitest run",

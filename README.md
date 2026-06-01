@@ -88,7 +88,9 @@ http://localhost:3000
 5. Set `BETTER_AUTH_URL` and `NEXT_PUBLIC_APP_URL` to your Vercel deployment URL (preview and production can each have their own values).
 6. Deploy. The build runs `prisma generate` then `next build`; `postinstall` also generates the Prisma client after `npm install`.
 
-If a deployment fails, open the build logs in Vercel and confirm required env vars are set for **Preview** and/or **Production**.
+If a deployment fails, open the build logs in Vercel and confirm required env vars are set for **Preview** and/or **Production** (not only Production — branch deploys use Preview).
+
+**Build failed with `npm run build` exited with 1`?** Scroll above that line in the log for the first red error. Common causes: missing `DIRECT_URL` (set it to your Supabase direct Postgres URL, port `5432`), env vars only on Production while deploying a Preview branch, or Prisma engine issues (this repo targets `rhel-openssl-3.0.x` for Vercel).
 
 ## Contributing
 
