@@ -86,6 +86,17 @@ Open:
 http://localhost:3000
 ```
 
+### Deploy on Vercel
+
+1. Import the GitHub repo in [Vercel](https://vercel.com/new).
+2. Set **Root Directory** to the repo root and keep the default **Next.js** framework preset.
+3. Add environment variables from [`.env.example`](./.env.example) under **Settings → Environment Variables** (at minimum `DATABASE_URL`, `DIRECT_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `NEXT_PUBLIC_APP_URL`, and Supabase keys).
+4. Use the same `DATABASE_URL` / `DIRECT_URL` values as your hosted Postgres (e.g. Supabase connection strings).
+5. Set `BETTER_AUTH_URL` and `NEXT_PUBLIC_APP_URL` to your Vercel deployment URL (preview and production can each have their own values).
+6. Deploy. The build runs `prisma generate` then `next build`; `postinstall` also generates the Prisma client after `npm install`.
+
+If a deployment fails, open the build logs in Vercel and confirm required env vars are set for **Preview** and/or **Production**.
+
 ## Contributing
 
 Contributions are welcome.

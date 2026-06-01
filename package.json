@@ -2,8 +2,12 @@
 	"name": "podo-improve",
 	"version": "0.1.0",
 	"private": true,
+	"engines": {
+		"node": ">=20"
+	},
 	"scripts": {
 		"dev": "next dev",
+		"postinstall": "prisma generate",
 		"build": "prisma generate && next build",
 		"start": "next start",
 		"lint": "eslint",
