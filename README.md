@@ -65,14 +65,7 @@ cd podo-improve
 npm install
 ```
 
-Create a `.env.local` file:
-
-```env
-DATABASE_URL=
-NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
-OPENAI_API_KEY=
-```
+Copy [`.env.example`](./.env.example) to `.env.local` and fill in your values (same variable names as production).
 
 Run the development server:
 
@@ -90,7 +83,7 @@ http://localhost:3000
 
 1. Import the GitHub repo in [Vercel](https://vercel.com/new).
 2. Set **Root Directory** to the repo root and keep the default **Next.js** framework preset.
-3. Add environment variables from [`.env.example`](./.env.example) under **Settings → Environment Variables** (at minimum `DATABASE_URL`, `DIRECT_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `NEXT_PUBLIC_APP_URL`, and Supabase keys).
+3. Add the variables from [`.env.example`](./.env.example) under **Settings → Environment Variables**. `DATABASE_URL` / `DIRECT_URL` are for Postgres (Prisma); `SUPABASE_SERVICE_ROLE_KEY` is for file uploads. `NEXT_PUBLIC_SUPABASE_URL` can be omitted when `DATABASE_URL` is a Supabase Postgres URL (the app derives `https://<project-ref>.supabase.co` from it).
 4. Use the same `DATABASE_URL` / `DIRECT_URL` values as your hosted Postgres (e.g. Supabase connection strings).
 5. Set `BETTER_AUTH_URL` and `NEXT_PUBLIC_APP_URL` to your Vercel deployment URL (preview and production can each have their own values).
 6. Deploy. The build runs `prisma generate` then `next build`; `postinstall` also generates the Prisma client after `npm install`.
