@@ -44,6 +44,7 @@ import {
 } from '@/src/features/design/viewer/scanOverlayRender';
 import { tessellateAndWeldGeometry } from '@/src/features/design/viewer/smoothOverlayGeometry';
 import { applyTrimlineRimSilhouette } from '@/src/features/design/viewer/trimlineRimSilhouette';
+import { applyElementTrimlineFootprint } from '@/src/features/design/viewer/elementTrimlineFootprint';
 import { ViewerPostFX } from '@/src/features/design/viewer/ViewerPostFX';
 import type { PrintZoneId } from '@/src/features/design/print/printZones';
 import { resolvePrintZoneFromLocalPoint } from '@/src/features/design/print/printZones';
@@ -3499,8 +3500,10 @@ function STLMesh({
 		}
 		const startedAt = performance.now();
 		const boxOffsetsByElementId = new Map<string, BoxGridSavedOffsets | null | undefined>();
+		const trimlineProfileByElementId = new Map<string, TrimlineHandleProfile | null | undefined>();
 		for (const element of currentPlacedElements) {
 			boxOffsetsByElementId.set(element.id, element.boxGridOffsets);
+			trimlineProfileByElementId.set(element.id, element.trimlineHandleProfile);
 		}
 		if (currentSelectedBoxEdit?.elementId) {
 			boxOffsetsByElementId.set(currentSelectedBoxEdit.elementId, currentSelectedBoxEdit.savedOffsets);
@@ -3513,6 +3516,9 @@ function STLMesh({
 		for (const overlay of overlays) {
 			const effectiveOffsets = boxOffsetsByElementId.get(overlay.elementId);
 			overlay.geometry = applySavedBoxGridOffsetsToGeometry(overlay.geometry, effectiveOffsets, mw);
+			// Trimline edit follows box-grid so the rim reshape matches the geometry the
+			// user was dragging on (box lattice is applied first during editing too).
+			applyElementTrimlineFootprint(overlay.geometry, trimlineProfileByElementId.get(overlay.elementId), mw);
 		}
 		lastOverlayBuildRef.current = {
 			geometry: geom,
@@ -5153,6 +5159,7 @@ function STLMesh({
 							profile={selectedElementTrimlineEdit.profile}
 							mmToWorld={mmToWorld || MM_TO_WORLD}
 							active
+							mode="element"
 							onDragActiveChange={onTrimDragActiveChange}
 						/>
 					);
@@ -5167,9 +5174,12 @@ function STLMesh({
 					style={{
 						topSurfaceColor: '#f8fafc',
 						topSurfaceOpacity: 0.98,
-						topSurfaceDepthWorld: 0.45,
+						topSurfaceDepthWorld: soleThicknessMm * (mmToWorld || MM_TO_WORLD),
 						bottomColor: '#020617',
 						showTopLine: false,
+						showShellOutline: true,
+						outlineColor: '#f8fafc',
+						outlineWidth: 2.6,
 						lineWidth: 2.6,
 						renderOrder: 9,
 					}}
@@ -6555,8 +6565,8 @@ const EnhancedSTLViewerInner = forwardRef<
 				c.enableRotate = true;
 				c.enablePan = true;
 				c.enableZoom = true;
-				c.minPolarAngle = 0.01;
-				c.maxPolarAngle = Math.PI - 0.01;
+				c.minPolarAngle = 0;
+				c.maxPolarAngle = Math.PI;
 				c.minAzimuthAngle = -Infinity;
 				c.maxAzimuthAngle = Infinity;
 			}
@@ -6989,6 +6999,7 @@ const EnhancedSTLViewerInner = forwardRef<
 									profile={editorInteractiveProfiles?.left ?? null}
 									mmToWorld={leftMmToWorld || MM_TO_WORLD}
 									active={true}
+									mode="insole"
 									onDragActiveChange={handleInteractionDragActive}
 								/>
 							</group>
@@ -7005,6 +7016,7 @@ const EnhancedSTLViewerInner = forwardRef<
 									profile={editorInteractiveProfiles?.right ?? null}
 									mmToWorld={rightMmToWorld || MM_TO_WORLD}
 									active={true}
+									mode="insole"
 									onDragActiveChange={handleInteractionDragActive}
 								/>
 							</group>
@@ -7137,10 +7149,10 @@ const EnhancedSTLViewerInner = forwardRef<
 							!gridEditMode &&
 							!interactionDragActive
 						}
-						minDistance={50}
-						maxDistance={500}
-						minPolarAngle={lockTopView ? 0 : 0.01}
-						maxPolarAngle={lockTopView ? Math.PI : Math.PI - 0.01}
+						minDistance={2}
+						maxDistance={800}
+						minPolarAngle={0}
+						maxPolarAngle={Math.PI}
 						minAzimuthAngle={lockTopView ? 0 : undefined}
 						maxAzimuthAngle={lockTopView ? 0 : undefined}
 					/>

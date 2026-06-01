@@ -6,10 +6,9 @@ import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
 import type { TrimlineHandleProfile } from '@/src/shared/components/design/TrimlineEditOverlay';
-import {
-	extractContour,
-	type ContourData,
-} from '@/src/features/design/utils/interactiveTrimlineContour';
+import { extractContour } from '@/src/features/design/utils/interactiveTrimlineContour';
+import { extractElementContour } from '@/src/features/design/utils/interactiveElementContour';
+import type { ContourData } from '@/src/features/design/utils/contourTypes';
 
 const MIN_WIDTH_MM = -5;
 const MAX_WIDTH_MM = 8;
@@ -27,11 +26,19 @@ function clampHeightMm(v: number): number {
 	return Math.max(MIN_HEIGHT_MM, Math.min(MAX_HEIGHT_MM, v));
 }
 
-function buildCurveFlatOrder(bins: number): number[] {
+function buildCurveFlatOrder(contour: ContourData): number[] {
+	if (contour.layout === 'loop') {
+		return Array.from({ length: contour.bins }, (_, i) => i);
+	}
 	const out: number[] = [];
+	const bins = contour.bins;
 	for (let i = 0; i < bins; i++) out.push(i);
 	for (let j = bins - 1; j >= 0; j--) out.push(bins + j);
 	return out;
+}
+
+function contourPointCount(contour: ContourData): number {
+	return contour.layout === 'loop' ? contour.bins : contour.bins * 2;
 }
 
 function cyclicVertexDistance(a: number, b: number, n: number): number {
@@ -45,6 +52,10 @@ function gaussianFalloff(vertexDist: number, radius: number, sigma: number): num
 }
 
 function fillOriginals(contour: ContourData, out: Float32Array): void {
+	if (contour.layout === 'loop' && contour.loopPos) {
+		out.set(contour.loopPos);
+		return;
+	}
 	const bins = contour.bins;
 	for (let i = 0; i < bins; i++) {
 		const ri = i * 3;
@@ -93,34 +104,48 @@ function buildTrimlineProfileFromPoints(
 	const prevRH = hasPrev ? prevProfile.rightHeightOffsetsMm : null;
 	const prevLH = hasPrev ? prevProfile.leftHeightOffsetsMm : null;
 
+	const loopNormals = contour.loopNormals ?? contour.rightNormals;
+	const isLoop = contour.layout === 'loop';
+
 	for (let i = 0; i < bins; i++) {
 		const ri = i * 3;
 		const dx = points[ri] - originals[ri];
 		const dy = points[ri + 1] - originals[ri + 1];
 		const dz = points[ri + 2] - originals[ri + 2];
-		const nx = contour.rightNormals[ri];
-		const ny = contour.rightNormals[ri + 1];
-		const nz = contour.rightNormals[ri + 2];
+		const nx = isLoop ? loopNormals[ri] : contour.rightNormals[ri];
+		const ny = isLoop ? loopNormals[ri + 1] : contour.rightNormals[ri + 1];
+		const nz = isLoop ? loopNormals[ri + 2] : contour.rightNormals[ri + 2];
 		const dW = (dx * nx + dy * ny + dz * nz) / mw;
-		const dH = (dx * hxN + dy * hyN + dz * hzN) / mw;
 		rightOffsetsMm.push(clampWidthMm((prevR?.[i] ?? 0) + dW));
-		rightHeightOffsetsMm.push(clampHeightMm((prevRH?.[i] ?? 0) + dH));
+		if (isLoop) {
+			rightHeightOffsetsMm.push(clampHeightMm(prevRH?.[i] ?? 0));
+		} else {
+			const dH = (dx * hxN + dy * hyN + dz * hzN) / mw;
+			rightHeightOffsetsMm.push(clampHeightMm((prevRH?.[i] ?? 0) + dH));
+		}
 		points3D.push({ x: points[ri], y: points[ri + 1], z: points[ri + 2] });
 	}
-	for (let j = 0; j < bins; j++) {
-		const fi = (bins + j) * 3;
-		const li = j * 3;
-		const dx = points[fi] - originals[fi];
-		const dy = points[fi + 1] - originals[fi + 1];
-		const dz = points[fi + 2] - originals[fi + 2];
-		const nx = contour.leftNormals[li];
-		const ny = contour.leftNormals[li + 1];
-		const nz = contour.leftNormals[li + 2];
-		const dW = (dx * nx + dy * ny + dz * nz) / mw;
-		const dH = (dx * hxN + dy * hyN + dz * hzN) / mw;
-		leftOffsetsMm.push(clampWidthMm((prevL?.[j] ?? 0) + dW));
-		leftHeightOffsetsMm.push(clampHeightMm((prevLH?.[j] ?? 0) + dH));
-		points3D.push({ x: points[fi], y: points[fi + 1], z: points[fi + 2] });
+	if (isLoop) {
+		for (let j = 0; j < bins; j++) {
+			leftOffsetsMm.push(clampWidthMm(prevL?.[j] ?? 0));
+			leftHeightOffsetsMm.push(clampHeightMm(prevLH?.[j] ?? 0));
+		}
+	} else {
+		for (let j = 0; j < bins; j++) {
+			const fi = (bins + j) * 3;
+			const li = j * 3;
+			const dx = points[fi] - originals[fi];
+			const dy = points[fi + 1] - originals[fi + 1];
+			const dz = points[fi + 2] - originals[fi + 2];
+			const nx = contour.leftNormals[li];
+			const ny = contour.leftNormals[li + 1];
+			const nz = contour.leftNormals[li + 2];
+			const dW = (dx * nx + dy * ny + dz * nz) / mw;
+			const dH = (dx * hxN + dy * hyN + dz * hzN) / mw;
+			leftOffsetsMm.push(clampWidthMm((prevL?.[j] ?? 0) + dW));
+			leftHeightOffsetsMm.push(clampHeightMm((prevLH?.[j] ?? 0) + dH));
+			points3D.push({ x: points[fi], y: points[fi + 1], z: points[fi + 2] });
+		}
 	}
 
 	return {
@@ -136,10 +161,14 @@ function buildTrimlineProfileFromPoints(
 	};
 }
 
-function closestFlatIndex(hitLocal: THREE.Vector3, points: Float32Array, bins: number): number {
+function closestFlatIndex(
+	hitLocal: THREE.Vector3,
+	points: Float32Array,
+	contour: ContourData,
+): number {
 	let best = 0;
 	let bestD = Infinity;
-	const n = bins * 2;
+	const n = contourPointCount(contour);
 	for (let flat = 0; flat < n; flat++) {
 		const o = flat * 3;
 		const dx = hitLocal.x - points[o];
@@ -152,6 +181,43 @@ function closestFlatIndex(hitLocal: THREE.Vector3, points: Float32Array, bins: n
 		}
 	}
 	return best;
+}
+
+function axisUnitVector(axis: 'x' | 'y' | 'z', target: THREE.Vector3): THREE.Vector3 {
+	target.set(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
+	return target;
+}
+
+function normalAtFlatIndex(contour: ContourData, flat: number, target: THREE.Vector3): THREE.Vector3 {
+	const bins = contour.bins;
+	const o = flat * 3;
+	if (contour.layout === 'loop' && contour.loopNormals) {
+		target.set(contour.loopNormals[o]!, contour.loopNormals[o + 1]!, contour.loopNormals[o + 2]!);
+	} else {
+		const isLeft = flat >= bins;
+		const i = isLeft ? flat - bins : flat;
+		const li = i * 3;
+		const n = isLeft ? contour.leftNormals : contour.rightNormals;
+		target.set(n[li]!, n[li + 1]!, n[li + 2]!);
+	}
+	return target.normalize();
+}
+
+/** Element trimline: footprint only — any screen direction maps to outward normal (no height). */
+function constrainElementDragDelta(
+	contour: ContourData,
+	centerFlat: number,
+	delta: THREE.Vector3,
+	normal: THREE.Vector3,
+	heightAxis: THREE.Vector3,
+	out: THREE.Vector3,
+): void {
+	normalAtFlatIndex(contour, centerFlat, normal);
+	axisUnitVector(contour.heightAxis, heightAxis);
+	out.copy(delta);
+	out.addScaledVector(heightAxis, -out.dot(heightAxis));
+	const along = out.dot(normal);
+	out.copy(normal).multiplyScalar(along);
 }
 
 function applyGaussianDeltaToSnapshot(
@@ -169,7 +235,7 @@ function applyGaussianDeltaToSnapshot(
 
 	out.set(snapshot);
 
-	const totalFlat = bins * 2;
+	const totalFlat = contourPointCount(contour);
 	for (let flat = 0; flat < totalFlat; flat++) {
 		const cv = curveOrder.indexOf(flat);
 		if (cv < 0) continue;
@@ -214,6 +280,8 @@ export interface InteractiveTrimlineProps {
 	mmToWorld: number;
 	active: boolean;
 	onDragActiveChange?: (active: boolean) => void;
+	/** 'insole' uses the heel→toe sweep; 'element' uses concave-safe loop tracing. */
+	mode?: 'insole' | 'element';
 }
 
 export function InteractiveTrimline({
@@ -223,6 +291,7 @@ export function InteractiveTrimline({
 	mmToWorld,
 	active,
 	onDragActiveChange,
+	mode = 'insole',
 }: InteractiveTrimlineProps) {
 	const { camera, gl, raycaster } = useThree();
 	const invalidate = useThree((s) => s.invalidate);
@@ -230,10 +299,12 @@ export function InteractiveTrimline({
 
 	const contour = useMemo(() => {
 		if (!insoleGeometry) return null;
-		return extractContour(insoleGeometry, BINS);
-	}, [insoleGeometry]);
+		return mode === 'element'
+			? extractElementContour(insoleGeometry, BINS)
+			: extractContour(insoleGeometry, BINS);
+	}, [insoleGeometry, mode]);
 
-	const curveOrder = useMemo(() => (contour ? buildCurveFlatOrder(contour.bins) : []), [contour]);
+	const curveOrder = useMemo(() => (contour ? buildCurveFlatOrder(contour) : []), [contour]);
 
 	const originalsRef = useRef<Float32Array>(new Float32Array(0));
 	const pointsRef = useRef<Float32Array>(new Float32Array(0));
@@ -242,6 +313,8 @@ export function InteractiveTrimline({
 	const dragSnap = useRef<Float32Array>(new Float32Array(0));
 	const dragStartLocal = useRef(new THREE.Vector3());
 	const dragCenterFlat = useRef(0);
+	const modeRef = useRef(mode);
+	modeRef.current = mode;
 
 	const [curveTick, setCurveTick] = useState(0);
 	const bumpCurve = useCallback(() => setCurveTick((t) => t + 1), []);
@@ -249,7 +322,7 @@ export function InteractiveTrimline({
 	useEffect(() => {
 		if (!contour) return;
 		if (trimDragActiveRef.current) return;
-		const n = contour.bins * 2 * 3;
+		const n = contourPointCount(contour) * 3;
 		originalsRef.current = new Float32Array(n);
 		fillOriginals(contour, originalsRef.current);
 		pointsRef.current = new Float32Array(n);
@@ -289,10 +362,19 @@ export function InteractiveTrimline({
 		}
 		if (ptsVec.length < 4) return null;
 		const curve = new THREE.CatmullRomCurve3(ptsVec, true, 'catmullrom', 0.35);
-		const radius = Math.max(mmToWorld * 0.55, 0.28);
+		let pickRadius = Math.max(mmToWorld * 0.55, 0.28);
+		if (contour.layout === 'loop' && insoleGeometry) {
+			insoleGeometry.computeBoundingBox();
+			const box = insoleGeometry.boundingBox;
+			if (box) {
+				const diag = box.getSize(new THREE.Vector3()).length();
+				pickRadius = Math.max(diag * 0.04, mmToWorld * 0.35, 0.12);
+			}
+		}
+		const radius = pickRadius;
 		const geo = new THREE.TubeGeometry(curve, 72, radius, 6, true);
 		return geo;
-	}, [contour, curveTick, curveOrder, mmToWorld]);
+	}, [contour, curveTick, curveOrder, insoleGeometry, mmToWorld]);
 
 	useEffect(() => () => outlineGeo?.dispose(), [outlineGeo]);
 	useEffect(() => () => tubeGeo?.dispose(), [tubeGeo]);
@@ -309,6 +391,8 @@ export function InteractiveTrimline({
 	const _hitLocal = useRef(new THREE.Vector3());
 	const _deltaLocal = useRef(new THREE.Vector3());
 	const _planeNorm = useRef(new THREE.Vector3());
+	const _normalDir = useRef(new THREE.Vector3());
+	const _heightDir = useRef(new THREE.Vector3());
 
 	useEffect(() => {
 		return () => {
@@ -346,7 +430,7 @@ export function InteractiveTrimline({
 			grp.worldToLocal(_hitLocal.current);
 			dragStartLocal.current.copy(_hitLocal.current);
 			dragSnap.current = pointsRef.current.slice();
-			dragCenterFlat.current = closestFlatIndex(_hitLocal.current, pointsRef.current, c.bins);
+			dragCenterFlat.current = closestFlatIndex(_hitLocal.current, pointsRef.current, c);
 			trimDragActiveRef.current = true;
 			onDragActiveChange?.(true);
 
@@ -380,6 +464,17 @@ export function InteractiveTrimline({
 			grp.worldToLocal(_hitLocal.current);
 
 			_deltaLocal.current.subVectors(_hitLocal.current, dragStartLocal.current);
+
+			if (modeRef.current === 'element') {
+				constrainElementDragDelta(
+					c,
+					dragCenterFlat.current,
+					_deltaLocal.current,
+					_normalDir.current,
+					_heightDir.current,
+					_deltaLocal.current,
+				);
+			}
 
 			applyGaussianDeltaToSnapshot(
 				c,

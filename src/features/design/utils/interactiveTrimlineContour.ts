@@ -1,28 +1,10 @@
 import * as THREE from 'three';
 
-// ── Contour extraction ─────────────────────────────────────────────────
-export interface ContourData {
-	/** Positions along the right side (positive width), bins length */
-	rightPos: Float32Array; // [x,y,z, x,y,z, ...]
-	/** Positions along the left side (negative width), bins length */
-	leftPos: Float32Array;
-	/** t-values per bin */
-	tValues: Float32Array;
-	/** Half-widths per bin for right side */
-	rightHalfW: Float32Array;
-	/** Half-widths per bin for left side */
-	leftHalfW: Float32Array;
-	/** Outward normal direction per right-side bin (unit vec, bins*3) */
-	rightNormals: Float32Array;
-	/** Outward normal direction per left-side bin (unit vec, bins*3) */
-	leftNormals: Float32Array;
-	widthAxis: 'x' | 'y' | 'z';
-	lengthAxis: 'x' | 'y' | 'z';
-	heightAxis: 'x' | 'y' | 'z';
-	bins: number;
-	centerW: number;
-}
+import type { ContourData, ContourLayout } from '@/src/features/design/utils/contourTypes';
 
+export type { ContourData, ContourLayout };
+
+/** Insole-only contour: heel→toe polar sweep split into right/left halves. */
 export function extractContour(
 	geometry: THREE.BufferGeometry,
 	bins = 48,
@@ -341,6 +323,7 @@ export function extractContour(
 	const leftNormals = planar.left;
 
 	return {
+		layout: 'insole',
 		rightPos,
 		leftPos,
 		tValues,
@@ -355,4 +338,5 @@ export function extractContour(
 		centerW,
 	};
 }
+
 

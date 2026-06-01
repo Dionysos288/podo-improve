@@ -1543,7 +1543,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			elementBoxSnapshotRef.current = null;
 		}
 		setElementEditMode(mode);
-		if (mode === 'box' || mode === 'scale' || mode === 'trimline') {
+		if (mode === 'box' || mode === 'scale') {
 			setViewerViewPreset('top');
 		}
 	}, [selectedPlacedElement, elementTrimlineEditId, elementBoxEditId]);
@@ -1914,11 +1914,14 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	}, [pendingScanManualAlignments]);
 
 	const handleViewerSelectInsoleSide = useCallback((s: 'left' | 'right') => {
+		if (elementEditMode === 'trimline') return;
+		selectPlacedElement(null);
 		setSelectedInsoleSide(s);
-	}, []);
+	}, [elementEditMode, selectPlacedElement]);
 	const handleViewerDeselectInsoleSide = useCallback(() => {
 		setSelectedInsoleSide(null);
-	}, []);
+		selectPlacedElement(null);
+	}, [selectPlacedElement]);
 	const handleViewerReady = useCallback(() => {
 		setIsViewerReady(true);
 	}, []);
@@ -1950,6 +1953,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	);
 	const handleDesignElementClickViewer = useCallback(
 		(elementId: string, _sideSel: 'left' | 'right') => {
+			setSelectedInsoleSide(null);
 			selectPlacedElement(elementId);
 		},
 		[selectPlacedElement],
@@ -3923,7 +3927,11 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										bottomTextOverlay={bottomTextOverlay}
 										textPlacementEnabled={false}
 										selectedSide={activeDesignStep === 3 ? null : selectedInsoleSide}
-										onSelectSide={activeDesignStep === 3 ? undefined : handleViewerSelectInsoleSide}
+										onSelectSide={
+											activeDesignStep === 3 || elementEditMode === 'trimline'
+												? undefined
+												: handleViewerSelectInsoleSide
+										}
 										onDeselectSide={activeDesignStep === 3 ? undefined : handleViewerDeselectInsoleSide}
 										onZoneClick={
 											activeDesignStep === 3 && !isEvaMethod && step3Current.elementsSplit
@@ -3990,9 +3998,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										onReady={handleViewerReady}
 										onBottomTextLoadingChange={handleBottomTextLoadingChange}
 										onBottomTextValidityChange={handleBottomTextValidityChange}
-										disableInteraction={
-											!scansActive || (!!selectedPlacedElement && activeDesignStep !== 3)
-										}
+										disableInteraction={!scansActive}
 									/>
 									{isCorrectionsPending && isViewerReady ? (
 										<div
@@ -4372,7 +4378,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										element={selectedPlacedElement}
 										standalone
 										editMode={elementEditMode}
-										onClose={() => selectPlacedElement(null)}
 									/>
 								</div>
 							)}
