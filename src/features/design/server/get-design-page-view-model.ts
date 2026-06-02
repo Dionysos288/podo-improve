@@ -8,6 +8,9 @@ import type {
 	OrgPrinter,
 	ProjectDetail,
 } from '@/src/app/[orgSlug]/design/[projectId]/DesignPageClient';
+import { normalizePrinterSettings } from '@/src/features/printers/constants/print-options';
+import { ensureDefaultPrinters } from '@/src/features/printers/server/actions';
+import { ensureDefaultPrintMaterials } from '@/src/features/printers/server/material-actions';
 import type { PrinterSettings as OrgPrinterSettings } from '@/src/features/printers/types/printers';
 
 type DesignPageInput = {
@@ -78,11 +81,38 @@ export async function getDesignPageViewModel({
 		where: { slug: orgSlug },
 		select: { id: true },
 	});
-	const printersPromise = prisma.printer.findMany({
-		where: { orgId },
-		orderBy: { createdAt: 'asc' },
-		select: { id: true, name: true, brand: true, model: true, settings: true },
-	});
+	const printersPromise = (async () => {
+		await ensureDefaultPrinters(orgId);
+		await ensureDefaultPrintMaterials(orgId);
+		return prisma.printer.findMany({
+			where: { orgId },
+			orderBy: { createdAt: 'asc' },
+			select: {
+				id: true,
+				name: true,
+				brand: true,
+				model: true,
+				settings: true,
+				printerMaterials: {
+					orderBy: { material: { sortOrder: 'asc' } },
+					select: {
+						isDefault: true,
+						material: {
+							select: {
+								id: true,
+								name: true,
+								filamentType: true,
+								isCustomSlot: true,
+								nozzleTempC: true,
+								bedTempC: true,
+								maxSpeedMmS: true,
+							},
+						},
+					},
+				},
+			},
+		});
+	})();
 	const designPromise = designId
 		? prisma.design.findFirst({
 				where: { id: designId, projectId, deletedAt: null },
@@ -124,7 +154,17 @@ export async function getDesignPageViewModel({
 		name: printer.name,
 		brand: printer.brand,
 		model: printer.model,
-		settings: (printer.settings ?? {}) as OrgPrinterSettings,
+		settings: normalizePrinterSettings((printer.settings ?? {}) as OrgPrinterSettings),
+		materials: printer.printerMaterials.map((pm) => ({
+			materialId: pm.material.id,
+			name: pm.material.name,
+			filamentType: pm.material.filamentType,
+			isCustomSlot: pm.material.isCustomSlot,
+			nozzleTempC: pm.material.nozzleTempC,
+			bedTempC: pm.material.bedTempC,
+			maxSpeedMmS: pm.material.maxSpeedMmS,
+			isDefault: pm.isDefault,
+		})),
 	}));
 
 	const serializedDesign: InitialDesign | null = initialDesign

@@ -1,24 +1,37 @@
 'use client';
 
 import { useMemo, useState, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/src/shared/components/ui/button';
 import { PrinterSettingsModal } from './PrinterSettingsModal';
-import type { PrinterListItem } from '@/src/features/printers/types/printers';
+import { OrgMaterialsSection } from './OrgMaterialsSection';
+import type { PrintMaterialItem, PrinterWithMaterials } from '@/src/features/printers/types/printers';
 
-export function PrintersClient({ printers }: { printers: PrinterListItem[] }) {
+export function PrintersClient({
+	printers: initialPrinters,
+	materials,
+}: {
+	printers: PrinterWithMaterials[];
+	materials: PrintMaterialItem[];
+}) {
+	const router = useRouter();
 	const [selectedId, setSelectedId] = useState<string | null>(
-		printers[0]?.id ?? null
+		initialPrinters[0]?.id ?? null
 	);
 	const [open, setOpen] = useState(false);
 	const [isPending] = useTransition();
 
 	const selected = useMemo(
-		() => printers.find((p) => p.id === selectedId) ?? printers[0] ?? null,
-		[printers, selectedId]
+		() => initialPrinters.find((p) => p.id === selectedId) ?? initialPrinters[0] ?? null,
+		[initialPrinters, selectedId]
 	);
+
+	const refresh = () => router.refresh();
 
 	return (
 		<div className="space-y-6">
+			<OrgMaterialsSection materials={materials} />
+
 			<div className="rounded-2xl border border-ui-border bg-ui-panel p-6">
 				<div className="flex items-center justify-between">
 					<div>
@@ -37,7 +50,7 @@ export function PrintersClient({ printers }: { printers: PrinterListItem[] }) {
 						<div className="col-span-2 text-right">Acties</div>
 					</div>
 					<div className="divide-y divide-ui-border">
-						{printers.map((p) => (
+						{initialPrinters.map((p) => (
 							<div
 								key={p.id}
 								className={`grid grid-cols-12 items-center px-4 py-3 text-sm ${
@@ -46,6 +59,7 @@ export function PrintersClient({ printers }: { printers: PrinterListItem[] }) {
 							>
 								<div className="col-span-5">
 									<button
+										type="button"
 										onClick={() => setSelectedId(p.id)}
 										className="text-left font-semibold text-foreground hover:opacity-80"
 									>
@@ -57,7 +71,10 @@ export function PrintersClient({ printers }: { printers: PrinterListItem[] }) {
 								<div className="col-span-2 flex justify-end">
 									<Button
 										variant="outline"
-										onClick={() => setOpen(true)}
+										onClick={() => {
+											setSelectedId(p.id);
+											setOpen(true);
+										}}
 										disabled={isPending}
 										className="rounded-xl"
 									>
@@ -74,8 +91,9 @@ export function PrintersClient({ printers }: { printers: PrinterListItem[] }) {
 				open={open}
 				onClose={() => setOpen(false)}
 				printer={selected}
+				orgMaterials={materials}
+				onSaved={refresh}
 			/>
 		</div>
 	);
 }
-

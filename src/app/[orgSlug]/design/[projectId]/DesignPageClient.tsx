@@ -24,7 +24,14 @@ import { TextEditCard } from '@/src/shared/components/design/TextEditCard';
 import {
 	DirectProducePanel,
 	type PrinterSettings,
+	type MaterialOption,
 } from '@/src/shared/components/design/DirectProducePanel';
+import type { PrintMaterialItem } from '@/src/features/printers/types/printers';
+import { SEEDED_MATERIAL_NAMES } from '@/src/features/printers/constants/default-materials';
+import {
+	getPrinterCapability,
+	resolveNozzleOptionValue,
+} from '@/src/features/printers/constants/printer-capabilities';
 import {
 	OntwerpPanel,
 	createDefaultOntwerpCorrections,
@@ -695,12 +702,24 @@ export interface InitialDesign {
 	updatedAt: string;
 }
 
+export interface OrgPrinterMaterial {
+	materialId: string;
+	name: string;
+	filamentType: string;
+	isCustomSlot: boolean;
+	nozzleTempC: number | null;
+	bedTempC: number | null;
+	maxSpeedMmS: number | null;
+	isDefault: boolean;
+}
+
 export interface OrgPrinter {
 	id: string;
 	name: string;
 	brand: string | null;
 	model: string | null;
 	settings: OrgPrinterSettings;
+	materials: OrgPrinterMaterial[];
 }
 
 /* ── Export progress tracking ── */
@@ -1143,11 +1162,70 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		[generalNormalized, parameters, setParameters]
 	);
 
+	const orgPrinterId = orgPrinters?.[0]?.id ?? null;
+
+	const baseMaterialOptions = useMemo<MaterialOption[] | null>(() => {
+		const first = orgPrinters?.[0];
+		if (!first?.materials?.length) return null;
+		return first.materials.map((m) => ({
+			value: m.name,
+			label: m.name,
+			materialId: m.materialId,
+			isCustomSlot: m.isCustomSlot,
+			isUserCustom: !m.isCustomSlot && !SEEDED_MATERIAL_NAMES.includes(m.name),
+			filamentType: m.filamentType,
+			nozzleTempC: m.nozzleTempC,
+			bedTempC: m.bedTempC,
+			maxSpeedMmS: m.maxSpeedMmS,
+		}));
+	}, [orgPrinters]);
+
+	// Custom materials created/edited from the design flow (live, before reload).
+	const [extraMaterials, setExtraMaterials] = useState<MaterialOption[]>([]);
+
+	const orgMaterialOptions = useMemo<MaterialOption[] | null>(() => {
+		if (!baseMaterialOptions) {
+			return extraMaterials.length > 0 ? extraMaterials : null;
+		}
+		const overrides = new Map(extraMaterials.map((m) => [m.materialId ?? m.value, m]));
+		const merged: MaterialOption[] = [];
+		const customSlot: MaterialOption[] = [];
+		for (const opt of baseMaterialOptions) {
+			const key = opt.materialId ?? opt.value;
+			const replacement = overrides.get(key);
+			if (replacement) overrides.delete(key);
+			const entry = replacement ?? opt;
+			if (entry.isCustomSlot) customSlot.push(entry);
+			else merged.push(entry);
+		}
+		// Newly created customs (not present in base) go just before the Custom slot.
+		for (const m of overrides.values()) merged.push(m);
+		return [...merged, ...customSlot];
+	}, [baseMaterialOptions, extraMaterials]);
+
+	const handleMaterialUpserted = useCallback((material: PrintMaterialItem) => {
+		const option: MaterialOption = {
+			value: material.name,
+			label: material.name,
+			materialId: material.id,
+			isCustomSlot: material.isCustomSlot,
+			isUserCustom: !material.isCustomSlot && !SEEDED_MATERIAL_NAMES.includes(material.name),
+			filamentType: material.filamentType,
+			nozzleTempC: material.nozzleTempC,
+			bedTempC: material.bedTempC,
+			maxSpeedMmS: material.maxSpeedMmS,
+		};
+		setExtraMaterials((prev) => {
+			const next = prev.filter((m) => (m.materialId ?? m.value) !== (option.materialId ?? option.value));
+			next.push(option);
+			return next;
+		});
+	}, []);
+
 	// ── Derive initial printer settings from org printers ──
 	const orgDefaultPrinterSettings = useMemo<PrinterSettings>(() => {
 		const first = orgPrinters?.[0];
 		if (!first) {
-			// Fallback hard-coded defaults when no org printers exist
 			return {
 				printerModel: 'raise3d-e2',
 				brand: 'Raise3D',
@@ -1158,19 +1236,31 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				topLayers: 1,
 				bottomLayers: 2,
 				adhesion: 'Geen',
+				strategy: '0.20mm',
+				infill: 'gyroid',
+				filamentType: 'FLEX',
 			};
 		}
 		const s = first.settings;
+		const capability = getPrinterCapability(first.model ?? first.name);
+		const defaultMat =
+			first.materials.find((m) => m.isDefault) ?? first.materials[0];
 		return {
 			printerModel: (first.model?.toLowerCase().includes('ir3') ? 'ir3-v2' : 'raise3d-e2') as PrinterSettings['printerModel'],
 			brand: first.brand ?? 'Raise3D',
 			printer: first.model ?? first.name ?? 'E2',
-			material: 'Footprint3D TPU-95A 2.3KG',
-			nozzle: String(s.nozzleDiameter ?? 0.8),
+			material: defaultMat?.name ?? 'Footprint3D TPU-95A 2.3KG',
+			nozzle: resolveNozzleOptionValue(s.nozzleDiameter, capability),
 			extruder: s.extruder ?? 'Links',
 			topLayers: s.overhang ?? 1,
 			bottomLayers: s.underlay ?? 2,
 			adhesion: s.adhesion ?? 'Geen',
+			strategy: s.strategy ?? '0.20mm',
+			infill: s.infill ?? 'gyroid',
+			filamentType: defaultMat?.filamentType ?? 'FLEX',
+			materialNozzleTempC: defaultMat?.nozzleTempC ?? undefined,
+			materialBedTempC: defaultMat?.bedTempC ?? undefined,
+			materialMaxSpeedMmS: defaultMat?.maxSpeedMmS ?? undefined,
 		};
 	}, [orgPrinters]);
 
@@ -2328,7 +2418,30 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				}
 				if (cs.step3Left !== undefined) setStep3Left(cs.step3Left as typeof step3Left);
 				if (cs.step3Right !== undefined) setStep3Right(cs.step3Right as typeof step3Right);
-				if (cs.printerSettings !== undefined) setPrinterSettings(cs.printerSettings as PrinterSettings);
+				if (cs.printerSettings !== undefined) {
+					// Base printer config (nozzle, extruder, layers, strategy, infill, …)
+					// always follows the settings page; only the design's own material
+					// choice + step-3 hardness persist locally. Design edits never sync back.
+					const saved = cs.printerSettings as PrinterSettings;
+					const chosenMaterial = saved.material ?? orgDefaultPrinterSettings.material;
+					const matMeta = orgMaterialOptions?.find((o) => o.value === chosenMaterial);
+					setPrinterSettings({
+						...orgDefaultPrinterSettings,
+						material: chosenMaterial,
+						filamentType: matMeta?.filamentType ?? orgDefaultPrinterSettings.filamentType,
+						materialNozzleTempC: matMeta
+							? matMeta.nozzleTempC ?? undefined
+							: orgDefaultPrinterSettings.materialNozzleTempC,
+						materialBedTempC: matMeta
+							? matMeta.bedTempC ?? undefined
+							: orgDefaultPrinterSettings.materialBedTempC,
+						materialMaxSpeedMmS: matMeta
+							? matMeta.maxSpeedMmS ?? undefined
+							: orgDefaultPrinterSettings.materialMaxSpeedMmS,
+						customMaterialLabel: saved.customMaterialLabel,
+						step3: saved.step3 ?? orgDefaultPrinterSettings.step3,
+					});
+				}
 				if (cs.boxEnabled !== undefined) setBoxEnabled(cs.boxEnabled as typeof boxEnabled);
 				if (cs.boxGridPoints !== undefined) setBoxGridPoints(cs.boxGridPoints as typeof boxGridPoints);
 				if (cs.trimlineAdjustments !== undefined) setTrimlineAdjustments(cs.trimlineAdjustments as typeof trimlineAdjustments);
@@ -3611,6 +3724,9 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 							onBack={() => setStep4View('export')}
 							printerSettings={printerSettings}
 							onPrinterSettingsChange={setPrinterSettings}
+							materialOptions={orgMaterialOptions ?? undefined}
+							printerId={orgPrinterId}
+							onMaterialUpserted={handleMaterialUpserted}
 							onExportSTLLeft={handleExportSTLLeft}
 							onExportSTLRight={handleExportSTLRight}
 							onExportSTLPair={handleExportSTL}

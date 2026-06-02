@@ -36,6 +36,20 @@ export {
 	buildElementOverlayGeometries,
 } from './applyElements';
 export type { ElementOverlayData } from './applyElements';
+export {
+	applyElementsWithSmoothing,
+	computeElementGeometry,
+	smoothElementsIntoInsole,
+	elementSideWeight,
+	quinticEase as elementQuinticEase,
+} from './core/elementGeometryCore';
+export type {
+	ElementSmoothStrength,
+	ElementGeometryComputeInput,
+	ElementGeometryComputeResult,
+} from './core/elementGeometryCore';
+export { useElementsGeometryWorker } from './useElementsGeometryWorker';
+export type { ElementsGeometryWorkerApi } from './useElementsGeometryWorker';
 export { ElementsModal } from './ElementsModal';
 export { ElementInspector } from './ElementInspector';
 export { ElementActionsPanel } from './ElementActionsPanel';

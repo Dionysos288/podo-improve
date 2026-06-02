@@ -301,6 +301,50 @@ describe('buildElementOverlayGeometries', () => {
 		}
 	});
 
+	it('STL-backed raised pad sits flush on the insole and ramps without vertical walls', () => {
+		// Roomy insole so the pad does not overshoot the boundary (which would
+		// clip its height) — we are testing the pad surface, not edge clipping.
+		const insole = new THREE.BoxGeometry(160, 8, 70, 32, 2, 18);
+		insole.computeVertexNormals();
+		const insoleY = getAxisRange(insole, 'y');
+		const element = mockElement('el-pel', 'peloitte-2', {
+			heightMm: 3,
+			positionU: 0.5,
+			positionV: 0.5,
+		});
+		const item = getElementByKey('peloitte-2');
+		const stlUrl = item ? getElementPreferredStlUrl(item) : undefined;
+		expect(stlUrl).toBeTruthy();
+
+		// Dense STL so the distance-field occupancy is contiguous (real element
+		// STLs are dense; a coarse box degenerates the edge ramp).
+		const denseStl = new THREE.BoxGeometry(38, 41, 4, 80, 80, 2);
+		denseStl.computeVertexNormals();
+		const stlMap = new Map<string, THREE.BufferGeometry>();
+		stlMap.set(stlUrl!, denseStl);
+		const overlays = buildElementOverlayGeometries(insole, [element], {
+			mmToWorld: 1,
+			stlGeometries: stlMap,
+		});
+
+		expect(overlays).toHaveLength(1);
+		const geom = overlays[0]!.geometry;
+		const overlayY = getAxisRange(geom, 'y');
+
+		// Flush: the pad base lands on the insole top surface (no floating gap).
+		expect(overlayY.min).toBeGreaterThan(insoleY.max - 1.0);
+		// Raised: the pad still rises above the insole.
+		expect(overlayY.max).toBeGreaterThan(insoleY.max + 0.5);
+		// Smooth sides: vertical wall facets are removed, so few sideways normals.
+		const total = geom.getAttribute('position').count;
+		const sideways = countSidewaysNormals(geom);
+		expect(sideways / total).toBeLessThan(0.25);
+
+		insole.dispose();
+		geom.dispose();
+		for (const g of stlMap.values()) g.dispose();
+	});
+
 	it('thickness-only sc-bol overlays ignore loaded STL and match procedural fallback', () => {
 		const insole = createTestInsoleGeometry();
 		const element = mockElement('el-sc-bol', 'sc-bol', {

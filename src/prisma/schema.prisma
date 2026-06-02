@@ -83,7 +83,8 @@ model Organization {
 
   users       User[]
   patients    Patient[]
-  printers    Printer[]
+  printers       Printer[]
+  printMaterials PrintMaterial[]
   backups     Backup[]
   invitations Invitation[]
   slicingJobs SlicingJob[]
@@ -386,9 +387,42 @@ model Printer {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  organization    Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  printerMaterials PrinterMaterial[]
 
   @@map("printers")
+}
+
+model PrintMaterial {
+  id           String   @id @default(uuid())
+  orgId        String   @map("org_id")
+  name         String
+  filamentType String   @default("FLEX") @map("filament_type")
+  isCustomSlot Boolean  @default(false) @map("is_custom_slot")
+  nozzleTempC  Int?     @map("nozzle_temp_c")
+  bedTempC     Int?     @map("bed_temp_c")
+  maxSpeedMmS  Int?     @map("max_speed_mm_s")
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  organization Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  printerLinks PrinterMaterial[]
+
+  @@unique([orgId, name])
+  @@map("print_materials")
+}
+
+model PrinterMaterial {
+  printerId  String @map("printer_id")
+  materialId String @map("material_id")
+  isDefault  Boolean @default(false) @map("is_default")
+
+  printer  Printer       @relation(fields: [printerId], references: [id], onDelete: Cascade)
+  material PrintMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@id([printerId, materialId])
+  @@map("printer_materials")
 }
 
 // ============================================

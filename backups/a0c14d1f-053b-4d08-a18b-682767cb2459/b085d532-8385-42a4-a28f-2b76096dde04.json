@@ -1,0 +1,4798 @@
+{
+  "meta": {
+    "version": 1,
+    "createdAt": "2026-06-02T09:45:32.739Z",
+    "createdByUserId": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J"
+  },
+  "organization": {
+    "id": "a0c14d1f-053b-4d08-a18b-682767cb2459",
+    "name": "web0",
+    "slug": "web0",
+    "createdAt": "2026-01-11T18:33:17.695Z",
+    "updatedAt": "2026-06-01T13:06:01.483Z",
+    "settings": {
+      "mdr": {
+        "ceStatus": "N.v.t. (maatwerk — Bijlage XIII)"
+      },
+      "mdrEnabled": false
+    }
+  },
+  "printers": [
+    {
+      "id": "2830f9c7-da54-4d68-8fc0-0d9960617cd7",
+      "name": "IdeaFormer IR3 V2",
+      "brand": "IdeaFormer",
+      "model": "IR3 V2",
+      "settings": {
+        "infill": "gyroid",
+        "perPart": false,
+        "adhesion": "Geen",
+        "extruder": "Links",
+        "overhang": 3,
+        "strategy": "0.20mm",
+        "underlay": 3,
+        "retraction": 1,
+        "printerModel": "IR3 V2",
+        "nozzleDiameter": 0.4,
+        "hardnessProfiles": {
+          "hard": {
+            "infillPercent": 30
+          },
+          "soft": {
+            "infillPercent": 22
+          },
+          "normal": {
+            "infillPercent": 26
+          },
+          "extraHard": {
+            "infillPercent": 36
+          },
+          "extraSoft": {
+            "infillPercent": 10
+          }
+        }
+      },
+      "createdAt": "2026-06-02T08:55:39.210Z",
+      "updatedAt": "2026-06-02T08:55:39.210Z"
+    },
+    {
+      "id": "7d386d53-5b1a-4301-88da-8318df994bf3",
+      "name": "Raise3D E2",
+      "brand": "Raise3D",
+      "model": "E2",
+      "settings": {
+        "infill": "gyroid",
+        "perPart": false,
+        "adhesion": "Geen",
+        "extruder": "Links",
+        "overhang": 1,
+        "strategy": "0.20mm",
+        "underlay": 2,
+        "retraction": 0,
+        "printerModel": "E2",
+        "nozzleDiameter": 0.8,
+        "hardnessProfiles": {
+          "hard": {
+            "infillPercent": 30
+          },
+          "soft": {
+            "infillPercent": 22
+          },
+          "normal": {
+            "infillPercent": 26
+          },
+          "extraHard": {
+            "infillPercent": 36
+          },
+          "extraSoft": {
+            "infillPercent": 10
+          }
+        }
+      },
+      "createdAt": "2026-01-12T19:56:38.324Z",
+      "updatedAt": "2026-06-02T09:44:49.974Z"
+    }
+  ],
+  "patients": [
+    {
+      "id": "36274821-f682-4a03-9cc5-07f08596afef",
+      "firstName": "dren",
+      "lastName": "zeneli",
+      "birthDate": "1998-02-04T00:00:00.000Z",
+      "notes": "dsfsdfsqfdqsdfqsfdqsfdqsfd",
+      "createdAt": "2026-01-11T18:40:53.294Z",
+      "updatedAt": "2026-01-11T19:24:18.093Z"
+    }
+  ],
+  "projects": [
+    {
+      "id": "4f128379-0977-49d6-8ea3-95f6ef7738a8",
+      "patientId": "36274821-f682-4a03-9cc5-07f08596afef",
+      "doctorId": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+      "name": "Project voor dren zeneli",
+      "date": "2026-01-11T00:00:00.000Z",
+      "status": "COMPLETED",
+      "createdAt": "2026-01-11T18:41:23.482Z",
+      "updatedAt": "2026-01-11T18:49:27.828Z",
+      "scans": [
+        {
+          "id": "9ef2b329-2ece-43da-b42f-727b293da0f7",
+          "projectId": "4f128379-0977-49d6-8ea3-95f6ef7738a8",
+          "footSide": "LEFT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/4f128379-0977-49d6-8ea3-95f6ef7738a8/LEFT_1773480406887_Mathis_Bothuyne_055037_000614_L.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1219634,
+            "uploadedAt": "2026-03-14T09:26:47.299Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_L.stl"
+          },
+          "createdAt": "2026-03-14T09:26:47.300Z"
+        },
+        {
+          "id": "49e61ad1-489c-48f0-a85a-109d8c9ad181",
+          "projectId": "4f128379-0977-49d6-8ea3-95f6ef7738a8",
+          "footSide": "RIGHT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/4f128379-0977-49d6-8ea3-95f6ef7738a8/RIGHT_1773480407540_Mathis_Bothuyne_055037_000614_R.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1230434,
+            "uploadedAt": "2026-03-14T09:26:47.838Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_R.stl"
+          },
+          "createdAt": "2026-03-14T09:26:47.840Z"
+        }
+      ],
+      "designs": [
+        {
+          "id": "24ad5ed6-211e-4020-8e7e-987fda221f1d",
+          "projectId": "4f128379-0977-49d6-8ea3-95f6ef7738a8",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 10,
+                "right": 10
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 1,
+          "parentDesignId": null,
+          "createdAt": "2026-03-14T09:27:20.176Z",
+          "updatedAt": "2026-03-14T16:10:11.485Z"
+        }
+      ]
+    },
+    {
+      "id": "d804bc41-55eb-42b4-a263-61e457d20c46",
+      "patientId": "36274821-f682-4a03-9cc5-07f08596afef",
+      "doctorId": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+      "name": "sdfsdf",
+      "date": "2026-01-11T00:00:00.000Z",
+      "status": "IN_PROGRESS",
+      "createdAt": "2026-01-11T19:33:55.238Z",
+      "updatedAt": "2026-03-15T13:04:09.042Z",
+      "scans": [
+        {
+          "id": "75da1cd7-71da-48e7-8381-af7045388f65",
+          "projectId": "d804bc41-55eb-42b4-a263-61e457d20c46",
+          "footSide": "LEFT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/d804bc41-55eb-42b4-a263-61e457d20c46/LEFT_1773579813642_Mathis_Bothuyne_055037_000614_L.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1219634,
+            "uploadedAt": "2026-03-15T13:03:34.024Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_L.stl"
+          },
+          "createdAt": "2026-03-15T13:03:34.025Z"
+        },
+        {
+          "id": "09a3ed8e-767e-432b-a77c-6e1686fd6d82",
+          "projectId": "d804bc41-55eb-42b4-a263-61e457d20c46",
+          "footSide": "RIGHT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/d804bc41-55eb-42b4-a263-61e457d20c46/RIGHT_1773579814295_Mathis_Bothuyne_055037_000614_R.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1230434,
+            "uploadedAt": "2026-03-15T13:03:34.627Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_R.stl"
+          },
+          "createdAt": "2026-03-15T13:03:34.628Z"
+        }
+      ],
+      "designs": [
+        {
+          "id": "0490587d-fc3d-4d8a-8260-bcc481b9d271",
+          "projectId": "d804bc41-55eb-42b4-a263-61e457d20c46",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "durea",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 20,
+                "right": 14
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 1,
+          "parentDesignId": null,
+          "createdAt": "2026-03-15T13:04:08.114Z",
+          "updatedAt": "2026-03-15T19:48:19.980Z"
+        }
+      ]
+    },
+    {
+      "id": "03278155-02d4-4911-9d23-d87dab4d18fa",
+      "patientId": "36274821-f682-4a03-9cc5-07f08596afef",
+      "doctorId": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+      "name": "dfgdfgdfg",
+      "date": "2026-01-11T00:00:00.000Z",
+      "status": "IN_PROGRESS",
+      "createdAt": "2026-01-11T19:37:08.706Z",
+      "updatedAt": "2026-03-12T11:08:09.750Z",
+      "scans": [
+        {
+          "id": "9fe1193f-fec7-4bc7-af01-78e617624e18",
+          "projectId": "03278155-02d4-4911-9d23-d87dab4d18fa",
+          "footSide": "LEFT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/03278155-02d4-4911-9d23-d87dab4d18fa/LEFT_1773480371461_Mathis_Bothuyne_055037_000614_L.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1219634,
+            "uploadedAt": "2026-03-14T09:26:12.057Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_L.stl"
+          },
+          "createdAt": "2026-03-14T09:26:12.058Z"
+        },
+        {
+          "id": "383d15d2-60ad-4eab-9387-09ec1174ffd3",
+          "projectId": "03278155-02d4-4911-9d23-d87dab4d18fa",
+          "footSide": "RIGHT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/03278155-02d4-4911-9d23-d87dab4d18fa/RIGHT_1773480372303_Mathis_Bothuyne_055037_000614_R.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1230434,
+            "uploadedAt": "2026-03-14T09:26:12.637Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_R.stl"
+          },
+          "createdAt": "2026-03-14T09:26:12.638Z"
+        }
+      ],
+      "designs": [
+        {
+          "id": "b9ac8723-94e3-41f3-a555-42ddf3de6297",
+          "projectId": "03278155-02d4-4911-9d23-d87dab4d18fa",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 39
+              },
+              "sizeLabel": "EU",
+              "soleThicknessMm": {
+                "left": 9,
+                "right": 10
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 14
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 1,
+          "parentDesignId": null,
+          "createdAt": "2026-03-12T11:08:08.526Z",
+          "updatedAt": "2026-03-14T09:26:32.331Z"
+        }
+      ]
+    },
+    {
+      "id": "0722e083-c516-4a02-9d7f-29e294a14f60",
+      "patientId": "36274821-f682-4a03-9cc5-07f08596afef",
+      "doctorId": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+      "name": "sdfsdfds",
+      "date": "2026-01-11T00:00:00.000Z",
+      "status": "IN_PROGRESS",
+      "createdAt": "2026-01-11T19:37:19.740Z",
+      "updatedAt": "2026-03-14T08:46:01.381Z",
+      "scans": [
+        {
+          "id": "1024c4e0-d831-411e-9c78-b2d9b0dcc758",
+          "projectId": "0722e083-c516-4a02-9d7f-29e294a14f60",
+          "footSide": "LEFT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/0722e083-c516-4a02-9d7f-29e294a14f60/LEFT_1773479480732_Mathis_Bothuyne_055037_000614_L.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1219634,
+            "uploadedAt": "2026-03-14T09:11:21.118Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_L.stl"
+          },
+          "createdAt": "2026-03-14T09:11:21.119Z"
+        },
+        {
+          "id": "bfeefdcd-4f28-401f-9273-89ae395c649d",
+          "projectId": "0722e083-c516-4a02-9d7f-29e294a14f60",
+          "footSide": "RIGHT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/0722e083-c516-4a02-9d7f-29e294a14f60/RIGHT_1773479481657_Mathis_Bothuyne_055037_000614_R.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1230434,
+            "uploadedAt": "2026-03-14T09:11:21.952Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_R.stl"
+          },
+          "createdAt": "2026-03-14T09:11:21.953Z"
+        }
+      ],
+      "designs": [
+        {
+          "id": "b80c9a27-2a86-476f-b1c5-9fb6b4aa5868",
+          "projectId": "0722e083-c516-4a02-9d7f-29e294a14f60",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 36.5,
+                "right": 37
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "driekwart",
+              "soleThicknessMm": {
+                "left": 2.5,
+                "right": 2.5
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 1,
+          "parentDesignId": null,
+          "createdAt": "2026-03-14T08:46:01.296Z",
+          "updatedAt": "2026-03-14T15:49:33.496Z"
+        }
+      ]
+    },
+    {
+      "id": "f1d5ce05-20ff-4b30-ad89-41950f85f7a4",
+      "patientId": "36274821-f682-4a03-9cc5-07f08596afef",
+      "doctorId": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+      "name": "sdfsdfsdfsdf",
+      "date": "2026-01-11T00:00:00.000Z",
+      "status": "COMPLETED",
+      "createdAt": "2026-01-11T19:37:30.951Z",
+      "updatedAt": "2026-03-12T10:12:47.520Z",
+      "scans": [
+        {
+          "id": "999cbd3a-ffd5-43f3-95e6-4200c0586757",
+          "projectId": "f1d5ce05-20ff-4b30-ad89-41950f85f7a4",
+          "footSide": "LEFT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/f1d5ce05-20ff-4b30-ad89-41950f85f7a4/LEFT_1773310429137_Mathis_Bothuyne_055037_000614_L.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1219634,
+            "uploadedAt": "2026-03-12T10:13:50.632Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_L.stl"
+          },
+          "createdAt": "2026-03-12T10:13:50.634Z"
+        },
+        {
+          "id": "dfc30eee-eeae-43bf-80b3-78370ee550e1",
+          "projectId": "f1d5ce05-20ff-4b30-ad89-41950f85f7a4",
+          "footSide": "RIGHT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/f1d5ce05-20ff-4b30-ad89-41950f85f7a4/RIGHT_1773310431108_Mathis_Bothuyne_055037_000614_R.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1230434,
+            "uploadedAt": "2026-03-12T10:13:52.319Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_R.stl"
+          },
+          "createdAt": "2026-03-12T10:13:52.321Z"
+        }
+      ],
+      "designs": [
+        {
+          "id": "ffdcf7ca-890d-47bf-bf3b-6b29ee9a298f",
+          "projectId": "f1d5ce05-20ff-4b30-ad89-41950f85f7a4",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "soleThicknessMm": {
+                "left": 2.5,
+                "right": 2.5
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 1,
+          "parentDesignId": null,
+          "createdAt": "2026-03-12T10:33:49.376Z",
+          "updatedAt": "2026-03-14T09:24:57.124Z"
+        }
+      ]
+    },
+    {
+      "id": "9c3041be-f61c-4739-87f9-3b9c2b24d9f8",
+      "patientId": "36274821-f682-4a03-9cc5-07f08596afef",
+      "doctorId": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+      "name": "fsfsdfsdfsdf",
+      "date": "2026-01-11T00:00:00.000Z",
+      "status": "IN_PROGRESS",
+      "createdAt": "2026-01-11T19:37:41.286Z",
+      "updatedAt": "2026-03-10T10:56:22.793Z",
+      "scans": [
+        {
+          "id": "88054256-2d28-4c18-adc6-34fa28fabd47",
+          "projectId": "9c3041be-f61c-4739-87f9-3b9c2b24d9f8",
+          "footSide": "LEFT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/9c3041be-f61c-4739-87f9-3b9c2b24d9f8/LEFT_1773071221229_Mathis_Bothuyne_055037_000614_L.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1219634,
+            "uploadedAt": "2026-03-09T15:47:01.820Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_L.stl"
+          },
+          "createdAt": "2026-03-09T15:47:01.822Z"
+        },
+        {
+          "id": "96844b33-02f0-49c1-b070-5e702fe86071",
+          "projectId": "9c3041be-f61c-4739-87f9-3b9c2b24d9f8",
+          "footSide": "RIGHT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/9c3041be-f61c-4739-87f9-3b9c2b24d9f8/RIGHT_1773071222105_Mathis_Bothuyne_055037_000614_R.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1230434,
+            "uploadedAt": "2026-03-09T15:47:02.690Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_R.stl"
+          },
+          "createdAt": "2026-03-09T15:47:02.691Z"
+        }
+      ],
+      "designs": [
+        {
+          "id": "ccc761b0-05fb-4ff1-93b8-b0d62467491c",
+          "projectId": "9c3041be-f61c-4739-87f9-3b9c2b24d9f8",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 39
+              },
+              "sizeLabel": "EU",
+              "soleThicknessMm": {
+                "left": 2.5,
+                "right": 2.5
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 1,
+          "parentDesignId": null,
+          "createdAt": "2026-03-10T10:56:22.209Z",
+          "updatedAt": "2026-03-11T01:48:35.272Z"
+        }
+      ]
+    },
+    {
+      "id": "e1edaacf-e6da-4f90-950b-5739c2230801",
+      "patientId": "36274821-f682-4a03-9cc5-07f08596afef",
+      "doctorId": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+      "name": "dfgdfgdfgdfg",
+      "date": "2026-01-11T00:00:00.000Z",
+      "status": "IN_PROGRESS",
+      "createdAt": "2026-01-11T19:37:51.389Z",
+      "updatedAt": "2026-03-09T15:20:02.092Z",
+      "scans": [
+        {
+          "id": "c252b853-33e8-4904-9f3c-e0a4911ae992",
+          "projectId": "e1edaacf-e6da-4f90-950b-5739c2230801",
+          "footSide": "LEFT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/e1edaacf-e6da-4f90-950b-5739c2230801/LEFT_1773069583611_Mathis_Bothuyne_055037_000614_L.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1219634,
+            "uploadedAt": "2026-03-09T15:19:44.238Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_L.stl"
+          },
+          "createdAt": "2026-03-09T15:19:44.239Z"
+        },
+        {
+          "id": "cc87ee9d-a645-4d14-a1a4-7f66d9b3d8f4",
+          "projectId": "e1edaacf-e6da-4f90-950b-5739c2230801",
+          "footSide": "RIGHT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/e1edaacf-e6da-4f90-950b-5739c2230801/RIGHT_1773069584843_Mathis_Bothuyne_055037_000614_R.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1230434,
+            "uploadedAt": "2026-03-09T15:19:45.170Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_R.stl"
+          },
+          "createdAt": "2026-03-09T15:19:45.172Z"
+        }
+      ],
+      "designs": [
+        {
+          "id": "f917a27e-0f05-4bf4-91b1-c80b7c882bb2",
+          "projectId": "e1edaacf-e6da-4f90-950b-5739c2230801",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 39
+              },
+              "sizeLabel": "EU",
+              "soleThicknessMm": {
+                "left": 2.5,
+                "right": 2.5
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 1,
+          "parentDesignId": null,
+          "createdAt": "2026-03-09T15:20:01.635Z",
+          "updatedAt": "2026-03-09T15:20:01.635Z"
+        }
+      ]
+    },
+    {
+      "id": "57e19c13-7493-4089-a514-5ff6aeff44c1",
+      "patientId": "36274821-f682-4a03-9cc5-07f08596afef",
+      "doctorId": "43qEQxwIRZkwSu8ZGQUNBDVTtNrXg5ge",
+      "name": "azeazeazertrte",
+      "date": "2026-01-14T00:00:00.000Z",
+      "status": "COMPLETED",
+      "createdAt": "2026-01-14T21:29:56.498Z",
+      "updatedAt": "2026-01-14T21:30:18.057Z",
+      "scans": [
+        {
+          "id": "ab1358ce-1f66-462d-8226-6079856c326a",
+          "projectId": "57e19c13-7493-4089-a514-5ff6aeff44c1",
+          "footSide": "LEFT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/57e19c13-7493-4089-a514-5ff6aeff44c1/LEFT_1773055263745_Mathis_Bothuyne_055037_000614_L.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1219634,
+            "uploadedAt": "2026-03-09T11:21:04.400Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_L.stl"
+          },
+          "createdAt": "2026-03-09T11:21:04.401Z"
+        },
+        {
+          "id": "4a8e7d6a-4ed8-4393-811c-055f80b30fd5",
+          "projectId": "57e19c13-7493-4089-a514-5ff6aeff44c1",
+          "footSide": "RIGHT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/57e19c13-7493-4089-a514-5ff6aeff44c1/RIGHT_1773055264970_Mathis_Bothuyne_055037_000614_R.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1230434,
+            "uploadedAt": "2026-03-09T11:21:05.395Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_R.stl"
+          },
+          "createdAt": "2026-03-09T11:21:05.397Z"
+        }
+      ],
+      "designs": [
+        {
+          "id": "02d274cd-56f1-4413-a6e5-56300456ef1a",
+          "projectId": "57e19c13-7493-4089-a514-5ff6aeff44c1",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 39
+              },
+              "sizeLabel": "EU",
+              "soleThicknessMm": {
+                "left": 2.5,
+                "right": 2.5
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 1,
+          "parentDesignId": null,
+          "createdAt": "2026-03-09T11:21:43.797Z",
+          "updatedAt": "2026-03-16T09:18:27.834Z"
+        },
+        {
+          "id": "fde35d19-0485-4add-bdbf-173aad1b3c69",
+          "projectId": "57e19c13-7493-4089-a514-5ff6aeff44c1",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 5,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T10:44:39.910Z",
+          "updatedAt": "2026-03-16T10:45:26.408Z"
+        },
+        {
+          "id": "a90ab7ec-4604-4665-be71-ef0b7ad9b95b",
+          "projectId": "57e19c13-7493-4089-a514-5ff6aeff44c1",
+          "parameters": {
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 2,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T07:27:50.318Z",
+          "updatedAt": "2026-03-16T07:28:01.095Z"
+        },
+        {
+          "id": "f879a08b-ab26-487e-8f9f-a256a70eed6c",
+          "projectId": "57e19c13-7493-4089-a514-5ff6aeff44c1",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 40,
+                "right": 40
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "vrouw",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 1,
+                "right": 10
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 3,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T09:16:13.025Z",
+          "updatedAt": "2026-03-16T10:00:41.880Z"
+        },
+        {
+          "id": "4622aaac-6ac2-4948-ab94-4e0c53950775",
+          "projectId": "57e19c13-7493-4089-a514-5ff6aeff44c1",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 4,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T10:00:47.004Z",
+          "updatedAt": "2026-03-16T10:44:33.283Z"
+        },
+        {
+          "id": "3d842269-c8ed-4c60-bd3a-2c9c33bcc913",
+          "projectId": "57e19c13-7493-4089-a514-5ff6aeff44c1",
+          "parameters": {
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 6,
+          "parentDesignId": null,
+          "createdAt": "2026-04-18T09:31:24.256Z",
+          "updatedAt": "2026-04-18T09:38:15.392Z"
+        },
+        {
+          "id": "f56c553a-ad4e-446e-b805-abfd11af40e4",
+          "projectId": "57e19c13-7493-4089-a514-5ff6aeff44c1",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 7,
+          "parentDesignId": null,
+          "createdAt": "2026-04-18T09:38:51.805Z",
+          "updatedAt": "2026-04-18T09:38:51.805Z"
+        }
+      ]
+    },
+    {
+      "id": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+      "patientId": "36274821-f682-4a03-9cc5-07f08596afef",
+      "doctorId": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+      "name": "wow",
+      "date": "2026-03-12T00:00:00.000Z",
+      "status": "IN_PROGRESS",
+      "createdAt": "2026-03-12T06:07:26.910Z",
+      "updatedAt": "2026-03-12T06:10:44.847Z",
+      "scans": [
+        {
+          "id": "0ce88cd6-32fb-42de-9ab6-2aeb10ddcb31",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "footSide": "LEFT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/e55b16a8-acec-4e41-849c-044420c0b0a7/LEFT_1773295738913_Mathis_Bothuyne_055037_000614_L.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1219634,
+            "uploadedAt": "2026-03-12T06:08:59.440Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_L.stl"
+          },
+          "createdAt": "2026-03-12T06:08:59.442Z"
+        },
+        {
+          "id": "85e5752b-920f-4f19-acdf-7783ceead306",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "footSide": "RIGHT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/e55b16a8-acec-4e41-849c-044420c0b0a7/RIGHT_1773295739793_Mathis_Bothuyne_055037_000614_R.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1230434,
+            "uploadedAt": "2026-03-12T06:09:00.035Z",
+            "originalFilename": "Mathis_Bothuyne_055037_000614_R.stl"
+          },
+          "createdAt": "2026-03-12T06:09:00.037Z"
+        },
+        {
+          "id": "805d4ecd-e8e0-4780-ba85-180c992ad1b3",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "footSide": "LEFT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/e55b16a8-acec-4e41-849c-044420c0b0a7/LEFT_1774433893433_Kim_Heyerick_055037_000635_L.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1270184,
+            "uploadedAt": "2026-03-25T10:18:14.176Z",
+            "originalFilename": "Kim_Heyerick_055037_000635_L.stl"
+          },
+          "createdAt": "2026-03-25T10:18:14.177Z"
+        },
+        {
+          "id": "9fdd5211-9f9a-4a06-ae6e-9dca107c3192",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "footSide": "RIGHT",
+          "stlUrl": "https://enletoinburxtkthzwmi.supabase.co/storage/v1/object/public/scans/a0c14d1f-053b-4d08-a18b-682767cb2459/e55b16a8-acec-4e41-849c-044420c0b0a7/RIGHT_1774433895074_Kim_Heyerick_055037_000635_R.stl",
+          "uploadedBy": "W4ieEEkpSnxNloDf4TPXfhrFOCrame9J",
+          "metadata": {
+            "fileSize": 1298334,
+            "uploadedAt": "2026-03-25T10:18:15.666Z",
+            "originalFilename": "Kim_Heyerick_055037_000635_R.stl"
+          },
+          "createdAt": "2026-03-25T10:18:15.668Z"
+        }
+      ],
+      "designs": [
+        {
+          "id": "611f7d4b-fa7d-401a-9fd7-3d287e35f46b",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 83,
+          "parentDesignId": null,
+          "createdAt": "2026-05-23T16:29:42.669Z",
+          "updatedAt": "2026-05-23T16:29:42.669Z"
+        },
+        {
+          "id": "bbd2c800-7b0b-48ef-8001-75c3fb68e78f",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 9,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T18:04:20.725Z",
+          "updatedAt": "2026-03-16T18:08:52.846Z"
+        },
+        {
+          "id": "017ae31d-d89b-4c76-bff4-3b5a40ff508f",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2.5,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 21,
+          "parentDesignId": null,
+          "createdAt": "2026-03-23T15:08:01.565Z",
+          "updatedAt": "2026-03-23T15:08:33.877Z"
+        },
+        {
+          "id": "2bae1fc1-8761-4003-9704-8825f19fdfbf",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774292103679_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 26,
+          "parentDesignId": null,
+          "createdAt": "2026-03-23T18:49:30.462Z",
+          "updatedAt": "2026-03-23T18:55:26.775Z"
+        },
+        {
+          "id": "e198ded2-d4c6-4910-8d39-fc115eafe2fd",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774341959708_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 34,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T08:45:23.878Z",
+          "updatedAt": "2026-03-24T08:46:05.265Z"
+        },
+        {
+          "id": "5d2b1e50-ab28-453d-923e-14ebca42b5fc",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774343017871_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 36,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T09:03:17.311Z",
+          "updatedAt": "2026-03-24T09:03:41.120Z"
+        },
+        {
+          "id": "ab6400cc-99a6-4f18-b179-0ae44948ad03",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 41,
+                "right": 40
+              },
+              "sizeLabel": "EU",
+              "soleThicknessMm": {
+                "left": 4.5,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 12,
+                "right": 10
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 1,
+          "parentDesignId": null,
+          "createdAt": "2026-03-12T06:10:44.749Z",
+          "updatedAt": "2026-03-12T06:24:06.115Z"
+        },
+        {
+          "id": "9d4d25c5-7c6b-4f99-a4ea-09d61f48d3d0",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 84,
+          "parentDesignId": null,
+          "createdAt": "2026-05-23T16:49:51.885Z",
+          "updatedAt": "2026-05-23T16:49:51.885Z"
+        },
+        {
+          "id": "f61bfddc-1a1a-4535-8fa4-6a9eb4c6a4f7",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774342254557_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 35,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T08:50:35.411Z",
+          "updatedAt": "2026-03-24T08:51:01.135Z"
+        },
+        {
+          "id": "4169f885-caae-4283-ba4f-582fe2e123e7",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774295372495_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 28,
+          "parentDesignId": null,
+          "createdAt": "2026-03-23T19:08:35.643Z",
+          "updatedAt": "2026-03-23T19:49:36.301Z"
+        },
+        {
+          "id": "46d3e01f-6747-4e5f-8bfa-42c8518ba55f",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 2,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T16:51:54.756Z",
+          "updatedAt": "2026-03-16T17:05:56.031Z"
+        },
+        {
+          "id": "c10d9302-9005-431b-af9e-d9c34801ee89",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774346351954_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 40,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T09:57:20.604Z",
+          "updatedAt": "2026-03-24T09:59:14.811Z"
+        },
+        {
+          "id": "6b9bd28f-6019-4239-b7f6-c51c5cd0d8fa",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774295419011_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 29,
+          "parentDesignId": null,
+          "createdAt": "2026-03-23T19:50:02.509Z",
+          "updatedAt": "2026-03-23T19:50:22.816Z"
+        },
+        {
+          "id": "780cd0f4-2aa1-4980-bec9-8cfbfa314c70",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 4,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T17:20:31.413Z",
+          "updatedAt": "2026-03-16T17:24:28.847Z"
+        },
+        {
+          "id": "3c154d1d-50d9-4bd3-ae29-a4d6d280ede0",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 3,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T17:12:42.750Z",
+          "updatedAt": "2026-03-16T17:15:05.878Z"
+        },
+        {
+          "id": "7a3e428e-eacf-46e6-88c3-c9793ccb7f97",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 5,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T17:33:37.320Z",
+          "updatedAt": "2026-03-16T17:40:59.497Z"
+        },
+        {
+          "id": "88b3437f-49c9-4572-b97b-07f5f8c496ca",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774343622792_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 37,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T09:13:30.230Z",
+          "updatedAt": "2026-03-24T09:13:45.750Z"
+        },
+        {
+          "id": "81ab6257-5089-45a7-9fee-d82ea177ae75",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 40,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 3,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 20,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 85,
+          "parentDesignId": null,
+          "createdAt": "2026-05-24T10:16:32.501Z",
+          "updatedAt": "2026-05-24T10:53:21.476Z"
+        },
+        {
+          "id": "006364b4-a415-4045-b406-a83463ae0acb",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 30,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1779536090131_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "vloeien",
+              "positionU": 0.45,
+              "positionV": 0.5,
+              "libraryKey": "rctb-pronatie",
+              "rotationRad": 0,
+              "trimOffsetMm": 0,
+              "printHardness": "normal"
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 78,
+          "parentDesignId": null,
+          "createdAt": "2026-05-14T16:33:46.457Z",
+          "updatedAt": "2026-05-23T16:21:40.212Z"
+        },
+        {
+          "id": "bcd504f5-f402-47e7-942e-759d6817f363",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 40,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 87,
+          "parentDesignId": null,
+          "createdAt": "2026-05-28T13:22:20.013Z",
+          "updatedAt": "2026-05-28T13:22:53.979Z"
+        },
+        {
+          "id": "e2d0baf2-74ef-4329-a922-4e0e777c57e5",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 6,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T17:45:33.697Z",
+          "updatedAt": "2026-03-16T17:48:52.659Z"
+        },
+        {
+          "id": "7d912ac5-dfde-4341-abdc-6b643a76d74e",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 7,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T17:52:47.632Z",
+          "updatedAt": "2026-03-16T17:53:30.116Z"
+        },
+        {
+          "id": "547a677c-1c85-48f2-89f7-9861c978317b",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 8,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T17:56:16.134Z",
+          "updatedAt": "2026-03-16T18:02:41.160Z"
+        },
+        {
+          "id": "f730c86b-cfa7-4a25-9bab-cd4b7f838512",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {},
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 12,
+          "parentDesignId": null,
+          "createdAt": "2026-03-17T11:30:21.865Z",
+          "updatedAt": "2026-03-17T11:30:21.865Z"
+        },
+        {
+          "id": "0f42cb76-9654-46bf-a3bf-1c3fba7c3836",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 10,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T18:09:04.034Z",
+          "updatedAt": "2026-03-16T23:07:29.488Z"
+        },
+        {
+          "id": "7de409dd-87f5-4660-be51-cd0d92b0a9f5",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 11,
+          "parentDesignId": null,
+          "createdAt": "2026-03-16T23:07:48.367Z",
+          "updatedAt": "2026-03-16T23:17:55.650Z"
+        },
+        {
+          "id": "9cd78ecb-cb26-41da-b7ea-a52719909c2e",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 11.5,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 48,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T14:14:29.771Z",
+          "updatedAt": "2026-03-24T14:14:29.771Z"
+        },
+        {
+          "id": "a2b0a0f9-afd4-4245-8d90-4feaea400f1a",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 15,
+          "parentDesignId": null,
+          "createdAt": "2026-03-17T16:17:48.643Z",
+          "updatedAt": "2026-03-17T17:03:08.744Z"
+        },
+        {
+          "id": "3b95ffd0-8364-4e9b-8661-536ee384f7bd",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 14,
+          "parentDesignId": null,
+          "createdAt": "2026-03-17T13:21:44.501Z",
+          "updatedAt": "2026-03-17T14:40:06.727Z"
+        },
+        {
+          "id": "7164fb77-f396-4c68-b8bd-915344e5b478",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 13,
+          "parentDesignId": null,
+          "createdAt": "2026-03-17T11:30:26.969Z",
+          "updatedAt": "2026-03-17T13:07:32.841Z"
+        },
+        {
+          "id": "e053676c-f113-4619-bb92-23a98fc28ff8",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 16,
+          "parentDesignId": null,
+          "createdAt": "2026-03-17T17:20:15.827Z",
+          "updatedAt": "2026-03-18T10:42:50.789Z"
+        },
+        {
+          "id": "adbed5ed-9468-4808-8fc5-29cb4706603e",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 11.5,
+                "right": 10.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 49,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T14:43:03.027Z",
+          "updatedAt": "2026-03-24T14:43:03.027Z"
+        },
+        {
+          "id": "8b0bcf9b-2c44-4ae4-b13b-47ae09d5aa31",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 11.5,
+                "right": 10.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 50,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T14:56:21.351Z",
+          "updatedAt": "2026-03-24T14:56:21.351Z"
+        },
+        {
+          "id": "c466b5ac-84ac-4bf6-8de7-6af94adb7851",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 52,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T17:32:06.718Z",
+          "updatedAt": "2026-03-24T17:32:06.718Z"
+        },
+        {
+          "id": "2657a7e4-7c15-4377-b550-b127d2a84ac1",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 53,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T18:19:45.390Z",
+          "updatedAt": "2026-03-24T18:19:45.390Z"
+        },
+        {
+          "id": "9c3fcf3a-06cb-490d-9913-9c49ec06dc5b",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 69,
+          "parentDesignId": null,
+          "createdAt": "2026-05-07T05:08:25.526Z",
+          "updatedAt": "2026-05-07T05:09:30.923Z"
+        },
+        {
+          "id": "988ae671-f006-49ab-8e09-23edaf85dc0b",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 70,
+          "parentDesignId": null,
+          "createdAt": "2026-05-07T05:22:15.751Z",
+          "updatedAt": "2026-05-07T05:27:50.590Z"
+        },
+        {
+          "id": "06c8a0be-8b10-415b-81b6-1a10fba8e8e4",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1773967504511_3",
+              "side": "right",
+              "split": false,
+              "scaleU": 1.26,
+              "scaleV": 1.43,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 17,
+          "parentDesignId": null,
+          "createdAt": "2026-03-18T10:59:00.808Z",
+          "updatedAt": "2026-03-20T00:46:17.400Z"
+        },
+        {
+          "id": "4ffd8c36-d6d6-42e7-9866-bf0f6c1f30dd",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774345818748_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 38,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T09:47:09.351Z",
+          "updatedAt": "2026-03-24T09:50:22.774Z"
+        },
+        {
+          "id": "7085134e-f4dd-4717-b7a7-c89ba293f3d2",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774282171396_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "vloeien",
+              "positionU": 0.45,
+              "positionV": 0.5,
+              "libraryKey": "rctb-3",
+              "rotationRad": 0,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 20,
+          "parentDesignId": null,
+          "createdAt": "2026-03-23T07:03:09.847Z",
+          "updatedAt": "2026-03-23T16:32:44.577Z"
+        },
+        {
+          "id": "f6ba46f0-b7e9-4ebb-98e6-6b2cd6c7f799",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774296345356_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 30,
+          "parentDesignId": null,
+          "createdAt": "2026-03-23T20:05:49.219Z",
+          "updatedAt": "2026-03-23T20:05:49.219Z"
+        },
+        {
+          "id": "6537ed7f-affe-426e-aa15-1ac3feefba0a",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774345895602_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 39,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T09:51:20.340Z",
+          "updatedAt": "2026-03-24T09:51:38.944Z"
+        },
+        {
+          "id": "20e44277-9b1c-48f6-ae42-0fbc1c3d5a59",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 11.5,
+                "right": 10.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 51,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T17:27:00.606Z",
+          "updatedAt": "2026-03-24T17:27:00.606Z"
+        },
+        {
+          "id": "84beb0e8-258c-43af-877a-db6b77153810",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774084483478_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "vloeien",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0,
+              "trimlineAdjustments": {
+                "toe": 1.5,
+                "heel": 1,
+                "global": 0,
+                "midfoot": 2.5,
+                "forefoot": 2.5
+              },
+              "trimlineHandleProfile": {
+                "bins": 48,
+                "tValues": [
+                  0,
+                  0.02127659507095814,
+                  0.04255319014191628,
+                  0.06382978707551956,
+                  0.08510638028383255,
+                  0.1063829809427261,
+                  0.1276595741510391,
+                  0.1489361673593521,
+                  0.1702127605676651,
+                  0.1914893686771393,
+                  0.2127659618854523,
+                  0.2340425550937653,
+                  0.2553191483020782,
+                  0.2765957415103912,
+                  0.2978723347187042,
+                  0.3191489279270172,
+                  0.3404255211353302,
+                  0.3617021143436432,
+                  0.3829787373542786,
+                  0.4042553305625916,
+                  0.4255319237709045,
+                  0.4468085169792175,
+                  0.4680851101875305,
+                  0.4893617033958435,
+                  0.5106382966041565,
+                  0.5319148898124695,
+                  0.5531914830207825,
+                  0.5744680762290955,
+                  0.5957446694374084,
+                  0.6170212626457214,
+                  0.6382978558540344,
+                  0.6595744490623474,
+                  0.6808510422706604,
+                  0.7021276354789734,
+                  0.7234042286872864,
+                  0.7446808218955994,
+                  0.7659574747085571,
+                  0.7872340679168701,
+                  0.8085106611251831,
+                  0.8297872543334961,
+                  0.8510638475418091,
+                  0.8723404407501221,
+                  0.8936170339584351,
+                  0.914893627166748,
+                  0.936170220375061,
+                  0.957446813583374,
+                  0.978723406791687,
+                  1
+                ],
+                "leftOffsetsMm": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0.6090087890625,
+                  1.460936069488525,
+                  2.729387998580933,
+                  3.971235990524292,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  4.5,
+                  3.971235990524292,
+                  2.729387998580933,
+                  1.460936069488525,
+                  0.6090087890625,
+                  0
+                ],
+                "rightOffsetsMm": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 18,
+          "parentDesignId": null,
+          "createdAt": "2026-03-21T09:12:53.896Z",
+          "updatedAt": "2026-03-21T09:58:44.265Z"
+        },
+        {
+          "id": "6543e44d-46dd-43b9-90bd-58fc55fe6296",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 19,
+          "parentDesignId": null,
+          "createdAt": "2026-03-22T10:28:22.409Z",
+          "updatedAt": "2026-03-22T11:50:53.283Z"
+        },
+        {
+          "id": "5fc7ab57-072d-4c7a-8099-94ab81abfc91",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774282171396_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "vloeien",
+              "positionU": 0.45,
+              "positionV": 0.5,
+              "libraryKey": "rctb-3",
+              "rotationRad": 0,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 22,
+          "parentDesignId": null,
+          "createdAt": "2026-03-23T18:24:07.933Z",
+          "updatedAt": "2026-03-23T18:24:12.967Z"
+        },
+        {
+          "id": "32f2ead3-6449-4468-a36b-5393be5823c5",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 24,
+          "parentDesignId": null,
+          "createdAt": "2026-03-23T18:34:51.926Z",
+          "updatedAt": "2026-03-23T18:35:23.298Z"
+        },
+        {
+          "id": "053eb02c-7ac3-4a85-a335-a8f1169e3d0a",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774290350512_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 23,
+          "parentDesignId": null,
+          "createdAt": "2026-03-23T18:25:06.822Z",
+          "updatedAt": "2026-03-23T18:25:53.436Z"
+        },
+        {
+          "id": "e7a3866c-89bf-47a0-9050-e5ae0d332b68",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 25,
+          "parentDesignId": null,
+          "createdAt": "2026-03-23T18:39:39.575Z",
+          "updatedAt": "2026-03-23T18:39:59.116Z"
+        },
+        {
+          "id": "39c32516-24bc-4dc6-9c6b-c100061f8c5a",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 27,
+          "parentDesignId": null,
+          "createdAt": "2026-03-23T19:03:16.101Z",
+          "updatedAt": "2026-03-23T19:03:16.101Z"
+        },
+        {
+          "id": "a626f43f-8579-4eb3-8a2b-2cec87845011",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 31,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T08:09:22.684Z",
+          "updatedAt": "2026-03-24T08:09:36.149Z"
+        },
+        {
+          "id": "af8fc576-d2bb-4028-a2cc-19fb061e2a2c",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1774339891858_1",
+              "side": "right",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 32,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T08:11:12.250Z",
+          "updatedAt": "2026-03-24T08:11:35.199Z"
+        },
+        {
+          "id": "fae7595c-2663-4880-890d-d02e27558c85",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 33,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T08:39:19.384Z",
+          "updatedAt": "2026-03-24T08:40:08.278Z"
+        },
+        {
+          "id": "33d2a5a6-6261-4a03-a8bb-ac5397f52aca",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 41,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T10:15:49.556Z",
+          "updatedAt": "2026-03-24T10:16:53.734Z"
+        },
+        {
+          "id": "3da0fe55-1ae0-415e-9693-025ccc09464d",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 44,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T13:19:38.865Z",
+          "updatedAt": "2026-03-24T13:19:38.865Z"
+        },
+        {
+          "id": "9dc7a80f-e9fa-4dd6-92c3-c8571358f4e9",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 18,
+                "right": 18
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 42,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T11:49:26.343Z",
+          "updatedAt": "2026-03-24T11:52:17.593Z"
+        },
+        {
+          "id": "734f282b-2d64-4224-8293-fff8586abc27",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 7,
+                "right": 7
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 45,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T13:30:18.208Z",
+          "updatedAt": "2026-03-24T13:30:18.208Z"
+        },
+        {
+          "id": "f34640a9-8e4e-4104-86c1-440bd3f4cd35",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 3,
+                "right": 3
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 43,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T12:31:34.956Z",
+          "updatedAt": "2026-03-24T13:14:24.002Z"
+        },
+        {
+          "id": "83346af3-de95-46fd-ac32-d39e07156951",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 11.5,
+                "right": 6.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 46,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T13:39:06.454Z",
+          "updatedAt": "2026-03-24T13:39:06.454Z"
+        },
+        {
+          "id": "93665d1f-fad6-4d38-a583-f6ec3af9d6ca",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 11.5,
+                "right": 14
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 47,
+          "parentDesignId": null,
+          "createdAt": "2026-03-24T13:49:05.533Z",
+          "updatedAt": "2026-03-24T13:49:05.533Z"
+        },
+        {
+          "id": "401aa70e-1f41-4586-aad6-b56236af3234",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 54,
+          "parentDesignId": null,
+          "createdAt": "2026-03-25T06:38:36.241Z",
+          "updatedAt": "2026-03-25T11:35:11.457Z"
+        },
+        {
+          "id": "eb55c65c-e513-400c-89f8-0349fc8ebd34",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 55,
+          "parentDesignId": null,
+          "createdAt": "2026-03-25T11:36:55.459Z",
+          "updatedAt": "2026-03-25T11:36:55.459Z"
+        },
+        {
+          "id": "918bcede-7390-4d54-aff5-1692e575ad6a",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 56,
+          "parentDesignId": null,
+          "createdAt": "2026-03-25T11:54:04.286Z",
+          "updatedAt": "2026-03-25T11:54:04.286Z"
+        },
+        {
+          "id": "4286e9af-d9fb-4fd7-9030-a5b8b8d41f1e",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 57,
+          "parentDesignId": null,
+          "createdAt": "2026-03-25T12:49:58.235Z",
+          "updatedAt": "2026-03-25T12:49:58.235Z"
+        },
+        {
+          "id": "2b92acfa-6651-4b21-b161-247e29760d3d",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 58,
+          "parentDesignId": null,
+          "createdAt": "2026-03-25T13:20:48.500Z",
+          "updatedAt": "2026-03-25T13:20:48.500Z"
+        },
+        {
+          "id": "c58f6013-8d28-41be-bd8d-a6d1c521ddf5",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1778124887627_4",
+              "side": "left",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.8,
+              "positionV": 0.45,
+              "libraryKey": "sd-1-5",
+              "rotationRad": 0,
+              "trimOffsetMm": 0,
+              "trimlineAdjustments": {
+                "toe": 0,
+                "heel": 0,
+                "global": 0,
+                "midfoot": 0,
+                "forefoot": 0
+              },
+              "trimlineHandleProfile": {
+                "bins": 48,
+                "tValues": [
+                  0,
+                  0.02127659507095814,
+                  0.04255319014191628,
+                  0.06382978707551956,
+                  0.08510638028383255,
+                  0.1063829809427261,
+                  0.1276595741510391,
+                  0.1489361673593521,
+                  0.1702127605676651,
+                  0.1914893686771393,
+                  0.2127659618854523,
+                  0.2340425550937653,
+                  0.2553191483020782,
+                  0.2765957415103912,
+                  0.2978723347187042,
+                  0.3191489279270172,
+                  0.3404255211353302,
+                  0.3617021143436432,
+                  0.3829787373542786,
+                  0.4042553305625916,
+                  0.4255319237709045,
+                  0.4468085169792175,
+                  0.4680851101875305,
+                  0.4893617033958435,
+                  0.5106382966041565,
+                  0.5319148898124695,
+                  0.5531914830207825,
+                  0.5744680762290955,
+                  0.5957446694374084,
+                  0.6170212626457214,
+                  0.6382978558540344,
+                  0.6595744490623474,
+                  0.6808510422706604,
+                  0.7021276354789734,
+                  0.7234042286872864,
+                  0.7446808218955994,
+                  0.7659574747085571,
+                  0.7872340679168701,
+                  0.8085106611251831,
+                  0.8297872543334961,
+                  0.8510638475418091,
+                  0.8723404407501221,
+                  0.8936170339584351,
+                  0.914893627166748,
+                  0.936170220375061,
+                  0.957446813583374,
+                  0.978723406791687,
+                  1
+                ],
+                "leftOffsetsMm": [
+                  3.529987573623657,
+                  4,
+                  4,
+                  4,
+                  4,
+                  4,
+                  3.529987573623657,
+                  2.426122665405273,
+                  1.298609852790833,
+                  0.5413411259651184,
+                  0,
+                  0,
+                  0,
+                  0.5413411259651184,
+                  1.298609852790833,
+                  2.426122665405273,
+                  3.529987573623657,
+                  4,
+                  3.529987573623657,
+                  2.426122665405273,
+                  1.298609852790833,
+                  0.5413411259651184,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "rightOffsetsMm": [
+                  4,
+                  4,
+                  4,
+                  3.529987573623657,
+                  2.426122665405273,
+                  1.298609852790833,
+                  0.5413411259651184,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 67,
+          "parentDesignId": null,
+          "createdAt": "2026-05-07T03:30:53.942Z",
+          "updatedAt": "2026-05-07T04:24:39.725Z"
+        },
+        {
+          "id": "dd831ccb-6a90-4dc5-bb70-f09fa9524b21",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39.5,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 59,
+          "parentDesignId": null,
+          "createdAt": "2026-03-25T13:41:28.281Z",
+          "updatedAt": "2026-03-25T13:43:12.013Z"
+        },
+        {
+          "id": "3b12189a-393e-4b3c-92f9-128f7168ef1b",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 62,
+          "parentDesignId": null,
+          "createdAt": "2026-03-25T16:04:52.431Z",
+          "updatedAt": "2026-03-25T16:04:52.431Z"
+        },
+        {
+          "id": "a448df80-fd0c-4285-952a-d9518875be30",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 61,
+          "parentDesignId": null,
+          "createdAt": "2026-03-25T14:40:43.649Z",
+          "updatedAt": "2026-03-25T15:06:37.792Z"
+        },
+        {
+          "id": "7fef020d-2e68-48e6-a51a-d94d2237e2a3",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 39
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 39
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 19
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 60,
+          "parentDesignId": null,
+          "createdAt": "2026-03-25T14:01:49.502Z",
+          "updatedAt": "2026-03-25T14:21:22.542Z"
+        },
+        {
+          "id": "3499df16-9a6b-4115-95cb-e19cd55f08ac",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 63,
+          "parentDesignId": null,
+          "createdAt": "2026-03-25T16:22:42.223Z",
+          "updatedAt": "2026-03-25T16:22:42.223Z"
+        },
+        {
+          "id": "86c45187-3cce-4b47-897a-434858377637",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 66,
+          "parentDesignId": null,
+          "createdAt": "2026-04-18T11:48:01.078Z",
+          "updatedAt": "2026-04-18T11:58:05.348Z"
+        },
+        {
+          "id": "ab5f317d-2c8e-41f3-9b89-181434076558",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 64,
+          "parentDesignId": null,
+          "createdAt": "2026-03-25T22:09:51.954Z",
+          "updatedAt": "2026-03-26T00:33:42.524Z"
+        },
+        {
+          "id": "411c6aa3-50ea-48fe-891f-a0c66c6a2158",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "vrouw",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 77,
+          "parentDesignId": null,
+          "createdAt": "2026-05-12T07:36:11.071Z",
+          "updatedAt": "2026-05-14T16:33:21.263Z"
+        },
+        {
+          "id": "3fdb4c35-389e-42e3-8092-dff98c703f3f",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 41.5,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "driekwart",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 65,
+          "parentDesignId": null,
+          "createdAt": "2026-03-26T09:35:31.843Z",
+          "updatedAt": "2026-03-26T14:20:41.299Z"
+        },
+        {
+          "id": "3eeda735-1999-4bff-a2c1-f6b82ea50401",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1778128239800_1",
+              "side": "left",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.45,
+              "positionV": 0.5,
+              "libraryKey": "rctb-1",
+              "rotationRad": 0,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 68,
+          "parentDesignId": null,
+          "createdAt": "2026-05-07T04:26:02.738Z",
+          "updatedAt": "2026-05-07T04:30:43.649Z"
+        },
+        {
+          "id": "a604b773-3d7f-4268-bda6-13125769baaf",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1778140423416_3",
+              "side": "left",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 4,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-1",
+              "rotationRad": 0,
+              "trimOffsetMm": 0
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 72,
+          "parentDesignId": null,
+          "createdAt": "2026-05-07T07:23:52.638Z",
+          "updatedAt": "2026-05-07T07:54:03.118Z"
+        },
+        {
+          "id": "643d6571-7d8f-4e9e-befd-e3ff66803565",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1779546824654_1",
+              "side": "left",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-1",
+              "rotationRad": 0,
+              "trimOffsetMm": 0,
+              "printHardness": "normal"
+            },
+            {
+              "id": "el_1779548466651_2",
+              "side": "left",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.8,
+              "positionV": 0.5,
+              "libraryKey": "sd-1-5",
+              "rotationRad": 0,
+              "trimOffsetMm": 0,
+              "printHardness": "normal"
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 80,
+          "parentDesignId": null,
+          "createdAt": "2026-05-23T11:53:09.845Z",
+          "updatedAt": "2026-05-23T15:27:08.216Z"
+        },
+        {
+          "id": "af337961-429d-4509-b22c-0052840b7560",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1780155722427_1",
+              "side": "left",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": -2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.35,
+              "libraryKey": "diep-rond",
+              "stackOrder": 0,
+              "rotationRad": 0,
+              "trimOffsetMm": 0,
+              "printHardness": "normal"
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 89,
+          "parentDesignId": null,
+          "createdAt": "2026-05-30T10:54:24.047Z",
+          "updatedAt": "2026-05-30T18:16:06.472Z"
+        },
+        {
+          "id": "88c99366-e3f3-4e59-8bc5-1a5989ad3823",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 40.5,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2.5,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1779551682611_1",
+              "side": "left",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.8,
+              "positionV": 0.5,
+              "libraryKey": "sd-1-5",
+              "rotationRad": 0,
+              "trimOffsetMm": 0,
+              "printHardness": "normal"
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 81,
+          "parentDesignId": null,
+          "createdAt": "2026-05-23T15:54:20.148Z",
+          "updatedAt": "2026-05-23T15:55:35.788Z"
+        },
+        {
+          "id": "9d143010-d2ea-41b3-b58a-6064afffa08d",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 30,
+                "right": 30
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 74,
+          "parentDesignId": null,
+          "createdAt": "2026-05-07T08:15:20.431Z",
+          "updatedAt": "2026-05-07T08:17:35.594Z"
+        },
+        {
+          "id": "d427e626-0adc-4a85-89d1-522e8041d433",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 71,
+          "parentDesignId": null,
+          "createdAt": "2026-05-07T07:23:05.480Z",
+          "updatedAt": "2026-05-07T08:13:13.246Z"
+        },
+        {
+          "id": "c634b80d-b530-4c5a-b129-99f034b37170",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 82,
+          "parentDesignId": null,
+          "createdAt": "2026-05-23T16:26:29.703Z",
+          "updatedAt": "2026-05-23T16:26:29.703Z"
+        },
+        {
+          "id": "75a19167-5a12-4032-b028-81c12e1a9fab",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [
+            {
+              "id": "el_1780293422696_2",
+              "side": "left",
+              "split": false,
+              "scaleU": 1,
+              "scaleV": 1,
+              "blendMm": 5,
+              "profile": "vloeiend",
+              "heightMm": 2,
+              "floorMode": "sole",
+              "positionU": 0.82,
+              "positionV": 0.5,
+              "libraryKey": "sd-2-5",
+              "stackOrder": 0,
+              "rotationRad": -0.2,
+              "trimOffsetMm": 0,
+              "printHardness": "extraHard"
+            }
+          ],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 90,
+          "parentDesignId": null,
+          "createdAt": "2026-06-01T05:51:42.972Z",
+          "updatedAt": "2026-06-01T07:11:41.667Z"
+        },
+        {
+          "id": "43de2fba-2b19-47f4-821c-2313cf790c8e",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 30,
+                "right": 30
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 73,
+          "parentDesignId": null,
+          "createdAt": "2026-05-07T08:13:37.092Z",
+          "updatedAt": "2026-05-07T08:14:30.090Z"
+        },
+        {
+          "id": "989047a6-6545-4598-84ec-3e73a66d494b",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 30,
+                "right": 30
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 76,
+          "parentDesignId": null,
+          "createdAt": "2026-05-07T08:26:43.150Z",
+          "updatedAt": "2026-05-07T08:27:28.307Z"
+        },
+        {
+          "id": "b3ce38c2-00cb-4b63-80e3-ba2556f9f9c5",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 30,
+                "right": 30
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 75,
+          "parentDesignId": null,
+          "createdAt": "2026-05-07T08:21:06.830Z",
+          "updatedAt": "2026-05-07T08:21:43.336Z"
+        },
+        {
+          "id": "0220fb45-370b-4c34-9f5c-b84d47881171",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 86,
+          "parentDesignId": null,
+          "createdAt": "2026-05-28T13:15:45.906Z",
+          "updatedAt": "2026-05-28T13:16:33.412Z"
+        },
+        {
+          "id": "2b76a4d8-45a0-4ba8-8b2a-cb58f68e34d4",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 79,
+          "parentDesignId": null,
+          "createdAt": "2026-05-23T11:35:44.212Z",
+          "updatedAt": "2026-05-23T11:51:03.181Z"
+        },
+        {
+          "id": "f12fbc2f-19a2-4ea3-ae68-05e29f86b6bb",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 88,
+          "parentDesignId": null,
+          "createdAt": "2026-05-28T13:55:54.408Z",
+          "updatedAt": "2026-05-28T13:55:54.408Z"
+        },
+        {
+          "id": "374ff9dc-b1c0-45d2-99c3-4f91dd1caf11",
+          "projectId": "e55b16a8-acec-4e41-849c-044420c0b0a7",
+          "parameters": {
+            "general": {
+              "shoeSize": {
+                "left": 39.5,
+                "right": 38.5
+              },
+              "sizeLabel": "EU",
+              "baseInsoleType": "man",
+              "seededShoeSize": {
+                "left": 39,
+                "right": 38.5
+              },
+              "soleThicknessMm": {
+                "left": 2,
+                "right": 2
+              },
+              "maxInsoleHeightMm": {
+                "left": 19,
+                "right": 17.5
+              }
+            },
+            "gridEdits": [],
+            "selectedBaseSTL": null,
+            "zoneAdjustments": [],
+            "selectedTemplate": null
+          },
+          "elements": [],
+          "matchTransform": null,
+          "stlUrl": null,
+          "gcodeUrl": null,
+          "version": 91,
+          "parentDesignId": null,
+          "createdAt": "2026-06-01T07:12:10.065Z",
+          "updatedAt": "2026-06-02T09:43:46.504Z"
+        }
+      ]
+    }
+  ]
+}

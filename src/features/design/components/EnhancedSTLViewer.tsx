@@ -34,7 +34,7 @@ import { applyAllCorrections } from '@/src/features/design/utils/insoleCorrectio
 import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpPanel';
 import type { CorrectionKey } from '@/src/shared/components/design/correctionsCatalog';
 import type { PlacedElement } from '@/src/features/design/elements/types';
-import { applyElements, applyElementColors, buildElementOverlayGeometries, DIEPELEMENTEN_ITEMS, ELEMENTEN_ITEMS, getElementByKey, getElementPreferredStlUrl, getElementStlLoadUrls, type ElementOverlayData } from '@/src/features/design/elements';
+import { applyElementColors, applyElementsWithSmoothing, buildElementOverlayGeometries, DIEPELEMENTEN_ITEMS, ELEMENTEN_ITEMS, getElementByKey, getElementPreferredStlUrl, getElementStlLoadUrls, type ElementOverlayData, type ElementSmoothStrength } from '@/src/features/design/elements';
 import { VIEWER_MATERIALS } from '@/src/features/design/viewer/viewerMaterialProfile';
 import {
 	getScanOverlayMaterialProps,
@@ -1074,107 +1074,6 @@ function smoothInsoleTopSurface(
 	for (let v = 0; v < vertCount; v++) {
 		if (!topFacing[v]) continue;
 		pos[v * 3 + hAxisIdx] = smoothRef[v] + residualFactor * (origHeights[v] - smoothRef[v]);
-	}
-
-	posAttr.needsUpdate = true;
-	geometry.computeVertexNormals();
-	return geometry;
-}
-
-/**
- * Blend placed elements smoothly into the insole top surface ("Elementen vloeien").
- *
- * Runs AFTER applyElements has displaced the top surface into raised element pads.
- * Crucially this only smooths the vertices the ELEMENTS moved (detected by diffing
- * against the pre-element height snapshot), plus a few transition rings around them
- * so the element edges melt into the surrounding insole. The rest of the insole top
- * surface is left completely untouched. A moderate iterative Laplacian smooth (along
- * the height axis, averaging over all neighbours) rounds the seams while the low pass
- * count preserves the broad therapeutic element volume.
- */
-function smoothElementsIntoInsole(
-	geometry: THREE.BufferGeometry,
-	/** Height-axis positions captured BEFORE applyElements (full x/y/z array). */
-	basePositions: Float32Array,
-	passes = 14,
-	alpha = 0.5,
-	dilateRings = 3,
-	normalThreshold = 0.2,
-): THREE.BufferGeometry {
-	if (!geometry.index) return geometry;
-	const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute | null;
-	const normalAttr = geometry.getAttribute('normal') as THREE.BufferAttribute | null;
-	if (!posAttr || !normalAttr) return geometry;
-
-	const vertCount = posAttr.count;
-	if (basePositions.length < vertCount * 3) return geometry;
-	const idxArr = geometry.index.array;
-	const faceCount = idxArr.length / 3;
-
-	geometry.computeBoundingBox();
-	const bbox = geometry.boundingBox!;
-	const sz = bbox.getSize(new THREE.Vector3());
-	const hAxisIdx: 0 | 1 | 2 = sz.x <= sz.y && sz.x <= sz.z ? 0 : sz.y <= sz.z ? 1 : 2;
-
-	const neighborSets: Set<number>[] = Array.from({ length: vertCount }, () => new Set<number>());
-	for (let f = 0; f < faceCount; f++) {
-		const a = idxArr[f * 3], b = idxArr[f * 3 + 1], c = idxArr[f * 3 + 2];
-		neighborSets[a].add(b); neighborSets[a].add(c);
-		neighborSets[b].add(a); neighborSets[b].add(c);
-		neighborSets[c].add(a); neighborSets[c].add(b);
-	}
-
-	const normals = normalAttr.array as Float32Array;
-	const topFacing = new Uint8Array(vertCount);
-	for (let v = 0; v < vertCount; v++) {
-		if (normals[v * 3 + hAxisIdx] > normalThreshold) topFacing[v] = 1;
-	}
-
-	const pos = posAttr.array as Float32Array;
-
-	// Mark only the vertices the elements actually displaced.
-	let maxDelta = 1e-6;
-	const deltas = new Float32Array(vertCount);
-	for (let v = 0; v < vertCount; v++) {
-		const d = Math.abs(pos[v * 3 + hAxisIdx] - basePositions[v * 3 + hAxisIdx]);
-		deltas[v] = d;
-		if (d > maxDelta) maxDelta = d;
-	}
-	// Nothing moved → no elements affect the surface, leave the insole alone.
-	if (maxDelta <= 1e-5) return geometry;
-	const threshold = Math.max(1e-5, maxDelta * 0.02);
-	const affected = new Uint8Array(vertCount);
-	for (let v = 0; v < vertCount; v++) {
-		if (deltas[v] > threshold) affected[v] = 1;
-	}
-	// Dilate the affected region so the element edges blend into the insole.
-	for (let r = 0; r < dilateRings; r++) {
-		const snapshot = affected.slice();
-		for (let v = 0; v < vertCount; v++) {
-			if (!snapshot[v]) continue;
-			for (const nb of neighborSets[v]) affected[nb] = 1;
-		}
-	}
-
-	const heights = new Float32Array(vertCount);
-	for (let v = 0; v < vertCount; v++) heights[v] = pos[v * 3 + hAxisIdx];
-	const tmp = heights.slice();
-
-	for (let p = 0; p < passes; p++) {
-		for (let v = 0; v < vertCount; v++) {
-			if (!affected[v] || !topFacing[v]) { tmp[v] = heights[v]; continue; }
-			const nbs = neighborSets[v];
-			if (nbs.size === 0) { tmp[v] = heights[v]; continue; }
-			let sum = 0;
-			for (const nb of nbs) sum += heights[nb]; // ALL neighbours (incl. surrounding insole) pull edges in
-			tmp[v] = heights[v] + alpha * (sum / nbs.size - heights[v]);
-		}
-		heights.set(tmp);
-	}
-
-	for (let v = 0; v < vertCount; v++) {
-		if (!affected[v] || !topFacing[v]) continue;
-		pos[v * 3 + hAxisIdx] = heights[v];
 	}
 
 	posAttr.needsUpdate = true;
@@ -4236,19 +4135,15 @@ function STLMesh({
 		}
 		// Apply element height displacements (raised pads)
 		if (hasPlacedElements && currentPlacedElements) {
-			// "Elementen vloeien" melts the elements (not the whole insole) into the
-			// body. Snapshot the surface BEFORE applyElements so we can detect exactly
-			// which vertices the elements moved and smooth only those.
+			// "Elementen vloeien" melts the displaced region (not the whole insole)
+			// into the body; the core wrapper snapshots the pre-displacement surface
+			// and smooths only the vertices the elements moved.
 			const doVloeien = elementsVloeienRef.current && meshRole === 'insole';
-			let preElementPositions: Float32Array | null = null;
-			if (doVloeien) {
-				const prePos = finalGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
-				if (prePos) preElementPositions = new Float32Array(prePos.array as Float32Array);
-			}
-			applyElements(finalGeometry, currentPlacedElements, { mmToWorld: mmToWorld || 1 });
-			if (doVloeien && preElementPositions) {
-				smoothElementsIntoInsole(finalGeometry, preElementPositions);
-			}
+			const smooth: ElementSmoothStrength = doVloeien ? 'full' : 'mild';
+			applyElementsWithSmoothing(finalGeometry, currentPlacedElements, {
+				mmToWorld: mmToWorld || 1,
+				smooth,
+			});
 		}
 		applyHeelEdgeThicknessBand(finalGeometry, heelEdgeThicknessMm, mmToWorld || 1, side);
 		// Trimline rim cut runs LAST, in the same final space the gizmo edits, so the
@@ -5151,7 +5046,6 @@ function STLMesh({
 						printElementSelectionHighlight && selectedHere;
 					const highlightHover = hoveredHere;
 					const highlightHere = highlightSelected || highlightHover;
-					const pickFriendly = Boolean(printHit);
 					return (
 						<mesh
 							key={overlay.elementId}
@@ -5204,9 +5098,9 @@ function STLMesh({
 									flatShading={VIEWER_MATERIALS.elementOverlay.flatShading}
 									side={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
 									shadowSide={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
-									polygonOffset={!pickFriendly || elementsVloeien}
-									polygonOffsetFactor={pickFriendly ? (elementsVloeien ? -3 : 0) : overlay.isInset ? -1 : -3}
-									polygonOffsetUnits={pickFriendly ? (elementsVloeien ? -3 : 0) : overlay.isInset ? -1 : -3}
+									polygonOffset
+									polygonOffsetFactor={overlay.isInset ? -1 : -3}
+									polygonOffsetUnits={overlay.isInset ? -1 : -3}
 								/>
 							) : (
 								<meshStandardMaterial
@@ -5220,9 +5114,9 @@ function STLMesh({
 									flatShading={VIEWER_MATERIALS.elementOverlay.flatShading}
 									side={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
 									shadowSide={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
-									polygonOffset={!pickFriendly || elementsVloeien}
-									polygonOffsetFactor={pickFriendly ? (elementsVloeien ? -3 : 0) : overlay.isInset ? -1 : -3}
-									polygonOffsetUnits={pickFriendly ? (elementsVloeien ? -3 : 0) : overlay.isInset ? -1 : -3}
+									polygonOffset
+									polygonOffsetFactor={overlay.isInset ? -1 : -3}
+									polygonOffsetUnits={overlay.isInset ? -1 : -3}
 								/>
 							)}
 						</mesh>

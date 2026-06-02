@@ -105,4 +105,80 @@ describe('applyElements', () => {
 
 		insole.dispose();
 	});
+
+	it('leaves vertices far from every element untouched (spatial early-out)', () => {
+		const insole = createTestInsoleGeometry();
+		const before = snapshotPositions(insole);
+
+		// Single element near the heel (low u). Vertices at the toe end must be
+		// outside the element's footprint+blend bbox and stay bit-identical.
+		applyElements(insole, [
+			mockElement('el-red', 'sd-1', {
+				heightMm: 5,
+				positionU: 0.12,
+				positionV: 0.5,
+				blendMm: 4,
+			}),
+		]);
+
+		const after = snapshotPositions(insole);
+		const positions = insole.getAttribute('position') as THREE.BufferAttribute;
+
+		let changed = 0;
+		let farUnchanged = 0;
+		for (let i = 0; i < positions.count; i++) {
+			const x = positions.getX(i); // length axis, -60..60
+			const yBefore = before[i * 3 + 1]!;
+			const yAfter = after[i * 3 + 1]!;
+			if (yAfter !== yBefore) changed++;
+			// Toe end (far from heel element) must be exactly unchanged.
+			if (x > 30) {
+				expect(yAfter).toBe(yBefore);
+				farUnchanged++;
+			}
+		}
+		expect(changed).toBeGreaterThan(0);
+		expect(farUnchanged).toBeGreaterThan(0);
+
+		insole.dispose();
+	});
+
+	it('raises top-facing vertices where the insole curves down (no SA Recht crater)', () => {
+		// Dip the toe end of the top surface well below 60% of the bbox height,
+		// keeping those vertices top-facing. The old absolute-height cutoff
+		// skipped them and left a hole/crater under the pad.
+		const insole = new THREE.BoxGeometry(120, 8, 40, 48, 2, 24);
+		const pos = insole.getAttribute('position') as THREE.BufferAttribute;
+		for (let i = 0; i < pos.count; i++) {
+			const x = pos.getX(i);
+			const y = pos.getY(i);
+			if (y > 3.9 && x > 20) {
+				const t = Math.min(1, (x - 20) / 40);
+				pos.setY(i, 4 - t * 6);
+			}
+		}
+		pos.needsUpdate = true;
+		insole.computeVertexNormals();
+
+		const before = snapshotPositions(insole);
+		applyElements(insole, [
+			mockElement('el-sa', 'peloitte-2', {
+				heightMm: 4,
+				positionU: 0.85,
+				positionV: 0.5,
+				blendMm: 4,
+			}),
+		]);
+		const after = snapshotPositions(insole);
+
+		let raised = 0;
+		for (let i = 0; i < pos.count; i++) {
+			const dy = after[i * 3 + 1]! - before[i * 3 + 1]!;
+			if (dy > 0.1) raised++;
+		}
+		// Pad sits on the dipped (low, top-facing) region and still rises.
+		expect(raised).toBeGreaterThan(0);
+
+		insole.dispose();
+	});
 });
