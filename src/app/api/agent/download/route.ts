@@ -4,7 +4,8 @@ import { prisma } from '@/src/shared/core/db/prisma';
 
 /**
  * GET /api/agent/download
- * Downloads a launcher script for the Print Agent with token embedded
+ * Returns a one-click Windows setup script that downloads the Print Agent
+ * executable and installs it (config + auto-start) with the user's token.
  */
 export async function GET(req: NextRequest) {
 	try {
@@ -24,219 +25,56 @@ export async function GET(req: NextRequest) {
 			);
 		}
 
-		// Get the web app URL from the request
-		const origin = req.headers.get('origin') || req.nextUrl.origin;
-		const webAppUrl = origin;
+		const webAppUrl = req.headers.get('origin') || req.nextUrl.origin;
 
-		// Detect OS from User-Agent (basic detection)
-		const userAgent = req.headers.get('user-agent') || '';
-		const isWindows = userAgent.includes('Windows');
-
-		// Check if user wants an installer (query param: ?type=installer)
-		const type = req.nextUrl.searchParams.get('type');
-		const isInstaller = type === 'installer';
-
-		// Generate launcher script
-		let scriptContent: string;
-		let filename: string;
-		let contentType: string;
-
-		if (isWindows) {
-			if (isInstaller) {
-				// Windows installer that sets up auto-start
-				filename = 'install-auto-start.bat';
-				contentType = 'application/x-msdownload';
-				scriptContent = `@echo off
-REM Podo Improve Print Agent - Auto-Start Installer
-REM This will make the agent start automatically when you log in
-
-echo ========================================
-echo Podo Improve Print Agent - Auto-Start Setup
-echo ========================================
+		const script = `@echo off
+setlocal
+title Podo Improve Print Agent - Setup
+echo ============================================
+echo   Podo Improve Print Agent - Installatie
+echo ============================================
 echo.
 
-REM Get the directory where this script is located
-set SCRIPT_DIR=%~dp0
-set STARTUP_DIR=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup
-set AGENT_FILE=%SCRIPT_DIR%agent.mjs
-set HIDDEN_VBS=%SCRIPT_DIR%start-agent-hidden.vbs
+set "EXE=%TEMP%\\podo-print-agent-setup.exe"
 
-REM Check if Node.js is installed
-where node >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-	echo ERROR: Node.js is not installed or not in PATH.
-	echo Please install Node.js from https://nodejs.org/
-	pause
-	exit /b 1
-)
-
-REM Always refresh agent.mjs so latest slicer logic is used
-echo Updating agent file from server...
-echo.
-
-powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $response = Invoke-WebRequest -Uri '${webAppUrl}/api/agent/files/agent.mjs' -OutFile '%AGENT_FILE%'; Write-Host 'Downloaded successfully!' } catch { Write-Host 'Download failed:' $_.Exception.Message; exit 1 }"
-
-if %ERRORLEVEL% NEQ 0 (
+echo [1/2] Agent downloaden...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -Uri '${webAppUrl}/api/agent/download/exe' -OutFile '%EXE%' -UseBasicParsing } catch { Write-Host $_.Exception.Message; exit 1 }"
+if errorlevel 1 (
 	echo.
-	echo ERROR: Failed to download agent file.
-	echo Please check your internet connection and try again.
+	echo FOUT: Downloaden mislukt. Controleer je internetverbinding en probeer opnieuw.
+	pause
+	exit /b 1
+)
+
+echo [2/2] Installeren en starten...
+"%EXE%" install --url "${webAppUrl}" --token "${agentToken}"
+if errorlevel 1 (
+	echo.
+	echo FOUT: Installatie mislukt. Zie de melding hierboven.
 	pause
 	exit /b 1
 )
 
 echo.
-
-echo Creating startup shortcut...
+echo Klaar! De Print Agent start nu automatisch bij het inloggen
+echo en draait in de achtergrond (zie het pictogram rechtsonder).
 echo.
-
-REM Create hidden launcher script
-> "%HIDDEN_VBS%" echo Set shell = CreateObject("WScript.Shell")
->> "%HIDDEN_VBS%" echo shell.CurrentDirectory = "%SCRIPT_DIR%"
->> "%HIDDEN_VBS%" echo shell.Run "node ""%AGENT_FILE%"" --url ${webAppUrl} --token ${agentToken}", 0, False
-
-REM Create startup shortcut pointing to the hidden launcher
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$WshShell = New-Object -ComObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%STARTUP_DIR%\\Podo Improve Agent.lnk'); $Shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\\wscript.exe'; $Shortcut.Arguments = '""%HIDDEN_VBS%""'; $Shortcut.WorkingDirectory = '%SCRIPT_DIR%'; $Shortcut.IconLocation = Join-Path $env:SystemRoot 'System32\\shell32.dll,137'; $Shortcut.Save(); Write-Host 'Shortcut created successfully!'"
-
-if %ERRORLEVEL% EQU 0 (
-    echo.
-    echo ✓ Success! The agent will now start automatically when you log in.
-    echo.
-	echo The agent will run hidden in the background.
-    echo.
-    echo To remove auto-start: Delete "Podo Improve Agent" from:
-    echo %STARTUP_DIR%
-    echo.
-    echo Starting agent now...
-	wscript.exe "%HIDDEN_VBS%"
-) else (
-    echo.
-    echo ✗ Failed to create startup shortcut.
-    echo You can still run the agent manually using start-agent.bat
-    echo.
-)
-
+echo Je kunt dit venster sluiten.
 pause
 `;
-			} else {
-				// Windows batch file (regular launcher)
-				filename = 'start-agent.bat';
-				contentType = 'application/x-msdownload';
-				scriptContent = `@echo off
-REM Podo Improve Print Agent Launcher
-REM This script automatically downloads and runs the Print Agent
 
-echo ========================================
-echo Podo Improve Print Agent
-echo ========================================
-echo.
-
-REM Check if Node.js is installed
-where node >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo ERROR: Node.js is not installed or not in PATH.
-    echo Please install Node.js from https://nodejs.org/
-    pause
-    exit /b 1
-)
-
-REM Get the directory where this script is located
-set SCRIPT_DIR=%~dp0
-set AGENT_FILE=%SCRIPT_DIR%agent.mjs
-
-REM Always refresh agent.mjs so latest slicer logic is used
-echo Updating agent file from server...
-echo.
-
-REM Download agent.mjs from server
-powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $response = Invoke-WebRequest -Uri '${webAppUrl}/api/agent/files/agent.mjs' -OutFile '%AGENT_FILE%'; Write-Host 'Downloaded successfully!' } catch { Write-Host 'Download failed:' $_.Exception.Message; exit 1 }"
-
-if %ERRORLEVEL% NEQ 0 (
-	echo.
-	echo ERROR: Failed to download agent file.
-	echo Please check your internet connection and try again.
-	pause
-	exit /b 1
-)
-
-echo.
-
-REM Start the agent
-echo Starting agent...
-echo.
-cd /d "%SCRIPT_DIR%"
-node agent.mjs --url ${webAppUrl} --token ${agentToken}
-
-pause
-`;
-			}
-		} else {
-			// Unix shell script
-			filename = 'start-agent.sh';
-			contentType = 'application/x-sh';
-			// Use $0 instead of BASH_SOURCE[0] to avoid TypeScript parsing issues
-			// $0 works in bash and gives the script path
-			scriptContent = `#!/bin/bash
-# Podo Improve Print Agent Launcher
-# This script starts the Print Agent with your token embedded.
-
-echo "Starting Podo Improve Print Agent..."
-echo ""
-
-# Check if Node.js is installed
-if ! command -v node &> /dev/null; then
-    echo "ERROR: Node.js is not installed or not in PATH."
-    echo "Please install Node.js from https://nodejs.org/"
-    exit 1
-fi
-
-# Get the directory where this script is located
-SCRIPT_DIR="$(cd "$(dirname "$$0")" && pwd)"
-AGENT_FILE="$$SCRIPT_DIR/agent.mjs"
-
-# Always refresh agent.mjs so latest slicer logic is used
-echo ""
-echo "Updating agent file from server..."
-echo ""
-
-if command -v curl &> /dev/null; then
-	curl -o "$$AGENT_FILE" "${webAppUrl}/api/agent/files/agent.mjs"
-elif command -v wget &> /dev/null; then
-	wget -O "$$AGENT_FILE" "${webAppUrl}/api/agent/files/agent.mjs"
-else
-	echo "ERROR: Neither curl nor wget is installed."
-	echo "Please install curl or wget, or download agent.mjs manually."
-	exit 1
-fi
-
-if [ ! -f "$$AGENT_FILE" ]; then
-	echo "ERROR: Failed to download agent file."
-	exit 1
-fi
-
-chmod +x "$$AGENT_FILE"
-echo "Downloaded successfully!"
-echo ""
-
-# Start the agent
-cd "$$SCRIPT_DIR"
-node agent.mjs --url ${webAppUrl} --token ${agentToken}
-`;
-		}
-
-		return new NextResponse(scriptContent, {
+		return new NextResponse(script, {
 			headers: {
-				'Content-Type': contentType,
-				'Content-Disposition': `attachment; filename="${filename}"`,
+				'Content-Type': 'application/octet-stream',
+				'Content-Disposition': 'attachment; filename="Podo-Print-Agent-Setup.cmd"',
 			},
 		});
 	} catch (error) {
-		console.error('Error generating agent launcher:', error);
+		console.error('Error generating agent setup script:', error);
 		return NextResponse.json(
 			{
 				error:
-					error instanceof Error
-						? error.message
-						: 'Failed to generate launcher script',
+					error instanceof Error ? error.message : 'Failed to generate setup script',
 			},
 			{ status: 500 }
 		);

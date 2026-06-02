@@ -1,0 +1,46 @@
+name: Print Agent release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. agent-v2.0.1)'
+        required: true
+        default: 'agent-v2.0.1'
+  push:
+    tags:
+      - 'agent-v*'
+
+jobs:
+  build-and-upload:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install agent dependencies
+        working-directory: agent/print-agent
+        run: npm ci
+
+      - name: Build exe
+        working-directory: agent/print-agent
+        run: npm run build
+
+      - name: Compute checksum
+        id: checksum
+        working-directory: agent/print-agent
+        shell: bash
+        run: |
+          node scripts/checksum.mjs | tee checksum.txt
+          SHA=$(grep '^sha256:' checksum.txt | awk '{print $2}')
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/publish-print-agent-github.mjs --tag "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"

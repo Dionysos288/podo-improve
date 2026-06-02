@@ -1,11 +1,20 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { Card, CardContent } from '@/src/shared/components/ui/card';
 import { Button } from '@/src/shared/components/ui/button';
 import { InlineSelect } from '@/src/shared/components/ui/select';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Pencil } from 'lucide-react';
 import type { PrinterModel } from '@/src/features/settings/types/settings';
+import type { FilamentType } from '@/src/features/printers/constants/print-options';
+import type { PrintMaterialItem } from '@/src/features/printers/types/printers';
+import {
+	getPrinterCapability,
+	resolveNozzleOptionValue,
+} from '@/src/features/printers/constants/printer-capabilities';
+import { CustomMaterialModal, type CustomMaterialDraft } from './CustomMaterialModal';
 
 interface PrinterConfig {
 	slicer?: {
@@ -17,6 +26,20 @@ interface PrinterConfig {
 	prusaSlicer?: { configured?: boolean; usingBuiltInDefaultProfile?: boolean };
 }
 
+export type MaterialOption = {
+	value: string;
+	label: string;
+	isCustomSlot?: boolean;
+	/** DB id for org materials; absent for hardcoded fallbacks. */
+	materialId?: string;
+	/** User-created custom material (editable/deletable), not a seeded default. */
+	isUserCustom?: boolean;
+	filamentType?: string;
+	nozzleTempC?: number | null;
+	bedTempC?: number | null;
+	maxSpeedMmS?: number | null;
+};
+
 export interface PrinterSettings {
 	printerModel: PrinterModel;
 	brand: string;
@@ -27,6 +50,13 @@ export interface PrinterSettings {
 	topLayers?: number;
 	bottomLayers?: number;
 	adhesion?: string;
+	strategy?: string;
+	infill?: string;
+	filamentType?: string;
+	customMaterialLabel?: string;
+	materialNozzleTempC?: number;
+	materialBedTempC?: number;
+	materialMaxSpeedMmS?: number;
 	// IR3 V2 specific
 	beltAngleDeg?: number;
 	beltNormalOffsetMm?: number;
@@ -98,9 +128,6 @@ const MATERIAL_OPTIONS_IR3 = [
 	'Custom',
 ];
 
-const NOZZLE_OPTIONS_RAISE3D = ['0.4', '0.6', '0.8', '1.0'];
-const NOZZLE_OPTIONS_IR3 = ['0.4', '0.6', '0.8'];
-
 const EXTRUDER_OPTIONS = ['Links', 'Rechts'];
 
 const ADHESION_OPTIONS = ['Geen', 'Brim', 'Raft', 'Skirt'];
@@ -109,6 +136,11 @@ interface DirectProducePanelProps {
 	onBack: () => void;
 	printerSettings: PrinterSettings;
 	onPrinterSettingsChange: (settings: PrinterSettings) => void;
+	materialOptions?: MaterialOption[];
+	/** Printer to attach newly created custom materials to. */
+	printerId?: string | null;
+	/** Called after a custom material is created/edited so the parent can refresh options. */
+	onMaterialUpserted?: (material: PrintMaterialItem) => void;
 	onExportSTLLeft: () => void;
 	onExportSTLRight: () => void;
 	onExportSTLPair: () => void;
@@ -120,6 +152,9 @@ export function DirectProducePanel({
 	onBack,
 	printerSettings,
 	onPrinterSettingsChange,
+	materialOptions: materialOptionsProp,
+	printerId,
+	onMaterialUpserted,
 	onExportSTLLeft,
 	onExportSTLRight,
 	onExportSTLPair,
@@ -129,6 +164,14 @@ export function DirectProducePanel({
 	const [printerConfig, setPrinterConfig] = useState<PrinterConfig | null>(
 		null
 	);
+	const pathname = usePathname();
+	const orgSlug = pathname?.split('/').filter(Boolean)[0] ?? '';
+	const settingsHref = orgSlug
+		? `/${orgSlug}/settings/basis`
+		: '/settings/basis';
+	const [customModalOpen, setCustomModalOpen] = useState(false);
+	const [customModalInitial, setCustomModalInitial] =
+		useState<CustomMaterialDraft | null>(null);
 
 	// Fetch printer config on mount
 	useEffect(() => {
@@ -154,8 +197,31 @@ export function DirectProducePanel({
 		...printerSettings,
 	};
 
-	const materialOptions = isIR3 ? MATERIAL_OPTIONS_IR3 : MATERIAL_OPTIONS_RAISE3D;
-	const nozzleOptions = isIR3 ? NOZZLE_OPTIONS_IR3 : NOZZLE_OPTIONS_RAISE3D;
+	const fallbackMaterialNames = isIR3 ? MATERIAL_OPTIONS_IR3 : MATERIAL_OPTIONS_RAISE3D;
+	const materialOptions: MaterialOption[] =
+		materialOptionsProp && materialOptionsProp.length > 0
+			? materialOptionsProp
+			: fallbackMaterialNames.map((name) => ({ value: name, label: name }));
+
+	const capability = useMemo(
+		() => getPrinterCapability(currentModel),
+		[currentModel]
+	);
+	const nozzleSelectOptions = useMemo(
+		() =>
+			capability.nozzleOptions.map((value) => ({
+				value,
+				label: `${value} mm`,
+			})),
+		[capability]
+	);
+	const nozzleSelectValue = resolveNozzleOptionValue(settings.nozzle, capability);
+
+	const selectedMaterialMeta = materialOptions.find(
+		(opt) => opt.value === settings.material || opt.label === settings.material
+	);
+	const canEditSelectedMaterial =
+		selectedMaterialMeta?.isUserCustom === true && Boolean(printerId);
 
 	const handleChange = (key: keyof PrinterSettings, value: string | number) => {
 		onPrinterSettingsChange({
@@ -164,10 +230,64 @@ export function DirectProducePanel({
 		});
 	};
 
+	const applyMaterial = (meta: MaterialOption | undefined, value: string) => {
+		onPrinterSettingsChange({
+			...settings,
+			material: value,
+			filamentType: meta?.filamentType ?? settings.filamentType,
+			materialNozzleTempC: meta?.nozzleTempC ?? undefined,
+			materialBedTempC: meta?.bedTempC ?? undefined,
+			materialMaxSpeedMmS: meta?.maxSpeedMmS ?? undefined,
+			customMaterialLabel: undefined,
+		});
+	};
+
+	const handleMaterialChange = (val: string) => {
+		const meta = materialOptions.find((opt) => opt.value === val);
+		// "Custom" slot opens the modal to create a persistent custom material
+		// instead of selecting a placeholder value.
+		if (meta?.isCustomSlot && printerId) {
+			setCustomModalInitial(null);
+			setCustomModalOpen(true);
+			return;
+		}
+		applyMaterial(meta, val);
+	};
+
+	const openEditCustomMaterial = () => {
+		if (!selectedMaterialMeta?.materialId) return;
+		setCustomModalInitial({
+			materialId: selectedMaterialMeta.materialId,
+			name: selectedMaterialMeta.value,
+			filamentType: (selectedMaterialMeta.filamentType as FilamentType) ?? 'FLEX',
+			nozzleTempC: selectedMaterialMeta.nozzleTempC ?? null,
+			bedTempC: selectedMaterialMeta.bedTempC ?? null,
+			maxSpeedMmS: selectedMaterialMeta.maxSpeedMmS ?? null,
+		});
+		setCustomModalOpen(true);
+	};
+
+	const handleCustomMaterialSaved = (material: PrintMaterialItem) => {
+		onMaterialUpserted?.(material);
+		applyMaterial(
+			{
+				value: material.name,
+				label: material.name,
+				materialId: material.id,
+				isUserCustom: !material.isCustomSlot,
+				filamentType: material.filamentType,
+				nozzleTempC: material.nozzleTempC,
+				bedTempC: material.bedTempC,
+				maxSpeedMmS: material.maxSpeedMmS,
+			},
+			material.name
+		);
+	};
+
 	const handlePrinterModelChange = (model: PrinterModel) => {
-		// Reset to defaults for the chosen printer
+		const cap = getPrinterCapability(model);
 		const newDefaults = model === 'ir3-v2' ? DEFAULT_IR3_SETTINGS : DEFAULT_RAISE3D_SETTINGS;
-		onPrinterSettingsChange({ ...newDefaults });
+		onPrinterSettingsChange({ ...newDefaults, nozzle: cap.defaultNozzle });
 	};
 
 	// Configuration status from API
@@ -220,27 +340,42 @@ export function DirectProducePanel({
 					</div>
 
 					{/* Material - editable */}
-					<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
+					<div className="flex items-center justify-between gap-2 rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
 						<span className="text-ui-muted">Materiaal</span>
-						<InlineSelect
-							value={settings.material}
-							onChange={(val) => handleChange('material', val)}
-							options={materialOptions.map((opt) => ({ value: opt, label: opt }))}
-						/>
+						<div className="flex items-center gap-1">
+							{canEditSelectedMaterial ? (
+								<button
+									type="button"
+									onClick={openEditCustomMaterial}
+									title="Materiaal bewerken"
+									className="rounded-md p-1 text-ui-muted transition hover:bg-[rgba(255,255,255,0.06)] hover:text-ui-text"
+								>
+									<Pencil size={14} />
+								</button>
+							) : null}
+							<InlineSelect
+								value={settings.material}
+								onChange={handleMaterialChange}
+								options={materialOptions.map((opt) => ({
+									value: opt.value,
+									label: opt.label,
+								}))}
+							/>
+						</div>
 					</div>
 
-					{/* Nozzle - editable */}
+					{/* Nozzle - editable (options from printer capabilities, same as settings page) */}
 					<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
 						<span className="text-ui-muted">Nozzle afmeting</span>
 						<InlineSelect
-							value={settings.nozzle}
+							value={nozzleSelectValue}
 							onChange={(val) => handleChange('nozzle', val)}
-							options={nozzleOptions.map((opt) => ({ value: opt, label: opt }))}
+							options={nozzleSelectOptions}
 						/>
 					</div>
 
-					{/* Extruder - only for Raise3D E2 (dual extruder) */}
-					{!isIR3 && (
+					{/* Extruder - only for IDEX printers */}
+					{capability.extruder === 'idex' && (
 						<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
 							<span className="text-ui-muted">Extruder</span>
 							<InlineSelect
@@ -398,12 +533,26 @@ export function DirectProducePanel({
 					</Button>
 				</div>
 
-				{!slicerConfigured && (
-					<p className="text-xs text-ui-muted">
-						Configureer PrusaSlicer om gcode te genereren.
-					</p>
+				{(!agentOnline || !slicerConfigured) && (
+					<Link
+						href={settingsHref}
+						className="flex items-center gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200 transition hover:bg-amber-400/15"
+					>
+						<span className="h-2 w-2 flex-shrink-0 rounded-full bg-amber-400" />
+						<span>
+							Print Agent niet gedetecteerd — klik hier om te installeren
+						</span>
+					</Link>
 				)}
 			</CardContent>
+
+			<CustomMaterialModal
+				open={customModalOpen}
+				onClose={() => setCustomModalOpen(false)}
+				printerId={printerId ?? null}
+				initial={customModalInitial}
+				onSaved={handleCustomMaterialSaved}
+			/>
 		</Card>
 	);
 }

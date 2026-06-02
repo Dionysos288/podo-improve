@@ -21,7 +21,10 @@
 		"db:migrate": "prisma migrate dev",
 		"db:migrate:deploy": "prisma migrate deploy",
 		"db:studio": "prisma studio",
-		"db:seed": "tsx prisma/seed.ts"
+		"db:seed": "tsx prisma/seed.ts",
+		"agent:build": "npm run build --prefix agent/print-agent",
+		"agent:upload": "node scripts/upload-print-agent.mjs",
+		"agent:publish": "node scripts/publish-print-agent-github.mjs"
 	},
 	"dependencies": {
 		"@base-ui/react": "^1.1.0",

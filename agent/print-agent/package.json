@@ -1,0 +1,36 @@
+{
+	"name": "podo-print-agent",
+	"version": "2.0.1",
+	"private": true,
+	"description": "Podo Improve local Print Agent - runs PrusaSlicer on the user's PC.",
+	"type": "module",
+	"bin": "index.mjs",
+	"engines": {
+		"node": ">=20"
+	},
+	"scripts": {
+		"start": "node index.mjs",
+		"build": "pkg . --targets node22-win-x64 --output dist/podo-print-agent.exe --compress GZip",
+		"build:checksum": "node scripts/checksum.mjs"
+	},
+	"dependencies": {
+		"systray2": "^2.0.3"
+	},
+	"devDependencies": {
+		"@yao-pkg/pkg": "^6.3.0"
+	},
+	"pkg": {
+		"targets": [
+			"node22-win-x64"
+		],
+		"assets": [
+			"node_modules/systray2/traybin/**/*"
+		],
+		"scripts": [
+			"index.mjs",
+			"src/**/*.mjs",
+			"ir3/**/*.mjs"
+		],
+		"outputPath": "dist"
+	}
+}

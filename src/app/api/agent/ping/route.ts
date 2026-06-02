@@ -41,6 +41,20 @@ export async function POST(req: NextRequest) {
 
 		const now = new Date().toISOString();
 
+		// Optional status body sent by the agent (legacy pings send nothing).
+		let status: Record<string, unknown> = {};
+		try {
+			const body = await req.json();
+			if (body && typeof body === 'object') status = body as Record<string, unknown>;
+		} catch {
+			status = {};
+		}
+
+		const agentVersion = typeof status.version === 'string' ? status.version : undefined;
+		const agentSlicerOk = typeof status.slicerOk === 'boolean' ? status.slicerOk : undefined;
+		const agentSlicerPath = typeof status.slicerPath === 'string' ? status.slicerPath : null;
+		const agentPlatform = typeof status.platform === 'string' ? status.platform : undefined;
+
 		// Merge write for settings
 		const existing = await prisma.user.findUnique({
 			where: { id: user.id },
@@ -51,6 +65,10 @@ export async function POST(req: NextRequest) {
 				? (existing.settings as Record<string, unknown>)
 				: {}),
 			agentLastSeenAt: now,
+			...(agentVersion !== undefined ? { agentVersion } : {}),
+			...(agentSlicerOk !== undefined ? { agentSlicerOk } : {}),
+			...(agentSlicerOk !== undefined ? { agentSlicerPath } : {}),
+			...(agentPlatform !== undefined ? { agentPlatform } : {}),
 		};
 		await prisma.user.update({
 			where: { id: user.id },

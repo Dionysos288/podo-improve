@@ -38,12 +38,13 @@ export async function GET(req: NextRequest) {
 
 	const settings = (user.settings as Record<string, unknown>) ?? {};
 	const prusaSlicerPath = settings.prusaSlicerPath as string | undefined;
-	const disableBinaryGcode = settings.disableBinaryGcode !== false;
 
 	return NextResponse.json({
 		slicerEngine: 'prusaslicer',
 		prusaSlicerPath: prusaSlicerPath || null,
-		disableBinaryGcode,
+		// Always emit ASCII G-code: some PrusaSlicer builds mishandle the
+		// --binary-gcode flag. The checkbox was removed from the UI.
+		disableBinaryGcode: true,
 		userId: user.id,
 	});
 }

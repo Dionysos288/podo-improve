@@ -47,3 +47,7 @@ next-env.d.ts
 *.mp4
 *.mov
 *.avi
+
+# print agent build artifacts
+/agent/print-agent/dist
+/agent/print-agent/node_modules

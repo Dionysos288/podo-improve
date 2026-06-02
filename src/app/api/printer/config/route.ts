@@ -1,11 +1,19 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
 import { requireSession } from '@/src/shared/core/auth/get-session';
 import { prisma } from '@/src/shared/core/db/prisma';
+import {
+	AGENT_VERSION,
+	isAgentOnline,
+	isUpdateAvailable,
+} from '@/src/shared/core/agent/release';
 
 /**
  * GET /api/printer/config
  * Returns the printer configuration status (PrusaSlicer + RaiseCloud).
+ *
+ * IMPORTANT: PrusaSlicer runs on the user's PC, not the server. So slicer
+ * availability is whatever the agent last reported (agentSlicerOk), never a
+ * server-side filesystem check.
  */
 export async function GET() {
 	const session = await requireSession();
@@ -14,38 +22,40 @@ export async function GET() {
 		select: { settings: true },
 	});
 	const settings = (user?.settings ?? {}) as Record<string, unknown>;
-	const prusaSlicerPath =
-		typeof settings.prusaSlicerPath === 'string' ? settings.prusaSlicerPath : '';
+
 	const agentLastSeenAt =
 		typeof settings.agentLastSeenAt === 'string' ? settings.agentLastSeenAt : null;
+	const agentVersion =
+		typeof settings.agentVersion === 'string' ? settings.agentVersion : null;
+	const agentSlicerPath =
+		typeof settings.agentSlicerPath === 'string' ? settings.agentSlicerPath : null;
+
+	const agentOnline = isAgentOnline(agentLastSeenAt);
+	// Trust the agent's report; default true when online but unreported (older
+	// agents that only send heartbeats).
+	const slicerOk =
+		typeof settings.agentSlicerOk === 'boolean' ? settings.agentSlicerOk : agentOnline;
+	const slicerConfigured = agentOnline && slicerOk;
+
 	const raiseCloudApiKey = process.env.RAISECLOUD_API_KEY || '';
 	const raiseCloudApiSecret = process.env.RAISECLOUD_API_SECRET || '';
-
-	let prusaSlicerConfigured = false;
-	if (prusaSlicerPath) {
-		try {
-			prusaSlicerConfigured = fs.existsSync(prusaSlicerPath);
-		} catch {
-			prusaSlicerConfigured = false;
-		}
-	}
-	// Check if RaiseCloud credentials are set
 	const raiseCloudConfigured = Boolean(raiseCloudApiKey && raiseCloudApiSecret);
-	const lastSeenMs = agentLastSeenAt ? Date.parse(agentLastSeenAt) : NaN;
-	const agentOnline = Number.isFinite(lastSeenMs)
-		? Date.now() - lastSeenMs <= 90_000
-		: false;
 
 	return NextResponse.json({
 		slicer: {
 			engine: 'prusaslicer',
-			configured: prusaSlicerConfigured,
+			configured: slicerConfigured,
 			agentOnline,
 			agentLastSeenAt,
+			agentVersion,
+			agentSlicerOk: slicerOk,
+			agentSlicerPath,
+			latestVersion: AGENT_VERSION,
+			updateAvailable: isUpdateAvailable(agentVersion),
 		},
 		prusaSlicer: {
-			configured: prusaSlicerConfigured,
-			path: prusaSlicerPath ? '(configured)' : '(not set)',
+			configured: slicerConfigured,
+			path: agentSlicerPath ? '(detected by agent)' : '(not detected)',
 			usingBuiltInDefaultProfile: true,
 		},
 		raiseCloud: {
