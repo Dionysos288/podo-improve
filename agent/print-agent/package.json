@@ -1,6 +1,6 @@
 {
 	"name": "podo-print-agent",
-	"version": "2.0.1",
+	"version": "2.0.2",
 	"private": true,
 	"description": "Podo Improve local Print Agent - runs PrusaSlicer on the user's PC.",
 	"type": "module",

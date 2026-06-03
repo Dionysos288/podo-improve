@@ -17,6 +17,7 @@ import type {
 import {
 	getElementByKey,
 	getElementPreferredStlUrl,
+	getElementViewerStlUrls,
 	ELEMENT_COLORS,
 } from './catalog';
 import { getDefaultPlacementForSide } from './placement';
@@ -842,101 +843,6 @@ function getPreparedOverlayStlGeometry(
 	prepared.computeBoundingSphere();
 	perGeometryCache.set(cacheKey, prepared);
 	return prepared;
-}
-
-const overlayStlTopSurfaceCache = new WeakMap<
-	THREE.BufferGeometry,
-	Map<string, THREE.BufferGeometry>
->();
-
-/**
- * Top-surface-only copy of a prepared element STL (height axis = local Z after
- * swapYZ normalisation). Side walls and the flat base are discarded so the
- * raised pad renders as a smooth shell that the edge ramp can taper flush into
- * the insole — instead of the faceted vertical walls that read as hard lines.
- */
-function getPreparedOverlayStlTopSurface(
-	sourceGeometry: THREE.BufferGeometry,
-	swapYZ: boolean,
-): THREE.BufferGeometry {
-	let perGeometryCache = overlayStlTopSurfaceCache.get(sourceGeometry);
-	if (!perGeometryCache) {
-		perGeometryCache = new Map<string, THREE.BufferGeometry>();
-		overlayStlTopSurfaceCache.set(sourceGeometry, perGeometryCache);
-	}
-	const cacheKey = swapYZ ? 'swap-yz' : 'native';
-	const cached = perGeometryCache.get(cacheKey);
-	if (cached) return cached;
-
-	const prepared = getPreparedOverlayStlGeometry(sourceGeometry, swapYZ);
-	const pos = prepared.getAttribute('position') as THREE.BufferAttribute;
-	const index = prepared.getIndex();
-	if (!prepared.boundingBox) prepared.computeBoundingBox();
-	const zMin = prepared.boundingBox!.min.z;
-	const zMax = prepared.boundingBox!.max.z;
-	// Faces in the upper portion with a dominantly vertical normal form the top
-	// shell; the flat base sits low and the side walls are near-horizontal in
-	// normal. Use |nz| so the test is independent of triangle winding order.
-	const zCut = zMin + (zMax - zMin) * 0.15;
-
-	const ax = new THREE.Vector3();
-	const bx = new THREE.Vector3();
-	const cx = new THREE.Vector3();
-	const ab = new THREE.Vector3();
-	const ac = new THREE.Vector3();
-	const faceNormal = new THREE.Vector3();
-	const kept: number[] = [];
-
-	const considerFace = (a: number, b: number, c: number) => {
-		ax.fromBufferAttribute(pos, a);
-		bx.fromBufferAttribute(pos, b);
-		cx.fromBufferAttribute(pos, c);
-		ab.subVectors(bx, ax);
-		ac.subVectors(cx, ax);
-		faceNormal.crossVectors(ab, ac);
-		const len = faceNormal.length();
-		if (len <= 1e-9) return;
-		const centroidZ = (ax.z + bx.z + cx.z) / 3;
-		if (centroidZ <= zCut) return; // drop the flat base
-		if (Math.abs(faceNormal.z) / len < 0.35) return; // drop vertical walls
-		kept.push(
-			ax.x, ax.y, ax.z,
-			bx.x, bx.y, bx.z,
-			cx.x, cx.y, cx.z,
-		);
-	};
-
-	if (index) {
-		for (let i = 0; i < index.count; i += 3) {
-			considerFace(index.getX(i), index.getX(i + 1), index.getX(i + 2));
-		}
-	} else {
-		for (let i = 0; i + 2 < pos.count; i += 3) {
-			considerFace(i, i + 1, i + 2);
-		}
-	}
-
-	let topSurface: THREE.BufferGeometry;
-	if (kept.length < 9) {
-		// Degenerate fallback: keep the full prepared shell.
-		topSurface = prepared.clone();
-	} else {
-		topSurface = new THREE.BufferGeometry();
-		topSurface.setAttribute(
-			'position',
-			new THREE.Float32BufferAttribute(kept, 3),
-		);
-		try {
-			topSurface = mergeVertices(topSurface, 0.01);
-		} catch {
-			/* keep unmerged */
-		}
-	}
-	topSurface.computeVertexNormals();
-	topSurface.computeBoundingBox();
-	topSurface.computeBoundingSphere();
-	perGeometryCache.set(cacheKey, topSurface);
-	return topSurface;
 }
 
 function getCachedStlDistanceField(
@@ -2278,8 +2184,6 @@ export function applyElements(
 		heightSpan,
 		heelAtMin,
 		sampleHeight: sampleSurfaceHeight,
-		getNormalComponent,
-		upSign,
 	} = geometryAnalysis;
 	const { lengthAxis, widthAxis, heightAxis, lengthSpan, widthSpan } = axes;
 	const positions = geometry.getAttribute('position') as THREE.BufferAttribute;
@@ -2287,6 +2191,31 @@ export function applyElements(
 	if (!geometry.getAttribute('normal')) {
 		geometry.computeVertexNormals();
 	}
+
+	// Height-axis normal helper so depth (inset) elements can be restricted to the
+	// top surface. "up" sign is inferred from the average normal of the highest
+	// vertices, matching applyElementColors.
+	const elementNormals = geometry.getAttribute('normal') as THREE.BufferAttribute | undefined;
+	const heightNormalIdx = heightAxis === 'x' ? 0 : heightAxis === 'y' ? 1 : 2;
+	const rawHeightNormal = (i: number): number => {
+		if (!elementNormals) return 1;
+		if (heightNormalIdx === 0) return elementNormals.getX(i);
+		if (heightNormalIdx === 1) return elementNormals.getY(i);
+		return elementNormals.getZ(i);
+	};
+	let normalSignSum = 0;
+	let normalSignCount = 0;
+	const topAltitudeThresh = heightMin + (heightSpan || 1) * 0.8;
+	for (let i = 0; i < vertexCount; i++) {
+		if (getAxisValue(positions, i, heightAxis) >= topAltitudeThresh) {
+			normalSignSum += rawHeightNormal(i);
+			normalSignCount++;
+		}
+	}
+	const upSign = normalSignCount > 0 && normalSignSum / normalSignCount < 0 ? -1 : 1;
+	const getHeightNormal = (i: number): number => rawHeightNormal(i) * upSign;
+	/** Inset elements only carve top-facing vertices above this upward component. */
+	const TOP_FACING_MIN = 0.15;
 
 	// Precompute transformed outlines and bounding boxes for each element
 	const prepared = sortedElements.map((el) => {
@@ -2373,27 +2302,6 @@ export function applyElements(
 		};
 	});
 
-	// Spatial early-out: most insole vertices sit far from every element, so the
-	// per-vertex element loop is wasted work. Precompute the union UV bbox of all
-	// *displacing* elements (thickness-only positive pads never deform the base)
-	// plus whether any inset exists. Vertices outside the union bbox can be
-	// skipped before the inset/element loops, turning O(verts x elements) into
-	// O(verts) + O(affected x elements) without changing displacement results.
-	let anyInset = false;
-	let unionMinU = Infinity;
-	let unionMaxU = -Infinity;
-	let unionMinV = Infinity;
-	let unionMaxV = -Infinity;
-	for (const p of prepared) {
-		if (isThicknessOnlyElement(p.item) && p.heightWorld > 0) continue;
-		if (p.heightWorld < 0) anyInset = true;
-		if (p.bboxMinU < unionMinU) unionMinU = p.bboxMinU;
-		if (p.bboxMaxU > unionMaxU) unionMaxU = p.bboxMaxU;
-		if (p.bboxMinV < unionMinV) unionMinV = p.bboxMinV;
-		if (p.bboxMaxV > unionMaxV) unionMaxV = p.bboxMaxV;
-	}
-	const hasDisplacingElements = unionMaxU >= unionMinU;
-
 	// Iterate vertices
 	for (let i = 0; i < vertexCount; i++) {
 		const lengthVal = getAxisValue(positions, i, lengthAxis);
@@ -2405,48 +2313,34 @@ export function applyElements(
 		const u = heelAtMin ? rawU : 1 - rawU; // 0 = heel, 1 = toe
 		const v = (widthVal - widthMin) / widthSpan;
 
-		// Nothing displaces this vertex: skip before any polygon work.
-		if (
-			!hasDisplacingElements ||
-			u < unionMinU ||
-			u > unionMaxU ||
-			v < unionMinV ||
-			v > unionMaxV
-		) {
-			continue;
-		}
-
-		// Detect the top surface by the vertex normal (points "up"), NOT by
-		// absolute height. Raised pads placed where the insole curves downward
-		// (toe / met1 — e.g. SA Recht 1) sit on top-facing vertices whose
-		// absolute height is low; an absolute-height cutoff skipped them and
-		// left a crater/hole in the baked base. Normal-based gating matches the
-		// overlay + colour logic so what you see is what you print.
-		const normalUp = getNormalComponent(i) * upSign;
+		// Only affect the top surface (upper 40% of height)
+		const heightNorm = (heightVal - heightMin) / (heightSpan || 1);
 
 		// Check if any element at this UV is an inset (diepelement) — these need
-		// to affect ALL surface vertices regardless of orientation, because target
-		// areas curve down steeply.
+		// to affect ALL surface vertices regardless of height, because target areas
+		// (e.g. big toe edge) curve down steeply and have low heightNorm.
 		let hasInset = false;
-		if (anyInset) {
-			for (const p of prepared) {
-				if (
-					p.heightWorld < 0 &&
-					u >= p.bboxMinU &&
-					u <= p.bboxMaxU &&
-					v >= p.bboxMinV &&
-					v <= p.bboxMaxV
-				) {
-					hasInset = true;
-					break;
-				}
+		for (const p of prepared) {
+			if (
+				p.heightWorld < 0 &&
+				u >= p.bboxMinU &&
+				u <= p.bboxMaxU &&
+				v >= p.bboxMinV &&
+				v <= p.bboxMaxV
+			) {
+				hasInset = true;
+				break;
 			}
 		}
 
 		if (!hasInset) {
-			if (normalUp < 0.25) continue;
+			if (heightNorm < 0.6) continue;
+		} else {
+			// Depth elements recess only the TOP surface; never displace the
+			// underside or side walls so flattenInsoleBottom keeps the sole flat.
+			if (getHeightNormal(i) < TOP_FACING_MIN) continue;
 		}
-		const topWeight = hasInset ? 1.0 : smoothstep(0.25, 0.55, normalUp);
+		const topWeight = hasInset ? 1.0 : smoothstep(0.6, 0.75, heightNorm);
 
 		// Accumulate displacement from all elements
 		let totalDisplacement = 0;
@@ -2579,12 +2473,11 @@ export function buildElementOverlayGeometries(
 
 	const mmToWorld = options?.mmToWorld ?? 1;
 	const stlGeometries = options?.stlGeometries;
-	// Keep raised overlays flush with the insole surface. A tiny lift only
-	// prevents z-fighting; the renderer also applies polygonOffset so the pad
-	// never floats above the surface (the old 0.08mm lift read as a visible gap
-	// once pads were solid). Insets dip slightly below the surface.
-	const SURFACE_EPSILON = 0.02 * mmToWorld;
-	const INSET_OVERLAY_EPSILON = SURFACE_EPSILON * 0.35;
+	// Overlays render coincident with the insole top surface so there is never a
+	// visible or measurable gap at the element base. Z-fighting against the insole
+	// is resolved by material polygonOffset in the viewer, not by a geometric lift.
+	const SURFACE_EPSILON = 0;
+	const INSET_OVERLAY_EPSILON = 0;
 
 	const buildInsetSurfaceOverlay = (
 		outline: [number, number][],
@@ -3020,7 +2913,12 @@ export function buildElementOverlayGeometries(
 		if (!item) continue;
 		const floorMode = normalizeElementFloorMode(el.floorMode);
 		const stackOrder = el.stackOrder ?? 0;
-		const preferredStlUrl = getElementPreferredStlUrl(item);
+		// Visual overlays prefer the decimated low-poly STL for performance and
+		// fall back to the full-res mesh. (Export displacement is polygon-based and
+		// does not use these meshes, so low-poly here costs no print fidelity.)
+		const overlayStlUrl = stlGeometries
+			? getElementViewerStlUrls(item).find((url) => stlGeometries.has(url))
+			: undefined;
 		const resolved = resolveElementLayout(item, el, placementContext);
 		const isInset = el.heightMm < 0;
 		const baseSurfaceHeight =
@@ -3030,22 +2928,18 @@ export function buildElementOverlayGeometries(
 
 		// ── STL-based overlay (preferred when stlUrl is available) ──
 		if (
-			preferredStlUrl &&
-			stlGeometries?.has(preferredStlUrl) &&
+			overlayStlUrl &&
 			!isInset &&
 			!isThicknessOnlyElement(item)
 		) {
-			const srcGeom = stlGeometries.get(preferredStlUrl)!;
+			const srcGeom = stlGeometries!.get(overlayStlUrl)!;
 			const cachedDistanceField = getCachedStlDistanceField(
 				srcGeom,
 				Boolean(item.stlSwapYZ),
 			);
-			// Raised pads render from the STL top surface only (no faceted side
-			// walls); insets still use the full shell to carve the bowl.
-			let geom = (
-				isInset
-					? getPreparedOverlayStlGeometry(srcGeom, Boolean(item.stlSwapYZ))
-					: getPreparedOverlayStlTopSurface(srcGeom, Boolean(item.stlSwapYZ))
+			let geom = getPreparedOverlayStlGeometry(
+				srcGeom,
+				Boolean(item.stlSwapYZ),
 			).clone();
 
 			// The STL is in mm, centred at origin in X, Y starts at 0.
@@ -3169,18 +3063,11 @@ export function buildElementOverlayGeometries(
 					rawLocalHeight *= slopeFn(nu, nv, el.side);
 				}
 
-				// Apply smooth edge blend — taper height near the STL boundary
-				const edgeFactor = sampleEdgeFactor(rawX, rawY);
-				let localHeight: number;
-				if (isInset) {
-					// For inset elements: create a bowl shape using the edge distance.
-					// edgeFactor = 0 at boundary, 1 deep inside.
-					// Bowl depth = targetHeightMm at the centre, tapering to 0 at the edge.
-					const depthWorld = targetHeightMm * mmToWorld;
-					localHeight = depthWorld * edgeFactor;
-				} else {
-					localHeight = rawLocalHeight * edgeFactor;
-				}
+				// Smooth edge blend — `taper` runs 1 deep inside the element down to
+				// 0 at the perimeter (STL boundary + insole edge clipping). It is the
+				// single shared factor that drives both the element height and the
+				// blend back onto the insole surface, so the base is always coincident.
+				let taper = sampleEdgeFactor(rawX, rawY);
 
 				// Rotate in the horizontal plane
 				const rx = localWidth * cos - localLength * sin;
@@ -3207,7 +3094,7 @@ export function buildElementOverlayGeometries(
 				);
 				sampleVValue = clip.clippedV;
 				worldWidth = clip.clippedWorldWidth;
-				localHeight *= clip.heightMultiplier;
+				taper *= clip.heightMultiplier;
 
 				// ── Clip to insole boundary: U direction (heel/toe contour) ──
 				const vForUClip = Math.max(0, Math.min(1, sampleVValue));
@@ -3231,12 +3118,12 @@ export function buildElementOverlayGeometries(
 					worldLength = lengthMin + clampedRawU * lengthSpan;
 					const fadeSpan = insoleEdgeBlendMm * 2;
 					if (overshootMm >= fadeSpan) {
-						localHeight = 0;
+						taper = 0;
 					} else {
-						localHeight *= quinticEase(1 - overshootMm / fadeSpan);
+						taper *= quinticEase(1 - overshootMm / fadeSpan);
 					}
 				} else if (distToUEdgeMm < insoleEdgeBlendMm) {
-					localHeight *= quinticEase(distToUEdgeMm / insoleEdgeBlendMm);
+					taper *= quinticEase(distToUEdgeMm / insoleEdgeBlendMm);
 				}
 
 				const sampleVClamped = Math.max(0, Math.min(1, sampleVValue));
@@ -3247,16 +3134,20 @@ export function buildElementOverlayGeometries(
 				const c: Record<string, number> = { x: 0, y: 0, z: 0 };
 				c[widthAxis] = worldWidth;
 				c[lengthAxis] = worldLength;
-				// For inset elements: create the depression shape directly.
-				// localHeight is 0 at edges, max at centre (due to edge blend).
-				// Invert: at edges sit at surface, at centre push deepest into insole.
-				c[heightAxis] = isInset
-					? surfaceH - localHeight + SURFACE_EPSILON * 0.5
-					: (floorMode === 'sole'
-							? surfaceH
-							: (baseSurfaceHeight ?? surfaceH)) +
-						localHeight +
-						SURFACE_EPSILON;
+				// Blend between the per-vertex insole surface (taper = 0, at the
+				// perimeter → zero gap) and the element's target height (taper = 1,
+				// deep inside). Inset elements carve a bowl below the surface; additive
+				// elements ride a flat therapeutic plateau (centre-based) inside while
+				// still meeting the surface exactly at the rim.
+				if (isInset) {
+					const depthWorld = targetHeightMm * mmToWorld;
+					c[heightAxis] = surfaceH - depthWorld * taper;
+				} else if (floorMode === 'sole') {
+					c[heightAxis] = surfaceH + rawLocalHeight * taper;
+				} else {
+					const plateauTop = (baseSurfaceHeight ?? surfaceH) + rawLocalHeight;
+					c[heightAxis] = surfaceH + (plateauTop - surfaceH) * taper;
+				}
 
 				pos.setXYZ(i, c.x, c.y, c.z);
 			}
@@ -3283,7 +3174,9 @@ export function buildElementOverlayGeometries(
 			}
 
 			pos.needsUpdate = true;
-			geom = smoothElementOverlayGeometry(geom, mmToWorld);
+			geom = smoothElementOverlayGeometry(geom, mmToWorld, {
+				preservePlateau: true,
+			});
 
 			result.push({
 				geometry: geom,
@@ -3295,7 +3188,12 @@ export function buildElementOverlayGeometries(
 			continue;
 		}
 
-		if (preferredStlUrl && !isInset && !stlGeometries?.has(preferredStlUrl)) {
+		if (
+			getElementPreferredStlUrl(item) &&
+			!isInset &&
+			!isThicknessOnlyElement(item) &&
+			!overlayStlUrl
+		) {
 			warnStlMissOnce(el.libraryKey);
 		}
 
@@ -3361,7 +3259,9 @@ export function buildElementOverlayGeometries(
 			}
 
 			result.push({
-				geometry: smoothElementOverlayGeometry(overlayGeom, mmToWorld),
+				geometry: smoothElementOverlayGeometry(overlayGeom, mmToWorld, {
+					preservePlateau: !isThicknessOnlyElement(item),
+				}),
 				colorHex: ELEMENT_COLORS[item.color] ?? '#999',
 				elementId: el.id,
 				stackOrder,
@@ -3382,7 +3282,9 @@ export function buildElementOverlayGeometries(
 		if (!volumeGeom) continue;
 
 		result.push({
-			geometry: smoothElementOverlayGeometry(volumeGeom, mmToWorld),
+			geometry: smoothElementOverlayGeometry(volumeGeom, mmToWorld, {
+				preservePlateau: !isThicknessOnlyElement(item),
+			}),
 			colorHex: ELEMENT_COLORS[item.color] ?? '#999',
 			elementId: el.id,
 			stackOrder,

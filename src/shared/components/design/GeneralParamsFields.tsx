@@ -46,7 +46,7 @@ export function GeneralParamsFields(props: {
 						commitDelayMs={commitDelayMs}
 						leftValue={values.soleThicknessMm.left}
 						rightValue={values.soleThicknessMm.right}
-						min={0.5}
+						min={2}
 						max={10}
 						step={0.5}
 						unit="mm"

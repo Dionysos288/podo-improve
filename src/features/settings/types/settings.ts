@@ -32,21 +32,36 @@ export type OrgSettings = {
 
 	// CNC / Frezen EVA settings (Mekanika CNC Pro + PlanetCNC)
 	cnc?: {
-		/** Default tool diameter in mm */
+		/** Named table presets (bed + block dimensions) for this organization */
+		tablePresets?: Array<{
+			id: string;
+			name: string;
+			blockWidthMm: number;
+			blockLengthMm: number;
+			blockDepthMm: number;
+			blockGapMm: number;
+			bedWidthMm: number;
+			bedLengthMm: number;
+		}>;
+		selectedTablePresetId?: string;
+		toolSettings?: {
+			toolDiameterMm: number;
+			toolType: 'ball-nose' | 'flat-end' | 'bull-nose';
+			spindleSpeedRpm: number;
+			feedRateXYMmMin: number;
+			feedRateZMmMin: number;
+			stepoverPercent: number;
+			safeZMm: number;
+			depthOfCutMm: number;
+		};
+		/** @deprecated Legacy flat fields — mirrored from toolSettings on save */
 		toolDiameterMm?: number;
-		/** Default tool type */
 		toolType?: 'ball-nose' | 'flat-end' | 'bull-nose';
-		/** Default spindle speed in RPM */
 		spindleSpeedRpm?: number;
-		/** Default XY feed rate in mm/min */
 		feedRateXYMmMin?: number;
-		/** Default Z feed rate in mm/min */
 		feedRateZMmMin?: number;
-		/** Default stepover percentage */
 		stepoverPercent?: number;
-		/** Safe Z height in mm */
 		safeZMm?: number;
-		/** Fixture slot offsets — array of 8 { x, y, z } positions in mm */
 		fixtureSlotOffsets?: Array<{ x: number; y: number; z: number }>;
 	};
 };

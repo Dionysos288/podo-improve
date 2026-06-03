@@ -1,3 +1,4 @@
+import SysTray from 'systray2';
 import { log } from './log.mjs';
 import { buildStatusIcoBase64, STATUS_COLORS } from './ico.mjs';
 
@@ -21,7 +22,10 @@ function buildMenu(status, detail) {
 		tooltip: detail ? `Podo Print Agent — ${detail}` : `Podo Print Agent — ${STATUS_LABELS[status] ?? status}`,
 		items: [
 			{ title: STATUS_LABELS[status] ?? status, enabled: false },
+			{ title: 'Instellingen in browser', enabled: true },
+			{ title: 'Agent-map openen', enabled: true },
 			{ title: 'Logbestand openen', enabled: true },
+			{ title: 'Opnieuw installeren', enabled: true },
 			{ title: 'Afsluiten', enabled: true },
 		],
 	};
@@ -33,17 +37,14 @@ function buildMenu(status, detail) {
  *
  * @returns {Promise<{ setStatus(status:string, detail?:string):void, destroy():void }>}
  */
-export async function createTray({ onOpenLog, onQuit } = {}) {
+export async function createTray({
+	onOpenLog,
+	onOpenFolder,
+	onOpenSettings,
+	onReinstall,
+	onQuit,
+} = {}) {
 	if (process.platform !== 'win32') return NOOP_TRAY;
-
-	let SysTray;
-	try {
-		const mod = await import('systray2');
-		SysTray = mod.default ?? mod;
-	} catch (err) {
-		log.warn('tray: systray2 unavailable, running headless', err.message);
-		return NOOP_TRAY;
-	}
 
 	try {
 		let current = 'connecting';
@@ -57,6 +58,12 @@ export async function createTray({ onOpenLog, onQuit } = {}) {
 			const title = action?.item?.title;
 			if (title === 'Logbestand openen') {
 				onOpenLog?.();
+			} else if (title === 'Agent-map openen') {
+				onOpenFolder?.();
+			} else if (title === 'Instellingen in browser') {
+				onOpenSettings?.();
+			} else if (title === 'Opnieuw installeren') {
+				onReinstall?.();
 			} else if (title === 'Afsluiten') {
 				try {
 					systray.kill(false);
@@ -68,6 +75,7 @@ export async function createTray({ onOpenLog, onQuit } = {}) {
 		});
 
 		await systray.ready();
+		log.info('System tray icon active (check hidden icons ^ near the clock).');
 
 		return {
 			setStatus(status, detail) {

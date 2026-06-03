@@ -76,6 +76,7 @@ export function AgentSettingsCard() {
 		save,
 		rotateToken,
 		downloadSetup,
+		installDownloaded,
 	} = useAgentSettings();
 	const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -100,12 +101,39 @@ export function AgentSettingsCard() {
 					disabled={!loaded || isPending}
 					className="w-full rounded-xl bg-ui-accent px-4 py-3 font-semibold text-slate-900 disabled:opacity-50"
 				>
-					{installed ? 'Opnieuw installeren / repareren' : 'Auto-start installeren'}
+					{installed ? 'Opnieuw installeren / repareren' : 'Installatiebestand downloaden'}
 				</Button>
-				<p className="text-xs text-ui-muted">
-					Download het installatiebestand en dubbelklik erop. PrusaSlicer wordt
-					automatisch gedetecteerd. Updates worden vanzelf geïnstalleerd.
-				</p>
+
+				{(installDownloaded || !installed) && (
+					<ol className="list-decimal space-y-2 rounded-xl border border-ui-border bg-ui-card/50 px-4 py-3 pl-8 text-xs text-ui-muted">
+						<li>
+							Open je map <strong className="text-foreground">Downloads</strong> en
+							dubbelklik op{' '}
+							<strong className="font-mono text-foreground">
+								Installeer-Podo-Print-Agent.cmd
+							</strong>{' '}
+							(niet alleen opslaan — het bestand moet draaien).
+						</li>
+						<li>
+							Als Windows vraagt om toestemming: kies{' '}
+							<strong className="text-foreground">Uitvoeren</strong>.
+						</li>
+						<li>
+							Daarna vind je de agent in het{' '}
+							<strong className="text-foreground">Startmenu</strong> als &quot;Podo
+							Print Agent&quot; en rechtsonder bij de{' '}
+							<strong className="text-foreground">verborgen pictogrammen (^)</strong>.
+						</li>
+					</ol>
+				)}
+
+				{installed && (
+					<p className="text-xs text-ui-muted">
+						Al geïnstalleerd? Gebruik het Startmenu of het systeemvak-pictogram om
+						opnieuw te installeren. In Taakbeheer kan het proces &quot;Podo Print
+						Agent&quot; heten (niet altijd de .exe-naam).
+					</p>
+				)}
 			</div>
 
 			<button

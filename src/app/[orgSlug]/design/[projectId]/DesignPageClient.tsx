@@ -38,6 +38,8 @@ import {
 	type OntwerpCorrections,
 } from '@/src/shared/components/design/OntwerpPanel';
 import { BaseModal } from '@/src/shared/components/ui/modal';
+import { TafelSettingsModal } from '@/src/shared/components/design/TafelSettingsModal';
+import { ProductieModal } from '@/src/shared/components/design/ProductieModal';
 import { GeneralParamsFields } from '@/src/shared/components/design/GeneralParamsFields';
 import { ViewerStatusOverlay } from '@/src/features/design/components/ViewerStatusOverlay';
 import { useDebouncedLoading } from '@/src/features/design/hooks/useDebouncedLoading';
@@ -105,8 +107,11 @@ import {
 import {
 	type MillingMode,
 	type CncProductionState,
+	type ProductionItem,
 	createDefaultCncState,
 } from '@/src/features/milling/types';
+import { presetToTableSettings } from '@/src/features/milling/org-cnc-settings-shared';
+import { useOrgCncSettings } from '@/src/features/milling/hooks/useOrgCncSettings';
 import { EvaPreparationPanel } from '@/src/shared/components/design/EvaPreparationPanel';
 import { useDesignAutosave, type ClientSettingsGetter } from '@/src/features/design/hooks/useDesignAutosave';
 import { UploadScansModal } from '@/src/features/projects/components/UploadScansModal';
@@ -743,7 +748,7 @@ function ExportProgressOverlay({ progress, onDismiss }: { progress: ExportProgre
 			: activePhase?.label ?? progress.title;
 
 	return (
-		<div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-900/60 backdrop-blur-[2px]">
+		<div className="fixed inset-0 z-[100] flex items-center justify-center bg-gray-900/60 backdrop-blur-[2px]">
 			<div className="animate-fade-in-up flex flex-col items-center gap-4 rounded-2xl border border-ui-border bg-ui-panel/95 px-8 py-6 shadow-xl min-w-[280px] max-w-[360px]">
 				{/* Spinner / success / error icon */}
 				{progress.done ? (
@@ -778,13 +783,6 @@ function ExportProgressOverlay({ progress, onDismiss }: { progress: ExportProgre
 								].join(' ')}
 							/>
 						))}
-					</div>
-				)}
-
-				{/* Indeterminate progress bar (while processing) */}
-				{!progress.done && !progress.error && (
-					<div className="h-0.5 w-24 overflow-hidden rounded-full bg-ui-border/40">
-						<div className="h-full w-1/3 rounded-full bg-ui-accent/60 animate-progress-indeterminate" />
 					</div>
 				)}
 
@@ -833,7 +831,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const clientSettingsGetterRef = useRef<ClientSettingsGetter | null>(null);
 
 	// ── Autosave hook ──
-	const { designId, saveStatus, lastSavedAt, hydrateFromDesign, debouncedSave } = useDesignAutosave(
+	const { designId, saveStatus, lastSavedAt, hydrateFromDesign, debouncedSave, buildSnapshot } = useDesignAutosave(
 		projectId,
 		initialDesign?.id ?? null,
 		clientSettingsGetterRef
@@ -986,10 +984,17 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				: defaultGeneral.baseInsoleType,
 			shoeSize: normalizeLR(general.shoeSize, defaultGeneral.shoeSize),
 			seededShoeSize: normalizeLR(general.seededShoeSize, defaultGeneral.seededShoeSize),
-			soleThicknessMm: normalizeLR(
-				general.soleThicknessMm,
-				defaultGeneral.soleThicknessMm
-			),
+			soleThicknessMm: (() => {
+				const v = normalizeLR(
+					general.soleThicknessMm,
+					defaultGeneral.soleThicknessMm
+				);
+				const minMm = 2;
+				return {
+					left: Math.max(minMm, v.left),
+					right: Math.max(minMm, v.right),
+				};
+			})(),
 			maxInsoleHeightMm: normalizeLR(
 				general.maxInsoleHeightMm,
 				defaultGeneral.maxInsoleHeightMm
@@ -1349,12 +1354,40 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	const [cncState, setCncState] = useState<CncProductionState>(createDefaultCncState);
 	const [showMillingModeSelector, setShowMillingModeSelector] = useState(false);
 	const [cncPlanningActive, setCncPlanningActive] = useState(false);
+	const [showTafelModal, setShowTafelModal] = useState(false);
+	const [showProductieModal, setShowProductieModal] = useState(false);
+	const [productionItems, setProductionItems] = useState<ProductionItem[]>([]);
+	const [regenScanOverride, setRegenScanOverride] = useState<{
+		left?: string;
+		right?: string;
+	} | null>(null);
+	const viewerReadyResolverRef = useRef<(() => void) | null>(null);
+	const applyGeometryClientSettingsRef = useRef<
+		((cs: Record<string, unknown>) => void) | null
+	>(null);
 	const [cncPreviewGeometry, setCncPreviewGeometry] = useState<{
 		left: THREE.BufferGeometry | null;
 		right: THREE.BufferGeometry | null;
 	}>({ left: null, right: null });
 
 	const isEvaMethod = productionMethod === 'Frezen: EVA';
+
+	const {
+		selectedPreset: orgSelectedTable,
+		toolSettings: orgToolSettings,
+		isLoading: orgCncLoading,
+	} = useOrgCncSettings();
+	const orgCncHydratedRef = useRef(false);
+
+	useEffect(() => {
+		if (orgCncLoading || !orgSelectedTable || orgCncHydratedRef.current) return;
+		orgCncHydratedRef.current = true;
+		setCncState((prev) => ({
+			...prev,
+			tableSettings: presetToTableSettings(orgSelectedTable),
+			toolSettings: orgToolSettings,
+		}));
+	}, [orgCncLoading, orgSelectedTable, orgToolSettings]);
 
 	const prevStep3SideRef = useRef<'left' | 'right' | null>(null);
 	useEffect(() => {
@@ -1418,79 +1451,206 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 			? `${project.patient.firstName}_${project.patient.lastName}`
 			: 'patient';
 
-		// Prefer actual designed insole geometry from the 3D viewer.
-		// This includes all patient corrections, elements, and modifications.
-		// Falls back to base template STL if viewer geometry is not available.
-		const freshLeftGeom = viewerRef.current?.getExportInsoleGeometryMm('left') ?? null;
-		const freshRightGeom = viewerRef.current?.getExportInsoleGeometryMm('right') ?? null;
-		const leftGeom = freshLeftGeom ?? cncPreviewGeometry.left;
-		const rightGeom = freshRightGeom ?? cncPreviewGeometry.right;
-		const [{ generateNcFile, downloadNcFile }, contourModule] = await Promise.all([
-			import('@/src/features/milling/gcode/generateNc'),
-			import('@/src/features/milling/gcode/extractStlContour'),
-		]);
-		const {
-			extractStlContour,
-			extractContourFromExportGeometryAsync,
-		} = contourModule;
+		const itemCount = productionItems.length;
+		const labels = [
+			'Sessie voorbereiden…',
+			...productionItems.map(
+				(it, i) => `Inlegzool ${i + 1}/${itemCount} regenereren — ${it.patientName}…`,
+			),
+			'Freesbanen genereren…',
+			'Bestand opslaan…',
+		];
+		const report = (stageIdx: number) => {
+			setExportProgress({
+				title: 'Freesbestand (EVA)',
+				phases: labels.map((label, i) => ({
+					label,
+					status: i < stageIdx ? 'done' : i === stageIdx ? 'active' : 'pending',
+				})),
+			});
+		};
 
-		let leftResult, rightResult;
+		flushSync(() => report(0));
 
-		if (leftGeom) {
-			leftResult = await extractContourFromExportGeometryAsync(leftGeom, 'left');
-			freshLeftGeom?.dispose();
-		} else {
-			leftResult = await extractStlContour(
-				selectedBaseInsoleAssets.leftUrl,
-				'left',
-				undefined,
-				undefined,
-				generalNormalized.baseInsoleType
-			);
+		try {
+			const [{ downloadNcFile }, { generateNcReplica }, contourModule, { getDesignForRegen }] =
+				await Promise.all([
+					import('@/src/features/milling/gcode/generateNc'),
+					import('@/src/features/milling/gcode/competitorPost/generateNcReplica'),
+					import('@/src/features/milling/gcode/extractStlContour'),
+					import('@/src/features/milling/server/production-actions'),
+				]);
+			const { extractStlContour, extractContourFromExportGeometryAsync } = contourModule;
+
+			const sleep = (ms: number) =>
+				new Promise<void>((resolve) => setTimeout(resolve, ms));
+			const waitForViewerReady = (timeoutMs: number) =>
+				new Promise<void>((resolve) => {
+					let settled = false;
+					const finish = () => {
+						if (settled) return;
+						settled = true;
+						resolve();
+					};
+					viewerReadyResolverRef.current = finish;
+					setTimeout(finish, timeoutMs);
+				});
+
+			type ReplicaSideData = {
+				contour: [number, number][];
+				heightfield: import('@/src/features/milling/gcode/generateNc').HeightfieldData;
+			};
+			type Pair = { left?: ReplicaSideData; right?: ReplicaSideData };
+
+			const sideFromViewer = async (
+				side: 'left' | 'right',
+			): Promise<ReplicaSideData | undefined> => {
+				const geom = viewerRef.current?.getExportInsoleGeometryMm(side) ?? null;
+				if (!geom) return undefined;
+				const res = await extractContourFromExportGeometryAsync(geom, side);
+				geom.dispose();
+				return res.contour.length > 0
+					? { contour: res.contour, heightfield: res.heightfield }
+					: undefined;
+			};
+
+			// ── Current project = first pair (live geometry, with base-STL fallback) ──
+			const currentLeft = await sideFromViewer('left');
+			const currentRight = await sideFromViewer('right');
+			const currentPair: Pair = {
+				left:
+					currentLeft ??
+					(await extractStlContour(
+						selectedBaseInsoleAssets.leftUrl,
+						'left',
+						undefined,
+						undefined,
+						generalNormalized.baseInsoleType,
+					).then((r) => (r.contour.length > 0 ? { contour: r.contour, heightfield: r.heightfield } : undefined))),
+				right:
+					currentRight ??
+					(await extractStlContour(
+						selectedBaseInsoleAssets.rightUrl,
+						'right',
+						undefined,
+						undefined,
+						generalNormalized.baseInsoleType,
+					).then((r) => (r.contour.length > 0 ? { contour: r.contour, heightfield: r.heightfield } : undefined))),
+			};
+
+			const pairs: Pair[] = [currentPair];
+			const failedItems: string[] = [];
+
+			// ── Added production items: regenerate each off the live viewer ──
+			if (itemCount > 0) {
+				const restore = buildSnapshot();
+				const elementsStore = useElementsStore.getState();
+				try {
+					for (let i = 0; i < productionItems.length; i++) {
+						const item = productionItems[i];
+						report(1 + i);
+						try {
+							const d = await getDesignForRegen(item.designId);
+							const leftScan = d.scans.find((s) => s.footSide.toUpperCase().startsWith('L'));
+							const rightScan = d.scans.find((s) => s.footSide.toUpperCase().startsWith('R'));
+
+							elementsStore.clearAll();
+							hydrateFromDesign({
+								id: d.designId,
+								parameters: d.parameters,
+								elements: d.elements,
+								landmarks: d.landmarks,
+								scanMetadata: d.scanMetadata,
+								matchTransform: d.matchTransform,
+								clientSettings: d.clientSettings,
+							});
+							if (d.clientSettings) applyGeometryClientSettingsRef.current?.(d.clientSettings);
+							setRegenScanOverride({ left: leftScan?.stlUrl, right: rightScan?.stlUrl });
+
+							await waitForViewerReady(15000);
+							await sleep(500);
+
+							const pair: Pair = {};
+							if (item.sides.includes('left')) pair.left = await sideFromViewer('left');
+							if (item.sides.includes('right')) pair.right = await sideFromViewer('right');
+							if (pair.left || pair.right) pairs.push(pair);
+							else failedItems.push(`${item.projectName} v${item.version}`);
+						} catch (err) {
+							console.error('[NC] Regeneration failed for item', item, err);
+							failedItems.push(`${item.projectName} v${item.version}`);
+						}
+					}
+				} finally {
+					// Always restore the live editing session, regardless of failures.
+					setRegenScanOverride(null);
+					elementsStore.clearAll();
+					hydrateFromDesign({
+						id: designId ?? 'current',
+						parameters: restore.parameters,
+						elements: restore.elements,
+						landmarks: restore.landmarks,
+						scanMetadata: restore.scanMetadata,
+						matchTransform: restore.matchTransform,
+						clientSettings: restore.clientSettings,
+					});
+					applyGeometryClientSettingsRef.current?.(restore.clientSettings);
+					await waitForViewerReady(15000);
+				}
+			}
+
+			report(1 + itemCount);
+			const ncContent = generateNcReplica({
+				pairs,
+				bedWidthMm: cncState.tableSettings.bedWidthMm,
+				toolSettings: {
+					...cncState.toolSettings,
+					spindleSpeedRpm: 24000,
+					feedRateXYMmMin: 2400,
+					feedRateZMmMin: 2400,
+					safeZMm: Math.max(cncState.toolSettings.safeZMm, 60),
+				},
+			});
+
+			report(2 + itemCount);
+			const filename = `${name}_${cncState.millingMode}_${new Date().getFullYear()}_top.nc`;
+			downloadNcFile(ncContent, filename);
+
+			let doneTitle = 'Freesbestand gedownload!';
+			if (pairs.length > 1) {
+				doneTitle = `Freesbestand met ${pairs.length} paren gedownload!`;
+			}
+			if (failedItems.length > 0) {
+				doneTitle += ` (overgeslagen: ${failedItems.join(', ')})`;
+			}
+			setExportProgress({
+				title: doneTitle,
+				phases: labels.map((label) => ({ label, status: 'done' as const })),
+				done: true,
+			});
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : 'NC-export mislukt.';
+			setExportProgress((prev) => {
+				if (!prev || prev.done) return prev;
+				const activeIdx = prev.phases.findIndex((p) => p.status === 'active');
+				return {
+					...prev,
+					phases: prev.phases.map((p, i) => (i === activeIdx ? { ...p, status: 'error' as const } : p)),
+					error: msg,
+				};
+			});
 		}
-
-		if (rightGeom) {
-			rightResult = await extractContourFromExportGeometryAsync(rightGeom, 'right');
-			freshRightGeom?.dispose();
-		} else {
-			rightResult = await extractStlContour(
-				selectedBaseInsoleAssets.rightUrl,
-				'right',
-				undefined,
-				undefined,
-				generalNormalized.baseInsoleType
-			);
-		}
-
-		const ncContent = generateNcFile({
-			millingMode: cncState.millingMode,
-			fixture: cncState.fixture,
-			toolSettings: {
-				...cncState.toolSettings,
-				spindleSpeedRpm: 24000,
-				feedRateXYMmMin: 2400,
-				feedRateZMmMin: 2400,
-				safeZMm: Math.max(cncState.toolSettings.safeZMm, 60),
-			},
-			postSettings: {
-				...cncState.postSettings,
-				embedOffsets: false,
-			},
-			compatibilityMode: true,
-			patientName: name,
-			projectId,
-			contours: {
-				left: leftResult.contour.length > 0 ? leftResult.contour : undefined,
-				right: rightResult.contour.length > 0 ? rightResult.contour : undefined,
-			},
-			heightfields: {
-				left: leftResult.heightfield,
-				right: rightResult.heightfield,
-			},
-		});
-		const filename = `${name}_${cncState.millingMode}_${new Date().getFullYear()}_top.nc`;
-		downloadNcFile(ncContent, filename);
-	}, [cncPreviewGeometry.left, cncPreviewGeometry.right, cncState, generalNormalized.baseInsoleType, projectId, project?.patient, recordExportCredit, selectedBaseInsoleAssets.leftUrl, selectedBaseInsoleAssets.rightUrl]);
+	}, [
+		cncState,
+		generalNormalized.baseInsoleType,
+		project?.patient,
+		recordExportCredit,
+		selectedBaseInsoleAssets.leftUrl,
+		selectedBaseInsoleAssets.rightUrl,
+		productionItems,
+		buildSnapshot,
+		hydrateFromDesign,
+		designId,
+	]);
 
 	const [selectedBaseSTL, setSelectedBaseSTL] = useState<string | null>(null);
 	const [corrections, setCorrections] = useState<OntwerpCorrections>(createDefaultOntwerpCorrections);
@@ -2014,6 +2174,9 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	}, [selectPlacedElement]);
 	const handleViewerReady = useCallback(() => {
 		setIsViewerReady(true);
+		const resolve = viewerReadyResolverRef.current;
+		viewerReadyResolverRef.current = null;
+		resolve?.();
 	}, []);
 	const handlePrintZoneClickViewer = useCallback(
 		(zone: 'front' | 'middle' | 'back', sideSel: 'left' | 'right') => {
@@ -2390,11 +2553,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 	]);
 
 	// ── Hydrate local state from saved design on mount ──
-	useEffect(() => {
-		if (initialDesign && !hasHydratedRef.current) {
-			hasHydratedRef.current = true;
-			const cs = hydrateFromDesign(initialDesign);
-			if (cs && typeof cs === 'object') {
+	const applyClientSettings = useCallback((cs: Record<string, unknown>) => {
+		{
 				// Restore all persisted local state
 				if (cs.productionMethod !== undefined) setProductionMethod(cs.productionMethod as string);
 				if (cs.selectedPairId !== undefined) setSelectedPairId(cs.selectedPairId as string | null);
@@ -2456,6 +2616,45 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 				if (cs.scansActive !== undefined) setScansActive(cs.scansActive as boolean);
 				if (cs.showOverlays !== undefined) setShowOverlays(cs.showOverlays as boolean);
 				if (cs.hardnessProfiles !== undefined) setHardnessProfiles(cs.hardnessProfiles as Record<HardnessKey, { infillPercent: number }> | null);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
+	// Apply ONLY the geometry-affecting client settings (no view/navigation
+	// changes). Used during batch regeneration so swapping designs never
+	// unmounts the viewer or changes the active step/production method.
+	const applyGeometryClientSettings = useCallback((cs: Record<string, unknown>) => {
+		if (cs.corrections !== undefined) setCorrections(cs.corrections as OntwerpCorrections);
+		if (cs.activeCorrections !== undefined) setActiveCorrections(cs.activeCorrections as CorrectionKey[]);
+		if (cs.savedBottomText !== undefined) {
+			const sb = cs.savedBottomText as Partial<SavedBottomTextState> | null;
+			setSavedBottomText(
+				sb && typeof sb === 'object'
+					? {
+							text: typeof sb.text === 'string' ? sb.text : '',
+							sizeMm: typeof sb.sizeMm === 'number' && Number.isFinite(sb.sizeMm) ? sb.sizeMm : 10,
+							depthMm: typeof sb.depthMm === 'number' && Number.isFinite(sb.depthMm) ? sb.depthMm : 0.6,
+						}
+					: null,
+			);
+		}
+		if (cs.boxEnabled !== undefined) setBoxEnabled(cs.boxEnabled as typeof boxEnabled);
+		if (cs.boxGridPoints !== undefined) setBoxGridPoints(cs.boxGridPoints as typeof boxGridPoints);
+		if (cs.trimlineAdjustments !== undefined) setTrimlineAdjustments(cs.trimlineAdjustments as typeof trimlineAdjustments);
+		if (cs.trimlineHandleProfiles !== undefined) setTrimlineHandleProfiles(cs.trimlineHandleProfiles as typeof trimlineHandleProfiles);
+		if (cs.scanManualAlignments !== undefined) {
+			setScanManualAlignments(cs.scanManualAlignments as typeof scanManualAlignments);
+			setPendingScanManualAlignments(cs.scanManualAlignments as typeof pendingScanManualAlignments);
+		}
+	}, []);
+	applyGeometryClientSettingsRef.current = applyGeometryClientSettings;
+
+	useEffect(() => {
+		if (initialDesign && !hasHydratedRef.current) {
+			hasHydratedRef.current = true;
+			const cs = hydrateFromDesign(initialDesign);
+			if (cs && typeof cs === 'object') {
+				applyClientSettings(cs);
 			}
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2541,9 +2740,11 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		activePair?.right ??
 		null;
 
-	// Scan STL URLs — no demo fallback, only real backend scans
-	const leftStlUrl = leftScan?.stlUrl ?? '';
-	const rightStlUrl = rightScan?.stlUrl ?? '';
+	// Scan STL URLs — no demo fallback, only real backend scans.
+	// During batch regeneration we swap in another design's project scans so the
+	// trimline/fit matches that patient instead of the live one.
+	const leftStlUrl = regenScanOverride ? (regenScanOverride.left ?? '') : (leftScan?.stlUrl ?? '');
+	const rightStlUrl = regenScanOverride ? (regenScanOverride.right ?? '') : (rightScan?.stlUrl ?? '');
 
 	// ── Ensure scan overlays are shown when scans are active and URLs are available ──
 	// This covers the case where showOverlays was not yet persisted in older saves,
@@ -3648,6 +3849,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 								}
 								onExportNc={handleExportNcFile}
 								onBack={() => setCncPlanningActive(false)}
+								hideInlineExportStatus={Boolean(exportProgress)}
 							/>
 						);
 					}
@@ -3696,14 +3898,26 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										Frezen
 									</h4>
 									<div className="space-y-1 text-sm">
-										<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
+										<button
+											type="button"
+											onClick={() => setShowProductieModal(true)}
+											className="flex w-full items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2 transition hover:bg-[rgba(255,255,255,0.06)]"
+										>
 											<span className="text-ui-muted">Productie</span>
-											<span className="text-ui-text">Toevoegen</span>
-										</div>
-										<div className="flex items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2">
+											<span className="font-medium text-ui-accent">
+												{productionItems.length > 0
+													? `Toevoegen (${productionItems.length})`
+													: 'Toevoegen'}
+											</span>
+										</button>
+										<button
+											type="button"
+											onClick={() => setShowTafelModal(true)}
+											className="flex w-full items-center justify-between rounded-lg bg-[rgba(255,255,255,0.03)] px-3 py-2 transition hover:bg-[rgba(255,255,255,0.06)]"
+										>
 											<span className="text-ui-muted">Tafel vervangen</span>
-											<span className="text-ui-text">Open</span>
-										</div>
+											<span className="font-medium text-ui-accent">Open</span>
+										</button>
 									</div>
 									<Button
 										className="w-full bg-ui-accent text-slate-900 hover:opacity-90"
@@ -4016,8 +4230,8 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										ref={viewerRef}
 										leftUrl={selectedBaseInsoleAssets.leftUrl}
 										rightUrl={selectedBaseInsoleAssets.rightUrl}
-										leftOverlayUrl={showOverlays ? leftStlUrl : undefined}
-										rightOverlayUrl={showOverlays ? rightStlUrl : undefined}
+										leftOverlayUrl={showOverlays || regenScanOverride ? leftStlUrl : undefined}
+										rightOverlayUrl={showOverlays || regenScanOverride ? rightStlUrl : undefined}
 										baseInsoleType={generalNormalized.baseInsoleType}
 										targetForefootWidthMm={resolvedTargetForefootWidthMm}
 										showGrid={true}
@@ -4129,10 +4343,6 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 										<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-emerald-500/30 bg-emerald-950/80 px-4 py-2 text-xs font-semibold text-emerald-300 shadow-lg">
 											✓ {autoDetectMessage}
 										</div>
-									)}
-									{/* ── Export progress overlay ── */}
-									{exportProgress && (
-										<ExportProgressOverlay progress={exportProgress} onDismiss={() => setExportProgress(null)} />
 									)}
 									{autoDetectStatus === 'failed' && !isFitting && (
 										<div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-950/80 px-4 py-2 text-xs font-semibold text-amber-300 shadow-lg">
@@ -4557,6 +4767,15 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 					)}
 				</div>
 			</div>
+
+			{/* Export progress — full viewport (also visible during CNC planning / fixture view) */}
+			{exportProgress && (
+				<ExportProgressOverlay
+					progress={exportProgress}
+					onDismiss={() => setExportProgress(null)}
+				/>
+			)}
+
 			<BaseModal
 				title="Selecteer scans"
 				open={showScanModal}
@@ -4707,6 +4926,31 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 					selectedMode={cncState.millingMode}
 					onSelect={handleSelectMillingMode}
 					onClose={() => setShowMillingModeSelector(false)}
+				/>
+			)}
+
+			{/* Tafel vervangen settings modal (Frezen: EVA) */}
+			{showTafelModal && (
+				<TafelSettingsModal
+					open
+					onClose={() => setShowTafelModal(false)}
+					tableSettings={cncState.tableSettings}
+					toolSettings={cncState.toolSettings}
+					onSave={({ tableSettings, toolSettings }) =>
+						setCncState((prev) => ({ ...prev, tableSettings, toolSettings }))
+					}
+				/>
+			)}
+
+			{/* Productie batch picker modal (Frezen: EVA) */}
+			{showProductieModal && (
+				<ProductieModal
+					open
+					onClose={() => setShowProductieModal(false)}
+					currentProjectId={projectId}
+					currentDesignId={designId}
+					items={productionItems}
+					onChange={setProductionItems}
 				/>
 			)}
 

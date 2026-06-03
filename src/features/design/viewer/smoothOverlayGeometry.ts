@@ -43,8 +43,22 @@ function mergeAndNormals(
 	}
 }
 
+/**
+ * Laplacian smoothing for element overlay pads.
+ *
+ * `plateauFactor` controls how strongly up-facing (top plateau) and down-facing
+ * (base) vertices are smoothed:
+ * - 1 (default): uniform smoothing of every vertex — used for thin caps and
+ *   inset bowls that have no vertical walls.
+ * - near 0: normal-aware smoothing that rounds the vertical SIDE walls (removing
+ *   visible triangle columns / STL facets) while leaving the top plateau and the
+ *   zero-gap base in place. This preserves therapeutic height/volume and makes
+ *   raised pads read like the competitor's organic ramp instead of a deflated
+ *   dome.
+ */
 function laplacianSmoothPositions(
 	geometry: THREE.BufferGeometry,
+	plateauFactor = 1,
 ): THREE.BufferGeometry {
 	const posAttr = geometry.getAttribute('position') as
 		| THREE.BufferAttribute
@@ -55,6 +69,39 @@ function laplacianSmoothPositions(
 	}
 
 	const vertCount = posAttr.count;
+	const normalAware = plateauFactor < 0.999;
+
+	// Per-vertex smoothing weight. Uniform (1) unless we are preserving a plateau,
+	// in which case up/down-facing caps are damped and vertical walls keep ~full
+	// smoothing: weight = plateauFactor + (1 - plateauFactor) * sideWeight.
+	const vertexWeight = new Float32Array(vertCount);
+	if (!normalAware) {
+		vertexWeight.fill(1);
+	} else {
+		if (!geometry.getAttribute('normal')) {
+			geometry.computeVertexNormals();
+		}
+		const normals = geometry.getAttribute('normal') as THREE.BufferAttribute;
+		geometry.computeBoundingBox();
+		const box = geometry.boundingBox!;
+		const sx = box.max.x - box.min.x;
+		const sy = box.max.y - box.min.y;
+		const sz = box.max.z - box.min.z;
+		const heightAxis: 0 | 1 | 2 = sx <= sy && sx <= sz ? 0 : sy <= sz ? 1 : 2;
+		for (let v = 0; v < vertCount; v++) {
+			const nUp = Math.abs(
+				heightAxis === 0
+					? normals.getX(v)
+					: heightAxis === 1
+						? normals.getY(v)
+						: normals.getZ(v),
+			);
+			const side = Math.max(0, Math.min(1, 1 - nUp));
+			const sideWeight = side * side;
+			vertexWeight[v] = plateauFactor + (1 - plateauFactor) * sideWeight;
+		}
+	}
+
 	const neighborSets: Set<number>[] = Array.from(
 		{ length: vertCount },
 		() => new Set<number>(),
@@ -86,6 +133,8 @@ function laplacianSmoothPositions(
 	for (let pass = 0; pass < LAPLACIAN_PASSES; pass++) {
 		const next = new Float32Array(working);
 		for (let v = 0; v < vertCount; v++) {
+			const weight = vertexWeight[v];
+			if (weight <= 1e-3) continue;
 			const neighbors = neighborSets[v];
 			if (neighbors.size === 0) continue;
 			let avgX = 0;
@@ -100,12 +149,13 @@ function laplacianSmoothPositions(
 			avgX *= inv;
 			avgY *= inv;
 			avgZ *= inv;
+			const lambda = LAPLACIAN_LAMBDA * weight;
 			const base = v * 3;
-			next[base] = working[base] + (avgX - working[base]) * LAPLACIAN_LAMBDA;
+			next[base] = working[base] + (avgX - working[base]) * lambda;
 			next[base + 1] =
-				working[base + 1] + (avgY - working[base + 1]) * LAPLACIAN_LAMBDA;
+				working[base + 1] + (avgY - working[base + 1]) * lambda;
 			next[base + 2] =
-				working[base + 2] + (avgZ - working[base + 2]) * LAPLACIAN_LAMBDA;
+				working[base + 2] + (avgZ - working[base + 2]) * lambda;
 		}
 		working.set(next);
 	}
@@ -229,10 +279,15 @@ export function meltElementOverlayGeometry(
 
 /**
  * Final smooth pass for element overlay meshes after transform/trim.
+ *
+ * Pass `preservePlateau: true` for raised volumetric pads (STL or procedural)
+ * so the therapeutic height stays put while the vertical side walls are rounded.
+ * Leave it off for thin caps and inset bowls, which smooth uniformly.
  */
 export function smoothElementOverlayGeometry(
 	geometry: THREE.BufferGeometry,
 	mmToWorld: number,
+	options?: { preservePlateau?: boolean },
 ): THREE.BufferGeometry {
 	const pos = geometry.getAttribute('position') as
 		| THREE.BufferAttribute
@@ -260,7 +315,10 @@ export function smoothElementOverlayGeometry(
 	}
 
 	working = mergeAndNormals(working, OVERLAY_MERGE_TOLERANCE);
-	working = laplacianSmoothPositions(working);
+	working = laplacianSmoothPositions(
+		working,
+		options?.preservePlateau ? 0.12 : 1,
+	);
 	working.computeVertexNormals();
 	working.computeBoundingBox();
 	working.computeBoundingSphere();

@@ -185,6 +185,56 @@ export interface CncPostSettings {
 	programEnd: 'M30' | 'M2';
 }
 
+// ──────────────────────────────────────────────
+// Table / fixture dimensions (editable via "Tafel vervangen")
+// ──────────────────────────────────────────────
+
+/**
+ * Physical EVA block + machine-bed dimensions. Defaults mirror the BLOCK_*
+ * constants and the Mekanika Pro M work envelope. Editable so the table can be
+ * swapped for a different block size or machine.
+ */
+export interface TableSettings {
+	blockWidthMm: number;
+	blockLengthMm: number;
+	blockDepthMm: number;
+	blockGapMm: number;
+	/** Machine work envelope (mm). Mekanika Pro M = 630 x 1030. */
+	bedWidthMm: number;
+	bedLengthMm: number;
+}
+
+// ──────────────────────────────────────────────
+// Production batch (insoles added via "Productie -> Toevoegen")
+// ──────────────────────────────────────────────
+
+/**
+ * One insole pair queued for a multi-slot milling run. References a saved
+ * design version (by project + design id); its geometry is regenerated at
+ * export time. The current project's live design is always included implicitly
+ * and is not represented as a ProductionItem.
+ */
+export interface ProductionItem {
+	/** Stable row id (uuid) for list management. */
+	id: string;
+	projectId: string;
+	projectName: string;
+	patientName: string;
+	designId: string;
+	version: number;
+	/** Which feet of this item to mill. */
+	sides: PartId[];
+}
+
+export const DEFAULT_TABLE_SETTINGS: TableSettings = {
+	blockWidthMm: BLOCK_W,
+	blockLengthMm: BLOCK_H,
+	blockDepthMm: BLOCK_DEPTH,
+	blockGapMm: BLOCK_GAP,
+	bedWidthMm: 630,
+	bedLengthMm: 1030,
+};
+
 export const DEFAULT_CNC_POST_SETTINGS: CncPostSettings = {
 	units: 'mm',
 	offsetStrategy: 'per-slot',
@@ -202,6 +252,7 @@ export interface CncProductionState {
 	fixture: FixtureLayout;
 	toolSettings: CncToolSettings;
 	postSettings: CncPostSettings;
+	tableSettings: TableSettings;
 }
 
 export function createDefaultCncState(): CncProductionState {
@@ -211,5 +262,25 @@ export function createDefaultCncState(): CncProductionState {
 		fixture: createDefaultFixtureLayout(),
 		toolSettings: { ...DEFAULT_CNC_TOOL_SETTINGS },
 		postSettings: { ...DEFAULT_CNC_POST_SETTINGS },
+		tableSettings: { ...DEFAULT_TABLE_SETTINGS },
 	};
 }
+
+// ──────────────────────────────────────────────
+// Named table presets (selectable in "Tafel vervangen")
+// ──────────────────────────────────────────────
+
+/**
+ * A named, selectable table preset. Carries all TableSettings fields plus a
+ * stable id and display name. Persisted per organization in Organization.settings;
+ * the active preset feeds cncState.tableSettings which the milling generator consumes.
+ */
+export type TablePreset = { id: string; name: string } & TableSettings;
+
+export const DEFAULT_TABLE_PRESETS: TablePreset[] = [
+	{
+		id: 'mekanika-pro-m',
+		name: 'Mekanika Pro M',
+		...DEFAULT_TABLE_SETTINGS,
+	},
+];

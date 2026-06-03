@@ -552,6 +552,20 @@ export function getElementStlLoadUrls(item: ElementLibraryItem): string[] {
 	return urls;
 }
 
+/**
+ * URLs to try when building the on-screen overlay pad, cheapest first. Overlays
+ * are visual only (export displacement is polygon-based, not STL-based), so the
+ * viewer prefers the decimated low-poly mesh and falls back to the full-res STL.
+ */
+export function getElementViewerStlUrls(item: ElementLibraryItem): string[] {
+	const lowpolyUrl = getElementLowpolyStlUrl(item);
+	const preferredUrl = getElementPreferredStlUrl(item);
+	const urls: string[] = [];
+	if (lowpolyUrl) urls.push(lowpolyUrl);
+	if (preferredUrl && preferredUrl !== lowpolyUrl) urls.push(preferredUrl);
+	return urls;
+}
+
 /** Pre-filtered catalogs for each tab */
 export const ELEMENTEN_ITEMS = ELEMENTS_CATALOG.filter(
 	(e) => e.tab === 'elementen'

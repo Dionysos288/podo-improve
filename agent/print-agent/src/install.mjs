@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { spawnSync } from 'child_process';
-import { saveConfig } from './config.mjs';
+import { spawn, spawnSync } from 'child_process';
+import { loadConfig, saveConfig } from './config.mjs';
 import { log } from './log.mjs';
 import {
 	dataDir,
@@ -10,6 +10,7 @@ import {
 	currentExePath,
 	isPackaged,
 	TASK_NAME,
+	startMenuShortcutPath,
 } from './paths.mjs';
 
 function currentUserId() {
@@ -19,21 +20,8 @@ function currentUserId() {
 	return user || '';
 }
 
-function launcherVbsPath() {
-	return path.join(dataDir(), 'launch-hidden.vbs');
-}
-
-function writeHiddenLauncher(exe) {
-	const vbs = [
-		'Set shell = CreateObject("WScript.Shell")',
-		`shell.Run """${exe}""", 0, False`,
-		'',
-	].join('\r\n');
-	fs.writeFileSync(launcherVbsPath(), vbs, 'utf8');
-}
-
-function taskXml(userId) {
-	const wscript = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wscript.exe');
+function taskXml(userId, exe) {
+	// Run the exe directly (not via hidden wscript) so the tray icon can appear.
 	return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -65,7 +53,7 @@ function taskXml(userId) {
     </IdleSettings>
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>true</Enabled>
-    <Hidden>true</Hidden>
+    <Hidden>false</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
@@ -77,8 +65,8 @@ function taskXml(userId) {
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>${wscript}</Command>
-      <Arguments>"${launcherVbsPath()}"</Arguments>
+      <Command>${exe.replace(/\\/g, '\\\\')}</Command>
+      <WorkingDirectory>${dataDir().replace(/\\/g, '\\\\')}</WorkingDirectory>
     </Exec>
   </Actions>
 </Task>`;
@@ -90,13 +78,39 @@ function runSchtasks(args) {
 	return res;
 }
 
-/** Register (or refresh) the auto-start task and start the agent now. */
-export function install({ url, token, prusaSlicerPath }) {
-	if (!url || !token) throw new Error('install requires --url and --token');
+function createStartMenuShortcut(exe) {
+	const shortcut = startMenuShortcutPath();
+	fs.mkdirSync(path.dirname(shortcut), { recursive: true });
+	const ps = [
+		'$WshShell = New-Object -ComObject WScript.Shell',
+		`$Shortcut = $WshShell.CreateShortcut('${shortcut.replace(/'/g, "''")}')`,
+		`$Shortcut.TargetPath = '${exe.replace(/'/g, "''")}'`,
+		`$Shortcut.WorkingDirectory = '${dataDir().replace(/'/g, "''")}'`,
+		'$Shortcut.WindowStyle = 7',
+		'$Shortcut.Description = "Podo Improve Print Agent - lokale slicer"',
+		'$Shortcut.Save()',
+	].join('; ');
+	const res = spawnSync(
+		'powershell',
+		['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps],
+		{ encoding: 'utf8', windowsHide: true }
+	);
+	if (res.status !== 0) {
+		log.warn('Could not create Start Menu shortcut:', (res.stderr || res.stdout || '').trim());
+		return;
+	}
+	log.info('Start Menu shortcut created:', shortcut);
+}
 
-	fs.mkdirSync(dataDir(), { recursive: true });
+function removeStartMenuShortcut() {
+	try {
+		fs.rmSync(startMenuShortcutPath(), { force: true });
+	} catch {
+		// ignore
+	}
+}
 
-	// Ensure the agent binary lives in the data dir (stable target for updates).
+function resolveInstallExe() {
 	let exe = installedExePath();
 	if (isPackaged()) {
 		const src = currentExePath();
@@ -104,22 +118,31 @@ export function install({ url, token, prusaSlicerPath }) {
 			fs.copyFileSync(src, exe);
 		}
 	} else {
-		log.warn('Running unpackaged: writing config but the task will not have a real .exe to launch.');
+		log.warn('Running unpackaged: task will launch via node (tray may differ from production exe).');
 		exe = currentExePath();
 	}
+	return exe;
+}
+
+/** Register (or refresh) the auto-start task and start the agent now. */
+export function install({ url, token, prusaSlicerPath }) {
+	if (!url || !token) throw new Error('install requires --url and --token');
+
+	fs.mkdirSync(dataDir(), { recursive: true });
+	const exe = resolveInstallExe();
 
 	saveConfig({ url, token, ...(prusaSlicerPath ? { prusaSlicerPath } : {}) });
 	log.info('Config saved to', configPath());
 
 	if (process.platform !== 'win32') {
 		log.warn('Auto-start registration is only implemented for Windows. Config saved; start the agent manually.');
-		return;
+		return { exe, startMenu: null };
 	}
 
-	writeHiddenLauncher(exe);
+	createStartMenuShortcut(exe);
 
 	const xmlPath = path.join(dataDir(), 'task.xml');
-	fs.writeFileSync(xmlPath, '\uFEFF' + taskXml(currentUserId()), 'utf16le');
+	fs.writeFileSync(xmlPath, '\uFEFF' + taskXml(currentUserId(), exe), 'utf16le');
 
 	const create = runSchtasks(['/Create', '/TN', TASK_NAME, '/XML', xmlPath, '/F']);
 	if (create.status !== 0) {
@@ -134,6 +157,21 @@ export function install({ url, token, prusaSlicerPath }) {
 	} else {
 		log.info('Agent started.');
 	}
+
+	return { exe, startMenu: startMenuShortcutPath() };
+}
+
+/** Re-run install using saved config (tray: Opnieuw installeren). */
+export function reinstallFromConfig() {
+	const config = loadConfig();
+	if (!config?.url || !config?.token) {
+		throw new Error('Agent is not configured. Install from the web app first.');
+	}
+	return install({
+		url: config.url,
+		token: config.token,
+		prusaSlicerPath: config.prusaSlicerPath,
+	});
 }
 
 /** Remove the auto-start task and stored config. */
@@ -143,12 +181,24 @@ export function uninstall() {
 		const del = runSchtasks(['/Delete', '/TN', TASK_NAME, '/F']);
 		if (del.status === 0) log.info('Auto-start task removed.');
 		else log.warn('No auto-start task to remove (or removal failed).');
+		removeStartMenuShortcut();
 	}
 	try {
 		fs.rmSync(configPath(), { force: true });
-		fs.rmSync(launcherVbsPath(), { force: true });
 		log.info('Config removed.');
 	} catch (err) {
 		log.warn('Failed to remove config:', err.message);
 	}
+}
+
+/** Spawn a detached reinstall and exit the current process. */
+export function scheduleReinstallAndExit(exe) {
+	const config = loadConfig();
+	if (!config?.url || !config?.token) return;
+	const target = fs.existsSync(installedExePath()) ? installedExePath() : exe;
+	spawn(
+		target,
+		['install', '--url', config.url, '--token', config.token],
+		{ detached: true, stdio: 'ignore', windowsHide: true }
+	).unref();
 }

@@ -5,7 +5,7 @@
  * built exe is configured via env so the binary can live on GitHub Releases,
  * Vercel Blob, or any static host without redeploying the app.
  */
-export const AGENT_VERSION = process.env.AGENT_VERSION || '2.0.1';
+export const AGENT_VERSION = process.env.AGENT_VERSION || '2.0.2';
 export const AGENT_EXE_URL = process.env.AGENT_EXE_URL || '';
 export const AGENT_EXE_SHA256 = process.env.AGENT_EXE_SHA256 || '';
 

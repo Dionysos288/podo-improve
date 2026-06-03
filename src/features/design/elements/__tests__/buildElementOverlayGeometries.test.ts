@@ -17,6 +17,27 @@ function createTestInsoleGeometry(): THREE.BufferGeometry {
 	return geom;
 }
 
+/**
+ * Insole whose top surface ramps along its length (heel low, toe high), so the
+ * surface height under an element footprint varies. Used to prove the overlay
+ * base follows the local surface per-vertex instead of being pinned to the
+ * element-centre height (which would leave a gap on a curved insole).
+ */
+function createRampedInsoleGeometry(): THREE.BufferGeometry {
+	const geom = new THREE.BoxGeometry(120, 8, 40, 48, 2, 16);
+	const pos = geom.getAttribute('position') as THREE.BufferAttribute;
+	for (let i = 0; i < pos.count; i++) {
+		if (pos.getY(i) > 3.9) {
+			const t = (pos.getX(i) + 60) / 120; // 0 at heel, 1 at toe
+			pos.setY(i, 4 + 10 * t);
+		}
+	}
+	pos.needsUpdate = true;
+	geom.computeVertexNormals();
+	geom.computeBoundingBox();
+	return geom;
+}
+
 function mockElement(
 	id: string,
 	libraryKey: string,
@@ -301,48 +322,68 @@ describe('buildElementOverlayGeometries', () => {
 		}
 	});
 
-	it('STL-backed raised pad sits flush on the insole and ramps without vertical walls', () => {
-		// Roomy insole so the pad does not overshoot the boundary (which would
-		// clip its height) — we are testing the pad surface, not edge clipping.
-		const insole = new THREE.BoxGeometry(160, 8, 70, 32, 2, 18);
-		insole.computeVertexNormals();
+	it('additive volumetric overlay base sits on the insole surface (no lift gap)', () => {
+		const insole = createTestInsoleGeometry();
 		const insoleY = getAxisRange(insole, 'y');
-		const element = mockElement('el-pel', 'peloitte-2', {
+		const element = mockElement('el-contact', 'sd-1', {
 			heightMm: 3,
-			positionU: 0.5,
+			positionU: 0.45,
 			positionV: 0.5,
 		});
-		const item = getElementByKey('peloitte-2');
+
+		const overlays = buildElementOverlayGeometries(insole, [element], {
+			mmToWorld: 1,
+			stlGeometries: new Map(),
+		});
+
+		expect(overlays).toHaveLength(1);
+		const overlayY = getAxisRange(overlays[0]!.geometry, 'y');
+		// Base must be flush with the insole top — never floating above it.
+		expect(overlayY.min).toBeLessThanOrEqual(insoleY.max + 0.03);
+		expect(overlayY.min).toBeGreaterThan(insoleY.max - 0.3);
+		// And it must still rise to its therapeutic height.
+		expect(overlayY.max).toBeGreaterThan(insoleY.max + 1);
+
+		insole.dispose();
+		overlays[0]?.geometry.dispose();
+	});
+
+	it('STL additive overlay base follows a ramped surface, not the centre height', () => {
+		const insole = createRampedInsoleGeometry();
+		const element = mockElement('el-ramp', 'sd-2-5', {
+			floorMode: 'free',
+			heightMm: 2,
+			positionU: 0.5,
+			positionV: 0.5,
+			scaleU: 0.4,
+			scaleV: 0.4,
+		});
+		const item = getElementByKey('sd-2-5');
 		const stlUrl = item ? getElementPreferredStlUrl(item) : undefined;
 		expect(stlUrl).toBeTruthy();
 
-		// Dense STL so the distance-field occupancy is contiguous (real element
-		// STLs are dense; a coarse box degenerates the edge ramp).
-		const denseStl = new THREE.BoxGeometry(38, 41, 4, 80, 80, 2);
-		denseStl.computeVertexNormals();
 		const stlMap = new Map<string, THREE.BufferGeometry>();
-		stlMap.set(stlUrl!, denseStl);
+		stlMap.set(stlUrl!, createMockElementStlGeometry());
+
 		const overlays = buildElementOverlayGeometries(insole, [element], {
 			mmToWorld: 1,
 			stlGeometries: stlMap,
 		});
 
 		expect(overlays).toHaveLength(1);
-		const geom = overlays[0]!.geometry;
-		const overlayY = getAxisRange(geom, 'y');
-
-		// Flush: the pad base lands on the insole top surface (no floating gap).
-		expect(overlayY.min).toBeGreaterThan(insoleY.max - 1.0);
-		// Raised: the pad still rises above the insole.
-		expect(overlayY.max).toBeGreaterThan(insoleY.max + 0.5);
-		// Smooth sides: vertical wall facets are removed, so few sideways normals.
-		const total = geom.getAttribute('position').count;
-		const sideways = countSidewaysNormals(geom);
-		expect(sideways / total).toBeLessThan(0.25);
+		const overlayY = getAxisRange(overlays[0]!.geometry, 'y');
+		// Centre surface height on this ramp is ~9. If the base were pinned to the
+		// centre height (the old bug) the minimum would sit near 9. With per-vertex
+		// surface contact the low edge of the footprint reaches well below it.
+		expect(overlayY.min).toBeLessThan(8.6);
+		// Top still rises above the centre surface (~9) onto its plateau.
+		expect(overlayY.max).toBeGreaterThan(9.05);
 
 		insole.dispose();
-		geom.dispose();
-		for (const g of stlMap.values()) g.dispose();
+		overlays[0]?.geometry.dispose();
+		for (const geometry of stlMap.values()) {
+			geometry.dispose();
+		}
 	});
 
 	it('thickness-only sc-bol overlays ignore loaded STL and match procedural fallback', () => {

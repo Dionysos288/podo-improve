@@ -503,5 +503,7 @@ export function useDesignAutosave(
 		forceSave,
 		/** Trigger a debounced save (call when local state changes outside Zustand) */
 		debouncedSave,
+		/** Build an in-memory snapshot of the current design state (stores + client settings). */
+		buildSnapshot,
 	};
 }

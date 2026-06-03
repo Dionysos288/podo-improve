@@ -4,7 +4,8 @@ import { loadConfig, autodetectPrusaSlicer } from './config.mjs';
 import { createApi } from './api.mjs';
 import { createTray } from './tray.mjs';
 import { log } from './log.mjs';
-import { dataDir, lockPath } from './paths.mjs';
+import { dataDir, lockPath, currentExePath } from './paths.mjs';
+import { scheduleReinstallAndExit } from './install.mjs';
 import { AGENT_VERSION } from './version.mjs';
 import { ensureDefaultE2Bundle, parseConfigBundle } from './slicer/bundle.mjs';
 import { createSlicerAdapter, createIR3SlicerAdapter, selectAdapter } from './slicer/adapters.mjs';
@@ -78,6 +79,8 @@ function openInShell(target) {
 }
 
 export async function runAgent(overrideConfig) {
+	process.title = 'Podo Print Agent';
+
 	const config = overrideConfig ?? loadConfig();
 	if (!config) {
 		log.error('Agent is not installed (no config). Run: podo-print-agent install --url <url> --token <token>');
@@ -109,8 +112,16 @@ export async function runAgent(overrideConfig) {
 		process.exit(code ?? 0);
 	}
 
+	const settingsUrl = config.url.replace(/\/$/, '') + '/settings/basis';
+
 	tray = await createTray({
 		onOpenLog: () => openInShell(log.file()),
+		onOpenFolder: () => openInShell(dataDir()),
+		onOpenSettings: () => openInShell(settingsUrl),
+		onReinstall: () => {
+			scheduleReinstallAndExit(currentExePath());
+			shutdown(0);
+		},
 		onQuit: () => shutdown(0),
 	});
 

@@ -56,8 +56,13 @@ if errorlevel 1 (
 )
 
 echo.
-echo Klaar! De Print Agent start nu automatisch bij het inloggen
-echo en draait in de achtergrond (zie het pictogram rechtsonder).
+echo ============================================
+echo   Installatie voltooid
+echo ============================================
+echo.
+echo  - Startmenu: zoek "Podo Print Agent"
+echo  - Systeemvak: pictogram rechtsonder (klik ^ als het verborgen is)
+echo  - Opnieuw installeren: Startmenu of Instellingen in de app
 echo.
 echo Je kunt dit venster sluiten.
 pause
@@ -66,7 +71,7 @@ pause
 		return new NextResponse(script, {
 			headers: {
 				'Content-Type': 'application/octet-stream',
-				'Content-Disposition': 'attachment; filename="Podo-Print-Agent-Setup.cmd"',
+				'Content-Disposition': 'attachment; filename="Installeer-Podo-Print-Agent.cmd"',
 			},
 		});
 	} catch (error) {

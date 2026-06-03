@@ -42,3 +42,15 @@ export function currentExePath() {
 export function isPackaged() {
 	return typeof process.pkg !== 'undefined' || process.env.PODO_AGENT_PACKAGED === '1';
 }
+
+/** Start Menu shortcut so users can find the agent like a normal app. */
+export function startMenuShortcutPath() {
+	const programs = path.join(
+		process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+		'Microsoft',
+		'Windows',
+		'Start Menu',
+		'Programs'
+	);
+	return path.join(programs, 'Podo Print Agent.lnk');
+}

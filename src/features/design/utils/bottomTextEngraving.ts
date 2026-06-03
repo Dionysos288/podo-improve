@@ -201,9 +201,16 @@ export type BottomTextEngraveParams = {
 	debugSide?: 'left' | 'right';
 };
 
+export type EngraveTextOutput = {
+	/** Positioned extruded text solid in the insole geometry's local space.
+	 *  Captured for the side cross-section view so engraving depth is readable. */
+	textSolid?: THREE.BufferGeometry | null;
+};
+
 export function engraveTextIntoInsole(
 	insoleGeometry: THREE.BufferGeometry,
-	params: BottomTextEngraveParams
+	params: BottomTextEngraveParams,
+	out?: EngraveTextOutput
 ): THREE.BufferGeometry | null {
 	const side = params.debugSide;
 	const trimmed = params.text.trim();
@@ -244,6 +251,12 @@ export function engraveTextIntoInsole(
 	const textMatrix = placementToWorldMatrix(placement, params.mmToWorld);
 	textBrush.applyMatrix4(textMatrix);
 	textBrush.updateMatrixWorld(true);
+
+	if (out) {
+		const solid = textGeom.clone();
+		solid.applyMatrix4(textMatrix);
+		out.textSolid = solid;
+	}
 
 	const insoleBrush = new Brush(work, new THREE.MeshStandardMaterial());
 	insoleBrush.updateMatrixWorld(true);

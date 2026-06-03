@@ -1,5 +1,5 @@
 import { runAgent } from './runner.mjs';
-import { install, uninstall } from './install.mjs';
+import { install, uninstall, reinstallFromConfig } from './install.mjs';
 import { maybeSelfUpdate } from './updater.mjs';
 import { createApi } from './api.mjs';
 import { loadConfig } from './config.mjs';
@@ -25,6 +25,7 @@ function printUsage() {
 			'Usage:',
 			'  podo-print-agent                      run the agent (default)',
 			'  podo-print-agent install --url <url> --token <token> [--prusa <path>]',
+			'  podo-print-agent reinstall            refresh install from saved config',
 			'  podo-print-agent uninstall            remove auto-start + config',
 			'  podo-print-agent update               check for and apply updates',
 		].join('\n')
@@ -43,8 +44,16 @@ export async function main(argv) {
 					? { url: flags.url, token: flags.token, prusaSlicerPath: flags.prusa }
 					: undefined
 			);
-		case 'install':
-			install({ url: flags.url, token: flags.token, prusaSlicerPath: flags.prusa });
+		case 'install': {
+			const result = install({ url: flags.url, token: flags.token, prusaSlicerPath: flags.prusa });
+			if (result?.startMenu) {
+				log.info('Zoek "Podo Print Agent" in het Windows-startmenu.');
+				log.info('Systeemvak: klik op ^ naast de klok als je het pictogram niet ziet.');
+			}
+			return;
+		}
+		case 'reinstall':
+			reinstallFromConfig();
 			return;
 		case 'uninstall':
 			uninstall();

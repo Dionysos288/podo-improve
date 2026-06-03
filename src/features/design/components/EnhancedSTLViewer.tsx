@@ -13,7 +13,7 @@ import {
 	memo,
 } from 'react';
 import { Canvas, useLoader, useThree } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, Text } from '@react-three/drei';
+import { OrbitControls, OrthographicCamera, PerspectiveCamera, Text } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -31,10 +31,11 @@ import {
 	validateEngravedGeometry,
 } from '@/src/features/design/utils/bottomTextEngraving';
 import { applyAllCorrections } from '@/src/features/design/utils/insoleCorrections';
+import { flattenInsoleBottom } from '@/src/features/design/utils/flattenInsoleBottom';
 import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpPanel';
 import type { CorrectionKey } from '@/src/shared/components/design/correctionsCatalog';
 import type { PlacedElement } from '@/src/features/design/elements/types';
-import { applyElementColors, applyElementsWithSmoothing, buildElementOverlayGeometries, DIEPELEMENTEN_ITEMS, ELEMENTEN_ITEMS, getElementByKey, getElementPreferredStlUrl, getElementStlLoadUrls, type ElementOverlayData, type ElementSmoothStrength } from '@/src/features/design/elements';
+import { applyElements, applyElementColors, buildElementOverlayGeometries, DIEPELEMENTEN_ITEMS, ELEMENTEN_ITEMS, getElementByKey, getElementPreferredStlUrl, getElementStlLoadUrls, type ElementOverlayData } from '@/src/features/design/elements';
 import { VIEWER_MATERIALS } from '@/src/features/design/viewer/viewerMaterialProfile';
 import {
 	getScanOverlayMaterialProps,
@@ -63,7 +64,7 @@ import type {
 } from '@/src/shared/components/design/TrimlineEditOverlay';
 import { InteractiveTrimline } from './InteractiveTrimline';
 import { InteractiveScanRotate } from './InteractiveScanRotate';
-import { SideInspectionLayers } from './SideInspectionLayers';
+import { CrossSectionView } from './CrossSectionView';
 import { ScanInsoleUpAxisSampler } from './ScanInsoleUpAxisSampler';
 import { composeOverlayManualYawMatrix } from '@/src/features/design/utils/scanManualAlignment';
 import {
@@ -323,6 +324,8 @@ const ZONE_COLORS = {
 // Global viewer scale so ALL STLs keep real relative dimensions.
 // Source STLs are expected in millimeters.
 const MM_TO_WORLD = 0.4;
+// Distinct from element colors; reads as carved-away material in the side view.
+const SIDE_ENGRAVING_COLOR = '#38bdf8';
 const SCAN_OVERLAY_LATERAL_WORLD = { left: -30, right: 30 } as const;
 const DEFAULT_VEC3: [number, number, number] = [0, 0, 0];
 const EMPTY_TEXT_ANNOTATIONS: TextAnnotation[] = [];
@@ -1074,6 +1077,107 @@ function smoothInsoleTopSurface(
 	for (let v = 0; v < vertCount; v++) {
 		if (!topFacing[v]) continue;
 		pos[v * 3 + hAxisIdx] = smoothRef[v] + residualFactor * (origHeights[v] - smoothRef[v]);
+	}
+
+	posAttr.needsUpdate = true;
+	geometry.computeVertexNormals();
+	return geometry;
+}
+
+/**
+ * Blend placed elements smoothly into the insole top surface ("Elementen vloeien").
+ *
+ * Runs AFTER applyElements has displaced the top surface into raised element pads.
+ * Crucially this only smooths the vertices the ELEMENTS moved (detected by diffing
+ * against the pre-element height snapshot), plus a few transition rings around them
+ * so the element edges melt into the surrounding insole. The rest of the insole top
+ * surface is left completely untouched. A moderate iterative Laplacian smooth (along
+ * the height axis, averaging over all neighbours) rounds the seams while the low pass
+ * count preserves the broad therapeutic element volume.
+ */
+function smoothElementsIntoInsole(
+	geometry: THREE.BufferGeometry,
+	/** Height-axis positions captured BEFORE applyElements (full x/y/z array). */
+	basePositions: Float32Array,
+	passes = 14,
+	alpha = 0.5,
+	dilateRings = 3,
+	normalThreshold = 0.2,
+): THREE.BufferGeometry {
+	if (!geometry.index) return geometry;
+	const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute | null;
+	const normalAttr = geometry.getAttribute('normal') as THREE.BufferAttribute | null;
+	if (!posAttr || !normalAttr) return geometry;
+
+	const vertCount = posAttr.count;
+	if (basePositions.length < vertCount * 3) return geometry;
+	const idxArr = geometry.index.array;
+	const faceCount = idxArr.length / 3;
+
+	geometry.computeBoundingBox();
+	const bbox = geometry.boundingBox!;
+	const sz = bbox.getSize(new THREE.Vector3());
+	const hAxisIdx: 0 | 1 | 2 = sz.x <= sz.y && sz.x <= sz.z ? 0 : sz.y <= sz.z ? 1 : 2;
+
+	const neighborSets: Set<number>[] = Array.from({ length: vertCount }, () => new Set<number>());
+	for (let f = 0; f < faceCount; f++) {
+		const a = idxArr[f * 3], b = idxArr[f * 3 + 1], c = idxArr[f * 3 + 2];
+		neighborSets[a].add(b); neighborSets[a].add(c);
+		neighborSets[b].add(a); neighborSets[b].add(c);
+		neighborSets[c].add(a); neighborSets[c].add(b);
+	}
+
+	const normals = normalAttr.array as Float32Array;
+	const topFacing = new Uint8Array(vertCount);
+	for (let v = 0; v < vertCount; v++) {
+		if (normals[v * 3 + hAxisIdx] > normalThreshold) topFacing[v] = 1;
+	}
+
+	const pos = posAttr.array as Float32Array;
+
+	// Mark only the vertices the elements actually displaced.
+	let maxDelta = 1e-6;
+	const deltas = new Float32Array(vertCount);
+	for (let v = 0; v < vertCount; v++) {
+		const d = Math.abs(pos[v * 3 + hAxisIdx] - basePositions[v * 3 + hAxisIdx]);
+		deltas[v] = d;
+		if (d > maxDelta) maxDelta = d;
+	}
+	// Nothing moved → no elements affect the surface, leave the insole alone.
+	if (maxDelta <= 1e-5) return geometry;
+	const threshold = Math.max(1e-5, maxDelta * 0.02);
+	const affected = new Uint8Array(vertCount);
+	for (let v = 0; v < vertCount; v++) {
+		if (deltas[v] > threshold) affected[v] = 1;
+	}
+	// Dilate the affected region so the element edges blend into the insole.
+	for (let r = 0; r < dilateRings; r++) {
+		const snapshot = affected.slice();
+		for (let v = 0; v < vertCount; v++) {
+			if (!snapshot[v]) continue;
+			for (const nb of neighborSets[v]) affected[nb] = 1;
+		}
+	}
+
+	const heights = new Float32Array(vertCount);
+	for (let v = 0; v < vertCount; v++) heights[v] = pos[v * 3 + hAxisIdx];
+	const tmp = heights.slice();
+
+	for (let p = 0; p < passes; p++) {
+		for (let v = 0; v < vertCount; v++) {
+			if (!affected[v] || !topFacing[v]) { tmp[v] = heights[v]; continue; }
+			const nbs = neighborSets[v];
+			if (nbs.size === 0) { tmp[v] = heights[v]; continue; }
+			let sum = 0;
+			for (const nb of nbs) sum += heights[nb]; // ALL neighbours (incl. surrounding insole) pull edges in
+			tmp[v] = heights[v] + alpha * (sum / nbs.size - heights[v]);
+		}
+		heights.set(tmp);
+	}
+
+	for (let v = 0; v < vertCount; v++) {
+		if (!affected[v] || !topFacing[v]) continue;
+		pos[v * 3 + hAxisIdx] = heights[v];
 	}
 
 	posAttr.needsUpdate = true;
@@ -2266,7 +2370,7 @@ function STLMesh({
 	const generalUnknown = general as unknown as Record<string, unknown> | undefined;
 	const shoeSize = getSideNumber(generalUnknown?.shoeSize, 40);
 	const seededShoeSize = getSideNumber(generalUnknown?.seededShoeSize, shoeSize);
-	const soleThicknessMm = getSideNumber(generalUnknown?.soleThicknessMm, 2);
+	const soleThicknessMm = Math.max(2, getSideNumber(generalUnknown?.soleThicknessMm, 2));
 	const totalInsoleHeightMm = getSideNumber(generalUnknown?.maxInsoleHeightMm, 10);
 	const applyGeneral = meshRole === 'insole';
 	const engravingFontRef = useRef<Awaited<ReturnType<typeof loadEngravingFont>> | null>(null);
@@ -2299,6 +2403,9 @@ function STLMesh({
 		};
 	}, []);
 	const meshRef = useRef<THREE.Mesh>(null);
+	// Stable world-space sagittal clip plane shared between the live clipped
+	// meshes and CrossSectionView (which keeps its coefficients in sync).
+	const sideClipPlane = useMemo(() => new THREE.Plane(new THREE.Vector3(1, 0, 0), 0), []);
 	const lastCorrectionsRef = useRef<string>('');
 	const pendingSignatureRef = useRef<string>('');
 	const geometryRef = useRef<THREE.BufferGeometry | null>(null);
@@ -2357,6 +2464,7 @@ function STLMesh({
 	const correctedSignatureRef = useRef<string>('');
 	const generalRafRef = useRef<number | null>(null);
 	const bottomOverlayRebuildRafRef = useRef<number | null>(null);
+	const boxOffsetRebuildRafRef = useRef<number | null>(null);
 	const baseGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const latticeBaseSourceGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 	const boxTessellatedBaseRef = useRef<THREE.BufferGeometry | null>(null);
@@ -3264,6 +3372,7 @@ function STLMesh({
 	// Create a working geometry that includes corrections
 	const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
 	const [sideProfileGeometry, setSideProfileGeometry] = useState<THREE.BufferGeometry | null>(null);
+	const [bottomTextSolidGeometry, setBottomTextSolidGeometry] = useState<THREE.BufferGeometry | null>(null);
 	useEffect(() => {
 		geometryRef.current = geometry;
 		return () => {
@@ -3278,6 +3387,11 @@ function STLMesh({
 			sideProfileGeometry?.dispose();
 		};
 	}, [sideProfileGeometry]);
+	useEffect(() => {
+		return () => {
+			bottomTextSolidGeometry?.dispose();
+		};
+	}, [bottomTextSolidGeometry]);
 
 	// Overlay meshes for each placed element (rendered on top of insole)
 	const [elementOverlays, setElementOverlays] = useState<ElementOverlayData[]>([]);
@@ -3434,6 +3548,7 @@ function STLMesh({
 			if (overlayRafRef.current != null) cancelAnimationFrame(overlayRafRef.current);
 			if (generalRafRef.current != null) cancelAnimationFrame(generalRafRef.current);
 			if (bottomOverlayRebuildRafRef.current != null) cancelAnimationFrame(bottomOverlayRebuildRafRef.current);
+			if (boxOffsetRebuildRafRef.current != null) cancelAnimationFrame(boxOffsetRebuildRafRef.current);
 			elementOverlaysRef.current.forEach((overlay) => overlay.geometry.dispose());
 			elementOverlaysRef.current = [];
 			for (const geometry of elementStlGeometriesRef.current.values()) {
@@ -3777,182 +3892,11 @@ function STLMesh({
 	const pendingCorrectionsRef = useRef<OntwerpCorrections | undefined>(undefined);
 	const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-	const smoothstep01 = useCallback((edge0: number, edge1: number, x: number) => {
-		const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-		return t * t * (3 - 2 * t);
-	}, []);
-
 	const applyTotalInsoleHeight = useCallback(
 		(geom: THREE.BufferGeometry, targetHeightMm: number | null | undefined) => {
 			applyGeometryTotalHeight(geom, targetHeightMm, mmToWorld || 1);
 		},
 		[mmToWorld]
-	);
-
-	const applySoleThicknessAfterCorrections = useCallback(
-		(geom: THREE.BufferGeometry) => {
-			const DEFAULT_SOLE_THICKNESS_MM = 2;
-			const thicknessDeltaMm = (soleThicknessMm ?? DEFAULT_SOLE_THICKNESS_MM) - DEFAULT_SOLE_THICKNESS_MM;
-			const thicknessDeltaWorld = thicknessDeltaMm * (mmToWorld || 1);
-			if (Math.abs(thicknessDeltaWorld) < 1e-6) return;
-			const posAttr = geom.getAttribute('position') as THREE.BufferAttribute | undefined;
-			if (!posAttr) return;
-
-			// Ensure we have normals to identify bottom-facing vertices.
-			geom.computeVertexNormals();
-			const normAttr = geom.getAttribute('normal') as THREE.BufferAttribute | undefined;
-			if (!normAttr) return;
-
-			geom.computeBoundingBox();
-			const bbox = geom.boundingBox;
-			if (!bbox) return;
-
-			// Zooldikte: extrude the bottom (outsole) surface downward uniformly.
-			// Identify the thickness axis (smallest bbox dimension).
-			const size = bbox.getSize(new THREE.Vector3());
-			const axes: Array<'x' | 'y' | 'z'> = ['x', 'y', 'z'];
-			const sizes = { x: size.x, y: size.y, z: size.z };
-			axes.sort((a, b) => sizes[a] - sizes[b]);
-			const thicknessAxis = axes[0];
-			const widthAxis = axes[1];
-			const lengthAxis = axes[2];
-
-			const axIdx = thicknessAxis === 'x' ? 0 : thicknessAxis === 'y' ? 1 : 2;
-			const getAxis = (i: number, axis: 'x' | 'y' | 'z') =>
-				axis === 'x' ? posAttr.getX(i) : axis === 'y' ? posAttr.getY(i) : posAttr.getZ(i);
-			const getH = (i: number) =>
-				thicknessAxis === 'x'
-					? posAttr.getX(i)
-					: thicknessAxis === 'y'
-						? posAttr.getY(i)
-						: posAttr.getZ(i);
-			const setH = (i: number, v: number) => {
-				if (thicknessAxis === 'x') posAttr.setX(i, v);
-				else if (thicknessAxis === 'y') posAttr.setY(i, v);
-				else posAttr.setZ(i, v);
-			};
-			const getNormal = (i: number) => {
-				if (axIdx === 0) return normAttr.getX(i);
-				if (axIdx === 1) return normAttr.getY(i);
-				return normAttr.getZ(i);
-			};
-			const minL = lengthAxis === 'x' ? bbox.min.x : lengthAxis === 'y' ? bbox.min.y : bbox.min.z;
-			const maxL = lengthAxis === 'x' ? bbox.max.x : lengthAxis === 'y' ? bbox.max.y : bbox.max.z;
-			const minW = widthAxis === 'x' ? bbox.min.x : widthAxis === 'y' ? bbox.min.y : bbox.min.z;
-			const maxW = widthAxis === 'x' ? bbox.max.x : widthAxis === 'y' ? bbox.max.y : bbox.max.z;
-			const minH = thicknessAxis === 'x' ? bbox.min.x : thicknessAxis === 'y' ? bbox.min.y : bbox.min.z;
-			const maxH = thicknessAxis === 'x' ? bbox.max.x : thicknessAxis === 'y' ? bbox.max.y : bbox.max.z;
-			const lengthSpan = Math.max(1e-6, maxL - minL);
-			const widthSpan = Math.max(1e-6, maxW - minW);
-			const heightSpan = Math.max(1e-6, maxH - minH);
-			const centerW = (minW + maxW) * 0.5;
-			const halfW = Math.max(1e-6, widthSpan * 0.5);
-
-			// --- Step 1: compute initial per-vertex weight from normals ---
-			const count = posAttr.count;
-			const weights = new Float32Array(count);
-			for (let i = 0; i < count; i++) {
-				const nComp = getNormal(i); // negative = bottom-facing
-				weights[i] = Math.max(0, -nComp);
-			}
-
-			// --- Step 2: build adjacency from index buffer and diffuse weights ---
-			// This blends the hard normal-based boundary into a smooth gradient so
-			// there's no visible seam between the thickened outsole and the top surface.
-			const idxAttr = geom.getIndex();
-			if (idxAttr) {
-				// Build adjacency: for each vertex, collect its neighbours.
-				const adj = new Array<Set<number>>(count);
-				for (let i = 0; i < count; i++) adj[i] = new Set();
-				const idx = idxAttr.array;
-				for (let f = 0; f < idx.length; f += 3) {
-					const a = idx[f], b = idx[f + 1], c = idx[f + 2];
-					adj[a].add(b); adj[a].add(c);
-					adj[b].add(a); adj[b].add(c);
-					adj[c].add(a); adj[c].add(b);
-				}
-
-				// A generous number of Laplacian diffusion passes so the weight field
-				// transitions very gradually, eliminating visible seams at edges.
-				const DIFF_PASSES = 18;
-				const DIFF_ALPHA = 0.5;
-				const tmp = new Float32Array(count);
-				for (let pass = 0; pass < DIFF_PASSES; pass++) {
-					for (let i = 0; i < count; i++) {
-						const nbrs = adj[i];
-						if (nbrs.size === 0) { tmp[i] = weights[i]; continue; }
-						let sum = 0;
-						for (const n of nbrs) sum += weights[n];
-						tmp[i] = weights[i] * (1 - DIFF_ALPHA) + (sum / nbrs.size) * DIFF_ALPHA;
-					}
-					weights.set(tmp);
-				}
-			}
-
-			// --- Step 2b: targeted forefoot sidewall wrap ---
-			// The remaining visible seam is mainly at the forefoot sidewall where the
-			// added outsole thickness transitions into the original shell. Boost the
-			// medium-weight lower sidewall vertices only in the forefoot so it reads
-			// as one continuous piece without changing the heel/arch areas.
-			const endSlice = Math.max(lengthSpan * 0.08, 1e-6);
-			let minEndMinWidth = Number.POSITIVE_INFINITY;
-			let minEndMaxWidth = Number.NEGATIVE_INFINITY;
-			let maxEndMinWidth = Number.POSITIVE_INFINITY;
-			let maxEndMaxWidth = Number.NEGATIVE_INFINITY;
-			let minEndCount = 0;
-			let maxEndCount = 0;
-			for (let i = 0; i < count; i++) {
-				const lenVal = getAxis(i, lengthAxis);
-				const widthVal = getAxis(i, widthAxis);
-				if (lenVal <= minL + endSlice) {
-					minEndMinWidth = Math.min(minEndMinWidth, widthVal);
-					minEndMaxWidth = Math.max(minEndMaxWidth, widthVal);
-					minEndCount++;
-				}
-				if (lenVal >= maxL - endSlice) {
-					maxEndMinWidth = Math.min(maxEndMinWidth, widthVal);
-					maxEndMaxWidth = Math.max(maxEndMaxWidth, widthVal);
-					maxEndCount++;
-				}
-			}
-			const minEndWidthSpan =
-				minEndCount > 10 ? Math.max(0, minEndMaxWidth - minEndMinWidth) : widthSpan;
-			const maxEndWidthSpan =
-				maxEndCount > 10 ? Math.max(0, maxEndMaxWidth - maxEndMinWidth) : widthSpan;
-			const heelAtMin = minEndWidthSpan >= maxEndWidthSpan;
-
-			for (let i = 0; i < count; i++) {
-				const lenVal = getAxis(i, lengthAxis);
-				const widthVal = getAxis(i, widthAxis);
-				const rawU = (lenVal - minL) / lengthSpan;
-				const u = Math.max(0, Math.min(1, heelAtMin ? rawU : 1 - rawU));
-				const hNorm = (getH(i) - minH) / heightSpan;
-				const sideNorm = Math.abs((widthVal - centerW) / halfW);
-				const baseWeight = weights[i];
-				const forefootWeight = smoothstep01(0.6, 0.86, u);
-				const lowerSideWeight = 1 - smoothstep01(0.24, 0.72, hNorm);
-				const sidewallFocus = smoothstep01(0.45, 0.82, sideNorm);
-				const seamBandWeight =
-					smoothstep01(0.08, 0.28, baseWeight) * (1 - smoothstep01(0.6, 0.92, baseWeight));
-				const wrapBoost = forefootWeight * lowerSideWeight * sidewallFocus * seamBandWeight;
-				if (wrapBoost <= 1e-4) continue;
-				weights[i] = Math.max(baseWeight, Math.min(1, baseWeight + wrapBoost * 0.65));
-			}
-
-			// --- Step 3: apply displacement ---
-			for (let i = 0; i < count; i++) {
-				const w = weights[i];
-				if (w <= 0.001) continue;
-				const h = getH(i);
-				setH(i, h - thicknessDeltaWorld * w);
-			}
-			posAttr.needsUpdate = true;
-
-			// Recompute normals after vertex displacement so shading is smooth
-			// across the transition and there's no visible lighting seam.
-			geom.computeVertexNormals();
-		},
-		[soleThicknessMm, mmToWorld]
 	);
 
 	const applyTotalInsoleHeightAfterCorrections = useCallback((geom: THREE.BufferGeometry) => {
@@ -4116,7 +4060,6 @@ function STLMesh({
 
 		const workingGeometry = corrected.clone();
 		if (applyGeneral) {
-			applySoleThicknessAfterCorrections(workingGeometry);
 			applyTotalInsoleHeightAfterCorrections(workingGeometry);
 		}
 		// The corrected geometry is already cached in a welded/smoothed form.
@@ -4135,15 +4078,19 @@ function STLMesh({
 		}
 		// Apply element height displacements (raised pads)
 		if (hasPlacedElements && currentPlacedElements) {
-			// "Elementen vloeien" melts the displaced region (not the whole insole)
-			// into the body; the core wrapper snapshots the pre-displacement surface
-			// and smooths only the vertices the elements moved.
+			// "Elementen vloeien" melts the elements (not the whole insole) into the
+			// body. Snapshot the surface BEFORE applyElements so we can detect exactly
+			// which vertices the elements moved and smooth only those.
 			const doVloeien = elementsVloeienRef.current && meshRole === 'insole';
-			const smooth: ElementSmoothStrength = doVloeien ? 'full' : 'mild';
-			applyElementsWithSmoothing(finalGeometry, currentPlacedElements, {
-				mmToWorld: mmToWorld || 1,
-				smooth,
-			});
+			let preElementPositions: Float32Array | null = null;
+			if (doVloeien) {
+				const prePos = finalGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+				if (prePos) preElementPositions = new Float32Array(prePos.array as Float32Array);
+			}
+			applyElements(finalGeometry, currentPlacedElements, { mmToWorld: mmToWorld || 1 });
+			if (doVloeien && preElementPositions) {
+				smoothElementsIntoInsole(finalGeometry, preElementPositions);
+			}
 		}
 		applyHeelEdgeThicknessBand(finalGeometry, heelEdgeThicknessMm, mmToWorld || 1, side);
 		// Trimline rim cut runs LAST, in the same final space the gizmo edits, so the
@@ -4157,6 +4104,23 @@ function STLMesh({
 			applyTrimlineRimSilhouette(finalGeometry, trimlineHandleProfile, mmToWorld || 1);
 		}
 		setSideProfileGeometry(nextSideProfileGeometry);
+
+		const effectiveBoxOffsets = pendingBoxGridOffsetsRef.current ?? currentSavedBoxGridOffsets;
+		finalGeometry = applySavedBoxGridOffsetsToGeometry(finalGeometry, effectiveBoxOffsets, mmToWorld || 1);
+
+		// Re-level the underside to one watertight plane after every deformation
+		// (corrections, elements, trimline, box offsets, scan merge). Runs before
+		// bottom-text engraving so letterforms carve into a flat base. The zooldikte
+		// control feeds in as a uniform flat layer: > 2 mm pushes the plane deeper,
+		// < 2 mm raises it, so the slider and the flat bottom stay one mechanism.
+		if (meshRole === 'insole' && !evaBlockMode) {
+			flattenInsoleBottom(finalGeometry, {
+				mmToWorld: mmToWorld || 1,
+				epsilonMm: 0.01,
+				bottomLayerOffsetMm: applyGeneral ? (soleThicknessMm ?? 2) - 2 : 0,
+			});
+		}
+
 		const hasEmbeddedBottomText =
 			meshRole === 'insole' &&
 			hasOverlayTextPlaceholder(currentBottomTextOverlay);
@@ -4171,11 +4135,18 @@ function STLMesh({
 			tryShowBottomTextLoader(overlayVisualSig);
 			let engravingCommitOk = false;
 
+			// soleThicknessMm + totalInsoleHeightMm are baked into the base geometry
+			// (flatten layer + height extrude) BEFORE this snapshot, so they must be
+			// part of the cache key — otherwise changing zooldikte while bottom text
+			// is active re-engraves a stale base and the change is silently dropped.
 			const textDetailSignature = [
 				correctedSignatureRef.current,
 				placedElementsSignature,
 				formatSignatureNumber(heelEdgeThicknessMm),
 				formatSignatureNumber(mmToWorld || 1),
+				formatSignatureNumber(soleThicknessMm),
+				formatSignatureNumber(totalInsoleHeightMm),
+				getBoxGridOffsetsSignature(effectiveBoxOffsets),
 			].join('|');
 			if (
 				bottomTextDetailSignatureRef.current !== textDetailSignature ||
@@ -4191,6 +4162,7 @@ function STLMesh({
 			const baseClone = baseSource.clone();
 			let nextGeometry: THREE.BufferGeometry;
 			if (font && engravingFontReady) {
+				const engraveOut: { textSolid?: THREE.BufferGeometry | null } = {};
 				const engraved = engraveTextIntoInsole(baseClone, {
 					text: currentBottomTextOverlay.text,
 					sizeMm: currentBottomTextOverlay.sizeMm,
@@ -4199,8 +4171,10 @@ function STLMesh({
 					orientation: currentBottomTextOverlay.orientation,
 					font,
 					debugSide: side,
-				});
+				}, engraveOut);
 				baseClone.dispose();
+				// Retain the positioned text solid for the side cross-section view.
+				setBottomTextSolidGeometry(engraveOut.textSolid ?? null);
 				if (engraved) {
 					nextGeometry = engraved;
 					const v = validateEngravedGeometry(nextGeometry);
@@ -4233,6 +4207,7 @@ function STLMesh({
 			} else {
 				console.warn(`[bottomTextEngrave:${side}] font not ready yet (engravingFontReady=false or font missing)`);
 				baseClone.dispose();
+				setBottomTextSolidGeometry(null);
 				nextGeometry = baseSource.clone();
 				onBottomTextValidityChangeRef.current?.({
 					side,
@@ -4248,11 +4223,9 @@ function STLMesh({
 				lastCommittedTextVisualSigRef.current = overlayVisualSig;
 			}
 		} else if (meshRole === 'insole') {
+			setBottomTextSolidGeometry(null);
 			onBottomTextValidityChangeRef.current?.({ side, ok: true });
 		}
-		// Re-apply saved box grid deformation (persists across page reloads)
-		const effectiveBoxOffsets = pendingBoxGridOffsetsRef.current ?? currentSavedBoxGridOffsets;
-		finalGeometry = applySavedBoxGridOffsetsToGeometry(finalGeometry, effectiveBoxOffsets, mmToWorld || 1);
 		finalGeometry.computeVertexNormals();
 		finalGeometry.computeBoundingBox();
 		finalGeometry.computeBoundingSphere();
@@ -4272,7 +4245,7 @@ function STLMesh({
 			vertices: finalPos?.count ?? 0,
 		});
 		animateGeometryTo(finalGeometry);
-	}, [applyGeneral, applyTotalInsoleHeightAfterCorrections, applySoleThicknessAfterCorrections, animateGeometryTo, hasPlacedElements, placedElementsSignature, mmToWorld, meshRole, bottomTextOverlaySignature, gridEditMode, savedBoxGridOffsetsSignature, heelEdgeThicknessMm, logViewerDebug, engravingFontReady, side, soleThicknessMm, totalInsoleHeightMm, trimlineHandleProfile]);
+	}, [applyGeneral, applyTotalInsoleHeightAfterCorrections, animateGeometryTo, hasPlacedElements, placedElementsSignature, mmToWorld, meshRole, evaBlockMode, bottomTextOverlaySignature, gridEditMode, savedBoxGridOffsetsSignature, heelEdgeThicknessMm, logViewerDebug, engravingFontReady, side, soleThicknessMm, totalInsoleHeightMm, trimlineHandleProfile]);
 
 	const rebuildFinalGeometryFromCorrectedRef = useRef(rebuildFinalGeometryFromCorrected);
 	rebuildFinalGeometryFromCorrectedRef.current = rebuildFinalGeometryFromCorrected;
@@ -4408,6 +4381,30 @@ function STLMesh({
 			}
 		};
 	}, [bottomTextOverlaySignature]);
+
+	// A box-grid edit changes only the saved offsets; it does not touch
+	// corrections, sliders, elements, or text, so none of the other rebuild
+	// effects fire. Without this, the final rebuild (and therefore
+	// flattenInsoleBottom) never re-runs after a box change, leaving the
+	// underside un-levelled. Re-run on every box change, not just initial load.
+	useEffect(() => {
+		void savedBoxGridOffsetsSignature;
+		if (gridEditMode) return;
+		if (!correctedGeometryRef.current) return;
+		if (boxOffsetRebuildRafRef.current != null) {
+			cancelAnimationFrame(boxOffsetRebuildRafRef.current);
+		}
+		boxOffsetRebuildRafRef.current = requestAnimationFrame(() => {
+			boxOffsetRebuildRafRef.current = null;
+			rebuildFinalGeometryFromCorrectedRef.current();
+		});
+		return () => {
+			if (boxOffsetRebuildRafRef.current != null) {
+				cancelAnimationFrame(boxOffsetRebuildRafRef.current);
+				boxOffsetRebuildRafRef.current = null;
+			}
+		};
+	}, [savedBoxGridOffsetsSignature, gridEditMode]);
 
 	useEffect(() => {
 		return () => {
@@ -4711,8 +4708,11 @@ function STLMesh({
 		sideInspectionActive && meshRole === 'insole' && !pointPickMode && !evaBlockMode;
 	const transparentUser = Boolean(transparentMode);
 	const transparentGeometry = transparentUser || insoleSideInspection;
+	// Side inspection shows the full insole as a translucent ghost (no clipping) so
+	// the real element meshes read as their actual form, anchored to the insole and
+	// visible through the body. Independent of the user `transparent` 3D toggle.
 	const effectiveOpacity = insoleSideInspection
-		? 0
+		? 0.22
 		: transparentUser
 			? (opacity ?? 0.35)
 			: (opacity ?? 1);
@@ -4924,13 +4924,10 @@ function STLMesh({
 					flatShading={VIEWER_MATERIALS.insoleBase.flatShading}
 					transparent={transparentGeometry}
 					opacity={effectiveOpacity}
-					{...(insoleSideInspection
-						? ({
-								depthTest: true,
-								depthWrite: false,
-							} as const)
-						: {})}
-					{...(scanOverlayMaterialProps ?? {})}
+					{...(scanOverlayMaterialProps ?? {
+						depthTest: true,
+						depthWrite: !insoleSideInspection,
+					})}
 				/>
 
 				{/* Selection highlight — hide during box/lattice edit so the mesh reads clearly */}
@@ -5035,6 +5032,9 @@ function STLMesh({
 					/>
 				)}
 
+				{/* In side inspection the real element meshes are rendered (un-clipped,
+				    drawn on top) so the user sees the element's actual form anchored to
+				    the insole, can click it, and reads its depth through the ghost. */}
 				{elementOverlays.map((overlay) => {
 					const printHit = meshRole === 'insole' && Boolean(onPrintElementClick);
 					const selectedHere = printSelectedElementId === overlay.elementId;
@@ -5052,7 +5052,11 @@ function STLMesh({
 							geometry={overlay.geometry}
 							frustumCulled={false}
 							renderOrder={
-								printHit ? 20 + overlay.stackOrder : 10 + overlay.stackOrder
+								insoleSideInspection
+									? 60 + overlay.stackOrder
+									: printHit
+										? 20 + overlay.stackOrder
+										: 10 + overlay.stackOrder
 							}
 							{...(printHit ? { cursor: 'pointer' as const } : {})}
 							onClick={
@@ -5085,9 +5089,21 @@ function STLMesh({
 							{VIEWER_MATERIALS.elementOverlay.clearcoat != null ? (
 								<meshPhysicalMaterial
 									color={overlay.colorHex}
-									emissive={highlightHere ? '#6bcda8' : '#000000'}
+									emissive={
+										highlightHere
+											? '#6bcda8'
+											: insoleSideInspection
+												? overlay.colorHex
+												: '#000000'
+									}
 									emissiveIntensity={
-										highlightHere ? (highlightSelected ? 0.32 : 0.14) : 0
+										highlightHere
+											? highlightSelected
+												? 0.32
+												: 0.14
+											: insoleSideInspection
+												? 0.55
+												: 0
 									}
 									roughness={VIEWER_MATERIALS.elementOverlay.roughness}
 									metalness={VIEWER_MATERIALS.elementOverlay.metalness}
@@ -5098,6 +5114,9 @@ function STLMesh({
 									flatShading={VIEWER_MATERIALS.elementOverlay.flatShading}
 									side={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
 									shadowSide={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
+									clippingPlanes={undefined}
+									depthTest={!insoleSideInspection}
+									depthWrite={!insoleSideInspection}
 									polygonOffset
 									polygonOffsetFactor={overlay.isInset ? -1 : -3}
 									polygonOffsetUnits={overlay.isInset ? -1 : -3}
@@ -5105,15 +5124,30 @@ function STLMesh({
 							) : (
 								<meshStandardMaterial
 									color={overlay.colorHex}
-									emissive={highlightHere ? '#6bcda8' : '#000000'}
+									emissive={
+										highlightHere
+											? '#6bcda8'
+											: insoleSideInspection
+												? overlay.colorHex
+												: '#000000'
+									}
 									emissiveIntensity={
-										highlightHere ? (highlightSelected ? 0.32 : 0.14) : 0
+										highlightHere
+											? highlightSelected
+												? 0.32
+												: 0.14
+											: insoleSideInspection
+												? 0.55
+												: 0
 									}
 									roughness={VIEWER_MATERIALS.elementOverlay.roughness}
 									metalness={VIEWER_MATERIALS.elementOverlay.metalness}
 									flatShading={VIEWER_MATERIALS.elementOverlay.flatShading}
 									side={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
 									shadowSide={overlay.isInset ? THREE.FrontSide : THREE.DoubleSide}
+									clippingPlanes={undefined}
+									depthTest={!insoleSideInspection}
+									depthWrite={!insoleSideInspection}
 									polygonOffset
 									polygonOffsetFactor={overlay.isInset ? -1 : -3}
 									polygonOffsetUnits={overlay.isInset ? -1 : -3}
@@ -5188,44 +5222,32 @@ function STLMesh({
 				})()}
 			</mesh>
 			{insoleSideInspection ? (
-				<SideInspectionLayers
+				<CrossSectionView
 					geometry={sideProfileGeometry ?? geometry}
 					meshRef={meshRef}
 					enabled
 					sideView={sideInspectionView}
-					style={{
-						topSurfaceColor: '#f8fafc',
-						topSurfaceOpacity: 0.98,
-						topSurfaceDepthWorld: soleThicknessMm * (mmToWorld || MM_TO_WORLD),
-						bottomColor: '#020617',
-						showTopLine: false,
-						showShellOutline: true,
-						outlineColor: '#f8fafc',
-						outlineWidth: 2.6,
-						lineWidth: 2.6,
-						renderOrder: 9,
-					}}
+					clipPlane={sideClipPlane}
+					features={
+						bottomTextSolidGeometry
+							? [
+									{
+										key: 'bottom-text-engraving',
+										geometry: bottomTextSolidGeometry,
+										color: SIDE_ENGRAVING_COLOR,
+										opacity: 0.85,
+									},
+								]
+							: []
+					}
+					baseFillColor="#cbd5e1"
+					baseFillOpacity={0.2}
+					outlineColor="#f8fafc"
+					outlineWidth={2.2}
+					baselineColor="#64748b"
+					showBaseline
 				/>
 			) : null}
-			{insoleSideInspection
-				? elementOverlays.map((overlay) => (
-						<SideInspectionLayers
-							key={`side-profile-${overlay.elementId}`}
-							geometry={overlay.geometry}
-							meshRef={meshRef}
-							enabled
-							sideView={sideInspectionView}
-							style={{
-								topColor: overlay.colorHex,
-								bottomColor: overlay.colorHex,
-								fillColor: overlay.colorHex,
-								fillOpacity: overlay.isInset ? 0.85 : 0.68,
-								lineWidth: 2.2,
-								renderOrder: 14 + overlay.stackOrder,
-							}}
-						/>
-					))
-				: null}
 		</>
 	);
 }
@@ -5897,6 +5919,7 @@ const EnhancedSTLViewerInner = forwardRef<
 		const leftOverlayRootRef = useRef<THREE.Group>(null);
 		const rightOverlayRootRef = useRef<THREE.Group>(null);
 		const cameraRef = useRef<THREE.PerspectiveCamera>(null);
+		const orthoCameraRef = useRef<THREE.OrthographicCamera>(null);
 		const controlsRef = useRef<OrbitControlsImpl | null>(null);
 		const [interactionDragActive, setInteractionDragActive] = useState(false);
 		const handleInteractionDragActive = useCallback((active: boolean) => {
@@ -5970,6 +5993,12 @@ const EnhancedSTLViewerInner = forwardRef<
 			!analysisEnabled &&
 			!pointPickMode &&
 			(effectiveViewPreset === 'left' || effectiveViewPreset === 'right');
+		// In side inspection show only the inspected foot: Links → left only,
+		// Rechts → right only. Other views keep both per the caller's flags.
+		const showLeftInView =
+			showLeft && !(sideInspectionActive && effectiveViewPreset === 'right');
+		const showRightInView =
+			showRight && !(sideInspectionActive && effectiveViewPreset === 'left');
 		const useQuarterRegistration = baseInsoleType === 'driekwart';
 		const leftOverlayRegistration = useMemo(
 			() =>
@@ -6698,6 +6727,48 @@ const EnhancedSTLViewerInner = forwardRef<
 			rightGeometry,
 		]);
 
+		// Frame the orthographic side camera for the cross-section profile. Runs
+		// only while side inspection is active; leaves the perspective camera and
+		// all other presets untouched.
+		useEffect(() => {
+			if (!sideInspectionActive) return;
+			const cam = orthoCameraRef.current;
+			const c = controlsRef.current;
+			if (!cam || !c) return;
+
+			const box = new THREE.Box3();
+			let hasBox = false;
+			if (leftMeshRef.current) {
+				box.union(new THREE.Box3().setFromObject(leftMeshRef.current));
+				hasBox = true;
+			}
+			if (rightMeshRef.current) {
+				box.union(new THREE.Box3().setFromObject(rightMeshRef.current));
+				hasBox = true;
+			}
+			const center = hasBox ? box.getCenter(new THREE.Vector3()) : new THREE.Vector3();
+			const size = hasBox ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(200, 200, 200);
+			const dist = Math.max(200, Math.max(size.x, size.y, size.z) * 2);
+			const dir = effectiveViewPreset === 'right' ? 1 : -1;
+
+			cam.position.set(center.x + dir * dist, center.y + size.y * 0.02, center.z);
+			cam.up.set(0, 1, 0);
+			cam.lookAt(center);
+
+			// Fit zoom: insole height maps to screen-vertical (world Y), insole
+			// length to screen-horizontal (world Z) when looking along X.
+			const dom = c.domElement as HTMLElement | undefined;
+			const pxW = dom?.clientWidth ?? 800;
+			const pxH = dom?.clientHeight ?? 600;
+			const fitH = pxH / Math.max(1e-3, size.y * 1.4);
+			const fitW = pxW / Math.max(1e-3, size.z * 1.25);
+			cam.zoom = Math.max(0.5, Math.min(fitH, fitW));
+			cam.updateProjectionMatrix();
+
+			c.target.copy(center);
+			c.update();
+		}, [sideInspectionActive, effectiveViewPreset, leftGeometry, rightGeometry]);
+
 		// Reframe to the right foot when in top-down pick mode
 		useEffect(() => {
 			if (
@@ -6740,6 +6811,10 @@ const EnhancedSTLViewerInner = forwardRef<
 						toneMapping: THREE.NeutralToneMapping,
 						toneMappingExposure: 1.28,
 					}}
+					onCreated={({ gl }) => {
+						// Required so per-material clippingPlanes (side cross-section) take effect.
+						gl.localClippingEnabled = true;
+					}}
 					onPointerMissed={() => {
 						if (pointPickMode) return;
 						if (printPrepInteractive && onPrintInteractionDeselect) {
@@ -6751,9 +6826,20 @@ const EnhancedSTLViewerInner = forwardRef<
 				>
 					<PerspectiveCamera
 						ref={cameraRef}
-						makeDefault
+						makeDefault={!sideInspectionActive}
 						position={[0, -60, 180]}
 						fov={50}
+					/>
+					{/* Orthographic side camera: flat LutraCAD-style cross-section
+					    profile. Default only during side inspection so rotate/top/
+					    front views keep the perspective camera unchanged. */}
+					<OrthographicCamera
+						ref={orthoCameraRef}
+						makeDefault={sideInspectionActive}
+						position={[-180, 0, 0]}
+						near={-2000}
+						far={2000}
+						zoom={3}
 					/>
 					<ambientLight intensity={0.08} />
 					<hemisphereLight args={['#dfe1e6', '#1c2330', 0.2]} />
@@ -6779,7 +6865,7 @@ const EnhancedSTLViewerInner = forwardRef<
 							active={Boolean(rightGeometry)}
 							onAxisWorld={(w) => setRightInsoleAxisWorld([w.x, w.y, w.z])}
 						/>
-						{!effectiveHideScans && showInsoles && showLeft && leftUrl && (
+						{!effectiveHideScans && showInsoles && showLeftInView && leftUrl && (
 							<group ref={leftMeshRef}>
 								<STLMesh
 									url={leftUrl}
@@ -6855,7 +6941,7 @@ const EnhancedSTLViewerInner = forwardRef<
 								/>
 							</group>
 						)}
-						{!effectiveHideScans && showInsoles && showRight && rightUrl && (
+						{!effectiveHideScans && showInsoles && showRightInView && rightUrl && (
 							<group ref={rightMeshRef}>
 								<STLMesh
 									url={rightUrl}
@@ -7180,7 +7266,7 @@ const EnhancedSTLViewerInner = forwardRef<
 						minDistance={2}
 						maxDistance={800}
 						minPolarAngle={0}
-						maxPolarAngle={Math.PI}
+						maxPolarAngle={sideInspectionActive ? Math.PI / 2 : Math.PI}
 						minAzimuthAngle={lockTopView ? 0 : undefined}
 						maxAzimuthAngle={lockTopView ? 0 : undefined}
 					/>

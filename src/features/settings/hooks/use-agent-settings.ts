@@ -69,6 +69,7 @@ export function useAgentSettings() {
 	const [prusaSlicerPath, setPrusaSlicerPath] = useState('');
 	const [isDirty, setIsDirty] = useState(false);
 	const isDirtyRef = useRef(false);
+	const [installDownloaded, setInstallDownloaded] = useState(false);
 	const [status, setStatus] = useState<AgentStatus>({
 		state: 'loading',
 		agentOnline: false,
@@ -152,6 +153,7 @@ export function useAgentSettings() {
 	}, []);
 
 	const downloadSetup = useCallback(() => {
+		setInstallDownloaded(true);
 		window.location.href = '/api/agent/download';
 	}, []);
 
@@ -165,5 +167,6 @@ export function useAgentSettings() {
 		save,
 		rotateToken,
 		downloadSetup,
+		installDownloaded,
 	};
 }

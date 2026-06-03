@@ -27,6 +27,8 @@ interface CncProducePanelProps {
 	patientName: string;
 	onExportNc: () => void | Promise<void>;
 	onBack: () => void;
+	/** When the parent shows ExportProgressOverlay, hide the inline wait text. */
+	hideInlineExportStatus?: boolean;
 }
 
 export function CncProducePanel({
@@ -36,6 +38,7 @@ export function CncProducePanel({
 	patientName,
 	onExportNc,
 	onBack,
+	hideInlineExportStatus = false,
 }: CncProducePanelProps) {
 	const [isExporting, setIsExporting] = useState(false);
 	const waitForPaint = useCallback(
@@ -227,7 +230,7 @@ export function CncProducePanel({
 					)}
 				</Button>
 
-				{isExporting && (
+				{isExporting && !hideInlineExportStatus && (
 					<p className="text-xs text-ui-muted text-center">
 						Even wachten — de freesbanen worden opgebouwd.
 					</p>
