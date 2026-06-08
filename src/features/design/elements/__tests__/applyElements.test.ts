@@ -66,47 +66,40 @@ function maxAxis(
 }
 
 describe('isThicknessOnlyElement', () => {
-	it('identifies blue and orange catalog elements', () => {
-		expect(isThicknessOnlyElement(getElementByKey('sc-bol'))).toBe(true);
-		expect(isThicknessOnlyElement(getElementByKey('spsa-vlak'))).toBe(true);
-		expect(isThicknessOnlyElement(getElementByKey('hai-vlak-2'))).toBe(true);
-	});
-
-	it('does not classify other color groups as thickness-only', () => {
+	it('no catalog element is thickness-only: all ship a designed STL mesh', () => {
+		expect(isThicknessOnlyElement(getElementByKey('sc-bol'))).toBe(false);
+		expect(isThicknessOnlyElement(getElementByKey('spsa-vlak'))).toBe(false);
+		expect(isThicknessOnlyElement(getElementByKey('hai-vlak-2'))).toBe(false);
 		expect(isThicknessOnlyElement(getElementByKey('sd-1'))).toBe(false);
 		expect(isThicknessOnlyElement(null)).toBe(false);
 	});
 });
 
 describe('applyElements', () => {
-	it('does not deform the insole for positive-height blue elements', () => {
-		const insole = createTestInsoleGeometry();
-		const before = snapshotPositions(insole);
-
-		applyElements(insole, [mockElement('el-blue', 'sc-bol', { heightMm: 5 })]);
-
-		const after = snapshotPositions(insole);
-		expect(after.length).toBe(before.length);
-		for (let i = 0; i < before.length; i++) {
-			expect(after[i]).toBeCloseTo(before[i]!, 6);
-		}
-
-		insole.dispose();
-	});
-
-	it('does not deform the insole for positive-height orange elements', () => {
+	it('merges positive-height blue elements into the insole on export', () => {
 		const insole = createTestInsoleGeometry();
 		const before = snapshotPositions(insole);
 
 		applyElements(insole, [
-			mockElement('el-orange', 'hai-vlak-2', { heightMm: 5 }),
+			mockElement('el-blue', 'sc-bol', { heightMm: 5, positionU: 0.45 }),
 		]);
 
 		const after = snapshotPositions(insole);
-		expect(after.length).toBe(before.length);
-		for (let i = 0; i < before.length; i++) {
-			expect(after[i]).toBeCloseTo(before[i]!, 6);
-		}
+		expect(after.some((value, index) => value !== before[index])).toBe(true);
+
+		insole.dispose();
+	});
+
+	it('merges positive-height orange elements into the insole on export', () => {
+		const insole = createTestInsoleGeometry();
+		const before = snapshotPositions(insole);
+
+		applyElements(insole, [
+			mockElement('el-orange', 'hai-vlak-2', { heightMm: 5, positionU: 0.45 }),
+		]);
+
+		const after = snapshotPositions(insole);
+		expect(after.some((value, index) => value !== before[index])).toBe(true);
 
 		insole.dispose();
 	});

@@ -220,7 +220,18 @@ async function writeBinaryStl(geometry, outFile) {
   const mesh = new THREE.Mesh(geometry, new THREE.MeshNormalMaterial());
   mesh.updateMatrixWorld(true);
   const output = exporter.parse(mesh, { binary: true });
-  const buffer = Buffer.from(output);
+  // STLExporter returns a DataView for binary output; Buffer.from(DataView)
+  // yields an empty buffer, so unwrap to the underlying bytes explicitly.
+  let buffer;
+  if (output instanceof DataView) {
+    buffer = Buffer.from(
+      output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength),
+    );
+  } else if (output instanceof ArrayBuffer) {
+    buffer = Buffer.from(output);
+  } else {
+    buffer = Buffer.from(output);
+  }
   await fs.writeFile(outFile, buffer);
 }
 

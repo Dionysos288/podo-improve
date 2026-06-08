@@ -12,6 +12,8 @@ import type { ElementLibraryItem } from './types';
 
 const BASE_ELEMENT_STL_PREFIX = '/base/elements/';
 const LOWPOLY_ELEMENT_STL_PREFIX = '/base/elements-lowpoly/';
+/** Bump when element STL assets change so viewer/thumbnail caches refresh. */
+export const ELEMENT_STL_ASSET_VERSION = '2026-06-08';
 
 /* ── shape outline helpers ────────────────────── */
 
@@ -196,11 +198,11 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		anchor: 'met2-5',
 		color: 'red',
 		outline: sd25Outline(),
-		defaultScale: [1.0, 1.0],
+		defaultScale: [0.9, 0.9],
 		defaultPosition: { u: 0.82, v: 0.50 },
 		defaultRotationRad: 0.2,
 		stlUrl: '/base/elements/SD 2-5.stl',
-		stlSizeMm: [65.8, 52.0],
+		stlSizeMm: [63.7, 49.9],
 	},
 	{
 		key: 'sd-1-5',
@@ -219,7 +221,7 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultPosition: { u: 0.80, v: 0.50 },
 		defaultRotationRad: 0,
 		stlUrl: '/base/elements/sd 1-5.stl',
-		stlSizeMm: [87.1, 54.5],
+		stlSizeMm: [87.2, 53.1],
 	},
 	{
 		key: 'sd-1',
@@ -238,8 +240,7 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultPosition: { u: 0.82, v: 0.50 },
 		defaultRotationRad: 0,
 		stlUrl: '/base/elements/SD1.stl',
-		stlSizeMm: [25.4, 20.3],
-		stlSwapYZ: true,
+		stlSizeMm: [24.8, 19.8],
 	},
 	{
 		key: 'rctb-3',
@@ -257,8 +258,8 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultScale: [1.0, 1.0],
 		defaultPosition: { u: 0.45, v: 0.50 },
 		defaultRotationRad: 0,
-		stlUrl: '/base/elements/RCTB 3 R.stl',
-		stlSizeMm: [86.6, 82.4],
+		stlUrl: '/base/elements/RCTB 3.stl',
+		stlSizeMm: [86.1, 78.1],
 	},
 	{
 		key: 'rctb-2',
@@ -276,8 +277,8 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultScale: [1.0, 1.0],
 		defaultPosition: { u: 0.45, v: 0.50 },
 		defaultRotationRad: 0,
-		stlUrl: '/base/elements/RCTB 3 R.stl',
-		stlSizeMm: [86.6, 82.4],
+		stlUrl: '/base/elements/RCTB 2.stl',
+		stlSizeMm: [85.9, 83.6],
 	},
 	{
 		key: 'rctb-1',
@@ -295,8 +296,8 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultScale: [1.0, 1.0],
 		defaultPosition: { u: 0.45, v: 0.50 },
 		defaultRotationRad: 0,
-		stlUrl: '/base/elements/RCTB 3 R.stl',
-		stlSizeMm: [86.6, 82.4],
+		stlUrl: '/base/elements/RCTB 1.stl',
+		stlSizeMm: [85.2, 66.6],
 	},
 	{
 		key: 'rctb-pronatie',
@@ -314,8 +315,8 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultScale: [1.0, 1.0],
 		defaultPosition: { u: 0.45, v: 0.50 },
 		defaultRotationRad: 0,
-		stlUrl: '/base/elements/RCTB 3 R.stl',
-		stlSizeMm: [86.6, 82.4],
+		stlUrl: '/base/elements/RCTB Pronatie.stl',
+		stlSizeMm: [86.6, 93.0],
 	},
 	{
 		key: 'spsa-vlak',
@@ -334,7 +335,7 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultPosition: { u: 0.28, v: 0.50 },
 		defaultRotationRad: 0,
 		stlUrl: '/base/elements/SPSA Vlak.stl',
-		stlSizeMm: [56.1, 112.8],
+		stlSizeMm: [56.6, 113.0],
 	},
 	{
 		key: 'ppsa',
@@ -352,8 +353,8 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultScale: [1.0, 1.0],
 		defaultPosition: { u: 0.28, v: 0.50 },
 		defaultRotationRad: 0,
-		stlUrl: '/base/elements/SPSA Vlak.stl',
-		stlSizeMm: [56.1, 112.8],
+		stlUrl: '/base/elements/PPSA.stl',
+		stlSizeMm: [49.5, 115.7],
 	},
 	{
 		key: 'sc-bol',
@@ -372,7 +373,8 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultPosition: { u: 0.08, v: 0.50 },
 		defaultRotationRad: 0,
 		stlUrl: '/base/elements/sc bol.stl',
-		stlSizeMm: [68.6, 59.4],
+		stlInteractiveUrl: '/base/elements/sc bol.stl',
+		stlSizeMm: [68.8, 58.7],
 	},
 	{
 		key: 'ppsi',
@@ -390,8 +392,8 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultScale: [1.0, 1.0],
 		defaultPosition: { u: 0.08, v: 0.50 },
 		defaultRotationRad: 0,
-		stlUrl: '/base/elements/sc bol.stl',
-		stlSizeMm: [68.6, 59.4],
+		stlUrl: '/base/elements/PPSI.stl',
+		stlSizeMm: [60.0, 62.4],
 	},
 	{
 		key: 'spsi',
@@ -409,8 +411,8 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultScale: [1.0, 1.0],
 		defaultPosition: { u: 0.08, v: 0.50 },
 		defaultRotationRad: 0,
-		stlUrl: '/base/elements/sc bol.stl',
-		stlSizeMm: [68.6, 59.4],
+		stlUrl: '/base/elements/SPSI.stl',
+		stlSizeMm: [63.8, 53.3],
 	},
 	{
 		key: 'hai-vlak-2',
@@ -429,7 +431,7 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultPosition: { u: 0.45, v: 0.50 },
 		defaultRotationRad: 0,
 		stlUrl: '/base/elements/HAI Vlak 2.stl',
-		stlSizeMm: [36.9, 123.2],
+		stlSizeMm: [36.1, 124.3],
 	},
 	{
 		key: 'sa-rechts-1-5',
@@ -448,7 +450,7 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultPosition: { u: 0.78, v: 0.50 },
 		defaultRotationRad: 0,
 		stlUrl: '/base/elements/sa recgt 1-5.stl',
-		stlSizeMm: [83.5, 92.2],
+		stlSizeMm: [84.2, 91.0],
 	},
 	{
 		key: 'sa-recht-1',
@@ -467,7 +469,7 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultPosition: { u: 0.82, v: 0.65 },
 		defaultRotationRad: 0,
 		stlUrl: '/base/elements/sa Recht 1.stl',
-		stlSizeMm: [28.7, 67.1],
+		stlSizeMm: [28.8, 67.4],
 	},
 	{
 		key: 'peloitte-2',
@@ -486,7 +488,7 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultPosition: { u: 0.50, v: 0.50 },
 		defaultRotationRad: 0,
 		stlUrl: '/base/elements/peloitte 2.stl',
-		stlSizeMm: [38.0, 41.7],
+		stlSizeMm: [35.1, 40.2],
 	},
 	// ── Diepelementen (inset / engraved) ─────────────────────────
 	{
@@ -506,7 +508,7 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultPosition: { u: 0.82, v: 0.65 },
 		defaultRotationRad: 0,
 		stlUrl: '/base/elements/diep-rond.stl',
-		stlSizeMm: [27.6, 27.4],
+		stlSizeMm: [24.5, 24.5],
 	},
 	{
 		key: 'diep-ovaal',
@@ -525,7 +527,7 @@ const ELEMENTS_CATALOG: ElementLibraryItem[] = [
 		defaultPosition: { u: 0.82, v: 0.65 },
 		defaultRotationRad: 0,
 		stlUrl: '/base/elements/diep - ovaal.stl',
-		stlSizeMm: [25.5, 52.1],
+		stlSizeMm: [20.3, 48.3],
 	},
 ];
 
@@ -534,13 +536,20 @@ export default ELEMENTS_CATALOG;
 function getElementLowpolyStlUrl(item: ElementLibraryItem): string | undefined {
 	if (!item.stlUrl) return undefined;
 	if (!item.stlUrl.startsWith(BASE_ELEMENT_STL_PREFIX)) return undefined;
-	return `${LOWPOLY_ELEMENT_STL_PREFIX}${item.stlUrl.slice(BASE_ELEMENT_STL_PREFIX.length)}`;
+	return withElementStlAssetVersion(
+		`${LOWPOLY_ELEMENT_STL_PREFIX}${item.stlUrl.slice(BASE_ELEMENT_STL_PREFIX.length)}`,
+	);
+}
+
+function withElementStlAssetVersion(url: string): string {
+	const separator = url.includes('?') ? '&' : '?';
+	return `${url}${separator}v=${ELEMENT_STL_ASSET_VERSION}`;
 }
 
 export function getElementPreferredStlUrl(item: ElementLibraryItem): string | undefined {
-	if (item.stlInteractiveUrl) return item.stlInteractiveUrl;
+	if (item.stlInteractiveUrl) return withElementStlAssetVersion(item.stlInteractiveUrl);
 	if (!item.stlUrl) return undefined;
-	return item.stlUrl;
+	return withElementStlAssetVersion(item.stlUrl);
 }
 
 export function getElementStlLoadUrls(item: ElementLibraryItem): string[] {
@@ -558,8 +567,13 @@ export function getElementStlLoadUrls(item: ElementLibraryItem): string[] {
  * viewer prefers the decimated low-poly mesh and falls back to the full-res STL.
  */
 export function getElementViewerStlUrls(item: ElementLibraryItem): string[] {
-	const lowpolyUrl = getElementLowpolyStlUrl(item);
 	const preferredUrl = getElementPreferredStlUrl(item);
+	const lowpolyUrl = getElementLowpolyStlUrl(item);
+	// Curved cups (SC Bol, etc.) need the smooth full-res mesh in the viewer;
+	// low-poly faceting reads as a jagged cut-out against the insole.
+	if (item.stlInteractiveUrl && preferredUrl) {
+		return [preferredUrl];
+	}
 	const urls: string[] = [];
 	if (lowpolyUrl) urls.push(lowpolyUrl);
 	if (preferredUrl && preferredUrl !== lowpolyUrl) urls.push(preferredUrl);

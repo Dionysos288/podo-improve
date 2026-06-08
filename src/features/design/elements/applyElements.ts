@@ -21,6 +21,16 @@ import {
 	ELEMENT_COLORS,
 } from './catalog';
 import { getDefaultPlacementForSide } from './placement';
+import {
+	getElementStlHeightField,
+	sampleElementHeightMm,
+	type ElementStlHeightField,
+} from './elementStlHeightField';
+import {
+	getInsoleSurfaceSampler,
+	type InsoleSurfaceSampler,
+} from './conformElementToInsole';
+import { buildConformedElementSheet } from './conformedElementSheet';
 import { normalizeElementFloorMode } from './normalizeFloorMode';
 import { sortPlacedElementsByStack } from './sortPlacedElements';
 import {
@@ -28,12 +38,28 @@ import {
 	tessellateAndWeldGeometry,
 } from '../viewer/smoothOverlayGeometry';
 
-const THICKNESS_ONLY_COLORS = new Set<ElementColorGroup>(['blue', 'orange']);
+// Every catalog element now ships a designed STL mesh, so all of them render
+// and export from their real geometry (draped onto the insole). The thickness-
+// only blob path is retained for any future element that has no STL, but no
+// color is classified as thickness-only by default.
+const THICKNESS_ONLY_COLORS = new Set<ElementColorGroup>([]);
+const OVERLAY_ONLY_LIBRARY_KEYS = new Set([
+	'rctb-1',
+	'rctb-2',
+	'rctb-3',
+	'rctb-pronatie',
+]);
 
 export function isThicknessOnlyElement(
 	item: { color?: ElementColorGroup } | null | undefined,
 ): boolean {
 	return Boolean(item?.color && THICKNESS_ONLY_COLORS.has(item.color));
+}
+
+function isOverlayOnlyElement(
+	item: { key?: string } | null | undefined,
+): boolean {
+	return Boolean(item?.key && OVERLAY_ONLY_LIBRARY_KEYS.has(item.key));
 }
 
 const stlMissWarnedKeys = new Set<string>();
@@ -215,86 +241,6 @@ function distToPolygonEdge(
  */
 type InsoleBoundarySampler = (uNorm: number) => { minV: number; maxV: number };
 
-/** Default insole-edge blend zone (mm). Height tapers to 0 within this margin. */
-const INSOLE_EDGE_BLEND_MM = 3.0;
-
-/** Larger edge blend for wide stabiliser pads that intentionally overshoot the insole. */
-const WIDE_PAD_EDGE_BLEND_MM = 8.0;
-
-function quinticEase(t: number): number {
-	const clamped = Math.max(0, Math.min(1, t));
-	const t3 = clamped * clamped * clamped;
-	return t3 * (clamped * (clamped * 6 - 15) + 10);
-}
-
-function getAdditiveInsoleEdgeBlendMm(libraryKey: string | undefined): number {
-	if (libraryKey === 'spsa-vlak' || libraryKey === 'ppsa') {
-		return WIDE_PAD_EDGE_BLEND_MM;
-	}
-	return INSOLE_EDGE_BLEND_MM;
-}
-
-/**
- * Clip a single vertex to the insole boundary.
- * - If outside: snaps V to nearest edge, returns heightMultiplier = 0.
- * - If within the blend zone: returns a smooth 0→1 multiplier (quintic ease).
- * - If fully inside: returns heightMultiplier = 1.
- *
- * Returns { clippedV, clippedWorldWidth, heightMultiplier }.
- */
-function clipVertexToInsole(
-	sampleU: number,
-	sampleV: number,
-	worldWidth: number,
-	sampler: InsoleBoundarySampler,
-	widthMin: number,
-	widthSpan: number,
-	mmToWorld: number,
-	blendMm: number = INSOLE_EDGE_BLEND_MM,
-	softOutside = false,
-): { clippedV: number; clippedWorldWidth: number; heightMultiplier: number } {
-	const uClamped = Math.max(0, Math.min(1, sampleU));
-	const { minV, maxV } = sampler(uClamped);
-
-	const distToMinMm =
-		((sampleV - minV) * widthSpan) / Math.max(mmToWorld, 1e-6);
-	const distToMaxMm =
-		((maxV - sampleV) * widthSpan) / Math.max(mmToWorld, 1e-6);
-	const distToEdgeMm = Math.min(distToMinMm, distToMaxMm);
-
-	if (distToEdgeMm < 0) {
-		const clippedV = Math.max(minV, Math.min(maxV, sampleV));
-		if (!softOutside) {
-			return {
-				clippedV,
-				clippedWorldWidth: widthMin + clippedV * widthSpan,
-				heightMultiplier: 0,
-			};
-		}
-		const overshootMm = -distToEdgeMm;
-		const fadeSpan = blendMm * 2;
-		const heightMultiplier =
-			overshootMm >= fadeSpan ? 0 : quinticEase(1 - overshootMm / fadeSpan);
-		return {
-			clippedV,
-			clippedWorldWidth: widthMin + clippedV * widthSpan,
-			heightMultiplier,
-		};
-	}
-	if (distToEdgeMm < blendMm) {
-		return {
-			clippedV: sampleV,
-			clippedWorldWidth: worldWidth,
-			heightMultiplier: quinticEase(distToEdgeMm / blendMm),
-		};
-	}
-	return {
-		clippedV: sampleV,
-		clippedWorldWidth: worldWidth,
-		heightMultiplier: 1,
-	};
-}
-
 function computeOutlineProfileWeight(
 	u: number,
 	v: number,
@@ -393,6 +339,11 @@ type ResolvedElementLayout = {
 	rotationRad: number;
 	targetWidthMm?: number;
 	targetLengthMm?: number;
+	/**
+	 * For full-width STL bars, remap each vertex's source width coordinate to the
+	 * insole rim at that vertex's U slice instead of overshooting and clamping.
+	 */
+	conformWidthToInsole?: boolean;
 	/** Mirror the STL across the width axis (flip flat edge to opposite side) */
 	mirrorWidth?: boolean;
 };
@@ -408,6 +359,10 @@ type PlacementContext = {
 	widthSpan: number;
 	heelAtMin: boolean;
 	mmToWorld: number;
+	/** Insole width band [minV,maxV] at a normalised U (heel=0 → toe=1). */
+	sampleInsoleExtent: (uNorm: number) => { minV: number; maxV: number };
+	/** Insole length band [minU,maxU] at a normalised V. */
+	sampleInsoleUExtent: (vNorm: number) => { minU: number; maxU: number };
 };
 
 function getEffectiveMirrorWidth(
@@ -782,217 +737,6 @@ function getCachedInsoleOverlayAnalysis(insoleGeometry: THREE.BufferGeometry) {
 	return next;
 }
 
-type CachedStlDistanceField = {
-	sourceWidthMm: number;
-	sourceLengthMm: number;
-	sourceHeightMm: number;
-	stlCenterX: number;
-	stlCenterY: number;
-	stlBaseZ: number;
-	stlMinX: number;
-	stlMinY: number;
-	cellW: number;
-	cellL: number;
-	cellSizeMm: number;
-	distGrid: Float32Array;
-	gridSize: number;
-};
-
-const stlDistanceFieldCache = new WeakMap<
-	THREE.BufferGeometry,
-	Map<string, CachedStlDistanceField>
->();
-const preparedOverlayStlGeometryCache = new WeakMap<
-	THREE.BufferGeometry,
-	Map<string, THREE.BufferGeometry>
->();
-
-function getPreparedOverlayStlGeometry(
-	sourceGeometry: THREE.BufferGeometry,
-	swapYZ: boolean,
-): THREE.BufferGeometry {
-	let perGeometryCache = preparedOverlayStlGeometryCache.get(sourceGeometry);
-	if (!perGeometryCache) {
-		perGeometryCache = new Map<string, THREE.BufferGeometry>();
-		preparedOverlayStlGeometryCache.set(sourceGeometry, perGeometryCache);
-	}
-	const cacheKey = swapYZ ? 'swap-yz' : 'native';
-	const cached = perGeometryCache.get(cacheKey);
-	if (cached) return cached;
-
-	let prepared: THREE.BufferGeometry;
-	try {
-		prepared = mergeVertices(sourceGeometry.clone(), 0.01);
-	} catch {
-		prepared = sourceGeometry.clone();
-	}
-
-	if (swapYZ) {
-		const position = prepared.getAttribute('position') as THREE.BufferAttribute;
-		for (let index = 0; index < position.count; index++) {
-			const y = position.getY(index);
-			const z = position.getZ(index);
-			position.setY(index, z);
-			position.setZ(index, y);
-		}
-		position.needsUpdate = true;
-	}
-
-	prepared = tessellateAndWeldGeometry(prepared, 1);
-	prepared.computeBoundingBox();
-	prepared.computeBoundingSphere();
-	perGeometryCache.set(cacheKey, prepared);
-	return prepared;
-}
-
-function getCachedStlDistanceField(
-	sourceGeometry: THREE.BufferGeometry,
-	swapYZ: boolean,
-): CachedStlDistanceField {
-	let perGeometryCache = stlDistanceFieldCache.get(sourceGeometry);
-	if (!perGeometryCache) {
-		perGeometryCache = new Map<string, CachedStlDistanceField>();
-		stlDistanceFieldCache.set(sourceGeometry, perGeometryCache);
-	}
-	const cacheKey = swapYZ ? 'swap-yz' : 'native';
-	const cached = perGeometryCache.get(cacheKey);
-	if (cached) return cached;
-
-	const pos = sourceGeometry.getAttribute('position') as THREE.BufferAttribute;
-	const vtxCount = pos.count;
-	let minX = Infinity,
-		maxX = -Infinity;
-	let minY = Infinity,
-		maxY = -Infinity;
-	let minZ = Infinity,
-		maxZ = -Infinity;
-	for (let i = 0; i < vtxCount; i++) {
-		const x = pos.getX(i);
-		const y = swapYZ ? pos.getZ(i) : pos.getY(i);
-		const z = swapYZ ? pos.getY(i) : pos.getZ(i);
-		if (x < minX) minX = x;
-		if (x > maxX) maxX = x;
-		if (y < minY) minY = y;
-		if (y > maxY) maxY = y;
-		if (z < minZ) minZ = z;
-		if (z > maxZ) maxZ = z;
-	}
-
-	const sourceWidthMm = Math.max(1e-6, maxX - minX);
-	const sourceLengthMm = Math.max(1e-6, maxY - minY);
-	const sourceHeightMm = Math.max(1e-6, maxZ - minZ);
-	const stlCenterX = (minX + maxX) / 2;
-	const stlCenterY = (minY + maxY) / 2;
-	const stlBaseZ = minZ;
-	const gridSize = 64;
-	const cellW = sourceWidthMm / gridSize;
-	const cellL = sourceLengthMm / gridSize;
-	const occupied = new Uint8Array(gridSize * gridSize);
-	const distGrid = new Float32Array(gridSize * gridSize);
-	distGrid.fill(1e6);
-	const baseThresh = stlBaseZ + sourceHeightMm * 0.08;
-
-	for (let i = 0; i < vtxCount; i++) {
-		const px = pos.getX(i);
-		const py = swapYZ ? pos.getZ(i) : pos.getY(i);
-		const pz = swapYZ ? pos.getY(i) : pos.getZ(i);
-		if (pz <= baseThresh) continue;
-		const gx = Math.min(
-			gridSize - 1,
-			Math.max(0, Math.floor((px - minX) / cellW)),
-		);
-		const gy = Math.min(
-			gridSize - 1,
-			Math.max(0, Math.floor((py - minY) / cellL)),
-		);
-		occupied[gy * gridSize + gx] = 1;
-	}
-
-	const queue: number[] = [];
-	for (let gy = 0; gy < gridSize; gy++) {
-		for (let gx = 0; gx < gridSize; gx++) {
-			const gi = gy * gridSize + gx;
-			if (!occupied[gi]) {
-				distGrid[gi] = 0;
-				continue;
-			}
-			let isBoundary =
-				gx === 0 || gx === gridSize - 1 || gy === 0 || gy === gridSize - 1;
-			if (!isBoundary) {
-				for (const [dx, dy] of [
-					[-1, 0],
-					[1, 0],
-					[0, -1],
-					[0, 1],
-				] as const) {
-					const nx = gx + dx;
-					const ny = gy + dy;
-					if (
-						nx >= 0 &&
-						nx < gridSize &&
-						ny >= 0 &&
-						ny < gridSize &&
-						!occupied[ny * gridSize + nx]
-					) {
-						isBoundary = true;
-						break;
-					}
-				}
-			}
-			if (isBoundary) {
-				distGrid[gi] = 0;
-				queue.push(gx, gy);
-			}
-		}
-	}
-
-	let qi = 0;
-	while (qi < queue.length) {
-		const cx = queue[qi++];
-		const cy = queue[qi++];
-		const cd = distGrid[cy * gridSize + cx];
-		for (const [dx, dy] of [
-			[-1, 0],
-			[1, 0],
-			[0, -1],
-			[0, 1],
-			[-1, -1],
-			[-1, 1],
-			[1, -1],
-			[1, 1],
-		] as const) {
-			const nx = cx + dx;
-			const ny = cy + dy;
-			if (nx < 0 || nx >= gridSize || ny < 0 || ny >= gridSize) continue;
-			const ni = ny * gridSize + nx;
-			if (!occupied[ni]) continue;
-			const nd = cd + (dx !== 0 && dy !== 0 ? 1.414 : 1.0);
-			if (nd < distGrid[ni]) {
-				distGrid[ni] = nd;
-				queue.push(nx, ny);
-			}
-		}
-	}
-
-	const next: CachedStlDistanceField = {
-		sourceWidthMm,
-		sourceLengthMm,
-		sourceHeightMm,
-		stlCenterX,
-		stlCenterY,
-		stlBaseZ,
-		stlMinX: minX,
-		stlMinY: minY,
-		cellW,
-		cellL,
-		cellSizeMm: Math.max(cellW, cellL),
-		distGrid,
-		gridSize,
-	};
-	perGeometryCache.set(cacheKey, next);
-	return next;
-}
-
 function clamp01(value: number) {
 	return Math.max(0, Math.min(1, value));
 }
@@ -1126,968 +870,209 @@ function trimAdditiveOverlayGeometry({
 	return trimmedGeometry;
 }
 
-function resolveAdaptiveSd25Layout(
-	item: ReturnType<typeof getElementByKey>,
-	el: PlacedElement,
-	context: PlacementContext,
-): ResolvedElementLayout {
-	const {
-		positions,
-		vertexCount,
-		lengthAxis,
-		widthAxis,
-		lengthMin,
-		widthMin,
-		lengthSpan,
-		widthSpan,
-		heelAtMin,
-		mmToWorld,
-	} = context;
+// ── Declarative element placement ───────────────────────────────────────────
+//
+// Each element is positioned by a small spec rather than a bespoke procedural
+// layout. The real STL mesh footprint is honoured; we only decide where to
+// anchor it on the insole, how wide it should be, and its base orientation.
+//   - span  : stretch the mesh width to the insole width at that U band.
+//   - toe   : derive a narrow band from the forefoot width (single-toe pads).
+//   - native: keep the mesh's authored footprint (stlSizeMm); place at default.
 
-	const defaults = getDefaultPlacementForSide(item, el.side);
-	const deltaU = el.positionU - defaults.positionU;
-	const deltaV = el.positionV - defaults.positionV;
-	const deltaRotation = el.rotationRad - defaults.rotationRad;
+type ElementWidthMode = 'span' | 'toe' | 'native';
+type ElementEdgeSnap = 'none' | 'medial';
 
-	const BINS = 36;
-	const bins = Array.from({ length: BINS }, (_, index) => ({
-		u: (index + 0.5) / BINS,
-		minV: Infinity,
-		maxV: -Infinity,
-		count: 0,
-	}));
-
-	for (let i = 0; i < vertexCount; i++) {
-		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const widthVal = getAxisValue(positions, i, widthAxis);
-		const rawU = (lengthVal - lengthMin) / Math.max(lengthSpan, 1e-6);
-		const u = heelAtMin ? rawU : 1 - rawU;
-		if (u < 0.58 || u > 0.94) continue;
-		const v = (widthVal - widthMin) / Math.max(widthSpan, 1e-6);
-		const binIndex = Math.max(0, Math.min(BINS - 1, Math.floor(u * BINS)));
-		const bin = bins[binIndex];
-		if (v < bin.minV) bin.minV = v;
-		if (v > bin.maxV) bin.maxV = v;
-		bin.count++;
-	}
-
-	let bestBin: (typeof bins)[number] | null = null;
-	let bestScore = -Infinity;
-	for (const bin of bins) {
-		if (
-			bin.count < 8 ||
-			!Number.isFinite(bin.minV) ||
-			!Number.isFinite(bin.maxV)
-		)
-			continue;
-		const widthNorm = bin.maxV - bin.minV;
-		if (widthNorm < 0.12) continue;
-		const forefootBias = Math.max(0, 1 - Math.abs(bin.u - 0.79) / 0.12);
-		const score = widthNorm * (0.55 + forefootBias);
-		if (score > bestScore) {
-			bestScore = score;
-			bestBin = bin;
-		}
-	}
-
-	if (!bestBin) {
-		return {
-			positionU: clamp01(el.positionU),
-			positionV: clamp01(el.positionV),
-			rotationRad: el.rotationRad,
-		};
-	}
-
-	const localWidthNorm = Math.max(0.14, bestBin.maxV - bestBin.minV);
-	// Place element centre at ~58% from minV for right (lateral), 42% for left
-	const lateralCenterFactor = el.side === 'right' ? 0.58 : 0.42;
-	const adaptiveU = clamp01(Math.max(0.72, Math.min(0.86, bestBin.u + 0.015)));
-	const adaptiveV = clamp01(
-		bestBin.minV + localWidthNorm * lateralCenterFactor,
-	);
-	const localWidthMm = (localWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
-	const baseWidthMm = Math.max(24, localWidthMm * 0.62);
-	const aspect =
-		(item?.stlSizeMm?.[1] ?? 52) / Math.max(1e-6, item?.stlSizeMm?.[0] ?? 65.8);
-	const baseLengthMm = Math.max(16, baseWidthMm * aspect * 1.0);
-	const adaptiveRotation = el.side === 'right' ? -0.16 : 0.16;
-
-	return {
-		positionU: clamp01(adaptiveU + deltaU),
-		positionV: clamp01(adaptiveV + deltaV),
-		rotationRad: adaptiveRotation + deltaRotation,
-		targetWidthMm: baseWidthMm,
-		targetLengthMm: baseLengthMm,
-	};
-}
-
-function resolveAdaptiveSd15Layout(
-	item: ReturnType<typeof getElementByKey>,
-	el: PlacedElement,
-	context: PlacementContext,
-): ResolvedElementLayout {
-	const {
-		positions,
-		vertexCount,
-		lengthAxis,
-		widthAxis,
-		lengthMin,
-		widthMin,
-		lengthSpan,
-		widthSpan,
-		heelAtMin,
-		mmToWorld,
-	} = context;
-
-	const defaults = getDefaultPlacementForSide(item, el.side);
-	const deltaU = el.positionU - defaults.positionU;
-	const deltaV = el.positionV - defaults.positionV;
-	const deltaRotation = el.rotationRad - defaults.rotationRad;
-
-	// Profile the forefoot region to find the best U cross-section
-	// and measure the FULL insole width at each slice
-	const BINS = 36;
-	const bins = Array.from({ length: BINS }, (_, index) => ({
-		u: (index + 0.5) / BINS,
-		minV: Infinity,
-		maxV: -Infinity,
-		count: 0,
-	}));
-
-	for (let i = 0; i < vertexCount; i++) {
-		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const widthVal = getAxisValue(positions, i, widthAxis);
-		const rawU = (lengthVal - lengthMin) / Math.max(lengthSpan, 1e-6);
-		const u = heelAtMin ? rawU : 1 - rawU;
-		if (u < 0.58 || u > 0.94) continue;
-		const v = (widthVal - widthMin) / Math.max(widthSpan, 1e-6);
-		const binIndex = Math.max(0, Math.min(BINS - 1, Math.floor(u * BINS)));
-		const bin = bins[binIndex];
-		if (v < bin.minV) bin.minV = v;
-		if (v > bin.maxV) bin.maxV = v;
-		bin.count++;
-	}
-
-	// Pick the widest forefoot cross-section around U≈0.78
-	let bestBin: (typeof bins)[number] | null = null;
-	let bestScore = -Infinity;
-	for (const bin of bins) {
-		if (
-			bin.count < 8 ||
-			!Number.isFinite(bin.minV) ||
-			!Number.isFinite(bin.maxV)
-		)
-			continue;
-		const widthNorm = bin.maxV - bin.minV;
-		if (widthNorm < 0.12) continue;
-		const forefootBias = Math.max(0, 1 - Math.abs(bin.u - 0.78) / 0.14);
-		const score = widthNorm * (0.55 + forefootBias);
-		if (score > bestScore) {
-			bestScore = score;
-			bestBin = bin;
-		}
-	}
-
-	if (!bestBin) {
-		return {
-			positionU: clamp01(el.positionU),
-			positionV: clamp01(el.positionV),
-			rotationRad: el.rotationRad,
-		};
-	}
-
-	// Full insole width at this cross-section (edge to edge)
-	const insoleMinV = bestBin.minV;
-	const insoleMaxV = bestBin.maxV;
-	const insoleWidthNorm = Math.max(0.2, insoleMaxV - insoleMinV);
-	const insoleWidthAtSliceMm =
-		(insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
-
-	// SD 1-5 spans the entire insole width — scale to 120% so it clearly
-	// overshoots the boundary, then the insole clipper trims excess cleanly.
-	const adaptiveU = clamp01(Math.max(0.72, Math.min(0.85, bestBin.u + 0.01)));
-	const adaptiveV = clamp01(insoleMinV + insoleWidthNorm * 0.5); // centred
-	const baseWidthMm = Math.max(50, insoleWidthAtSliceMm * 1.2);
-	const aspect =
-		(item?.stlSizeMm?.[1] ?? 54.5) /
-		Math.max(1e-6, item?.stlSizeMm?.[0] ?? 87.1);
-	// SA rechts 1-5 should only cover ~60% of the forefoot length
-	const lengthScale = item?.key === 'sa-rechts-1-5' ? 0.6 : 1.0;
-	const baseLengthMm = Math.max(28, baseWidthMm * aspect * lengthScale);
-
-	return {
-		positionU: clamp01(adaptiveU + deltaU),
-		positionV: clamp01(adaptiveV + deltaV),
-		rotationRad: 0 + deltaRotation,
-		targetWidthMm: baseWidthMm,
-		targetLengthMm: baseLengthMm,
-	};
-}
-
-function resolveAdaptiveSd1Layout(
-	item: ReturnType<typeof getElementByKey>,
-	el: PlacedElement,
-	context: PlacementContext,
-): ResolvedElementLayout {
-	const {
-		positions,
-		vertexCount,
-		lengthAxis,
-		widthAxis,
-		lengthMin,
-		widthMin,
-		lengthSpan,
-		widthSpan,
-		heelAtMin,
-		mmToWorld,
-	} = context;
-
-	const defaults = getDefaultPlacementForSide(item, el.side);
-	const deltaU = el.positionU - defaults.positionU;
-	const deltaV = el.positionV - defaults.positionV;
-	const deltaRotation = el.rotationRad - defaults.rotationRad;
-
-	// Profile the forefoot to find the met-1 (big toe) medial edge
-	const BINS = 36;
-	const bins = Array.from({ length: BINS }, (_, index) => ({
-		u: (index + 0.5) / BINS,
-		minV: Infinity,
-		maxV: -Infinity,
-		count: 0,
-	}));
-
-	for (let i = 0; i < vertexCount; i++) {
-		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const widthVal = getAxisValue(positions, i, widthAxis);
-		const rawU = (lengthVal - lengthMin) / Math.max(lengthSpan, 1e-6);
-		const u = heelAtMin ? rawU : 1 - rawU;
-		if (u < 0.58 || u > 0.94) continue;
-		const v = (widthVal - widthMin) / Math.max(widthSpan, 1e-6);
-		const binIndex = Math.max(0, Math.min(BINS - 1, Math.floor(u * BINS)));
-		const bin = bins[binIndex];
-		if (v < bin.minV) bin.minV = v;
-		if (v > bin.maxV) bin.maxV = v;
-		bin.count++;
-	}
-
-	// Pick the widest forefoot slice around U≈0.82
-	let bestBin: (typeof bins)[number] | null = null;
-	let bestScore = -Infinity;
-	for (const bin of bins) {
-		if (
-			bin.count < 8 ||
-			!Number.isFinite(bin.minV) ||
-			!Number.isFinite(bin.maxV)
-		)
-			continue;
-		const widthNorm = bin.maxV - bin.minV;
-		if (widthNorm < 0.12) continue;
-		const forefootBias = Math.max(0, 1 - Math.abs(bin.u - 0.82) / 0.12);
-		const score = widthNorm * (0.55 + forefootBias);
-		if (score > bestScore) {
-			bestScore = score;
-			bestBin = bin;
-		}
-	}
-
-	if (!bestBin) {
-		return {
-			positionU: clamp01(el.positionU),
-			positionV: clamp01(el.positionV),
-			rotationRad: el.rotationRad,
-		};
-	}
-
-	const localWidthNorm = Math.max(0.14, bestBin.maxV - bestBin.minV);
-	const localWidthMm = (localWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
-
-	// SD 1 snaps to the medial edge of the insole (big toe side).
-	// For right foot: medial = low V. For left foot: medial = high V.
-	// Place centre so the pad sits against the edge; the clipper trims overflow.
-	const medialEdge = el.side === 'right' ? bestBin.minV : bestBin.maxV;
-	// Diep-rond: position at second toe (~25% from edge), others: near edge (10%)
-	// Deep inset variants sit around the second toe (~25% from edge),
-	// while regular met-1 pads stay close to the silhouette.
-	const insetNorm =
-		item?.key === 'diep-rond' || item?.key === 'diep-ovaal' ? 0.25 : 0.1;
-	const adaptiveU = clamp01(Math.max(0.74, Math.min(0.9, bestBin.u + 0.01)));
-	const adaptiveV =
-		el.side === 'right'
-			? clamp01(medialEdge + localWidthNorm * insetNorm)
-			: clamp01(medialEdge - localWidthNorm * insetNorm);
-
-	// Size: keep the natural proportions, scale width to ~30% of local forefoot width
-	const baseWidthMm = Math.max(15, localWidthMm * 0.35);
-	const aspect =
-		(item?.stlSizeMm?.[1] ?? 20.3) /
-		Math.max(1e-6, item?.stlSizeMm?.[0] ?? 25.4);
-	// SA Recht 1 should only cover ~60% of the forefoot length
-	const sd1LengthScale = item?.key === 'sa-recht-1' ? 0.6 : 1.0;
-	const baseLengthMm = Math.max(12, baseWidthMm * aspect * sd1LengthScale);
-
-	return {
-		positionU: clamp01(adaptiveU + deltaU),
-		positionV: clamp01(adaptiveV + deltaV),
-		rotationRad: 0 + deltaRotation,
-		targetWidthMm: baseWidthMm,
-		targetLengthMm: baseLengthMm,
-	};
-}
-
-/**
- * Shared adaptive layout for all RCTB variants.
- * All use the same base STL but with different width/length coverage and V offset.
- *
- *  - widthFactor:  portion of insole width the element should span (1.2 = 120% = full + overshoot)
- *  - lengthFactor: multiplier applied to the natural aspect-ratio length
- *  - vCenterBias:  0.5 = centred, higher = more medial (toward arch side)
- */
-function resolveAdaptiveRctbLayout(
-	item: ReturnType<typeof getElementByKey>,
-	el: PlacedElement,
-	context: PlacementContext,
-	opts: { widthFactor: number; lengthFactor: number; vCenterBias: number },
-): ResolvedElementLayout {
-	const {
-		positions,
-		vertexCount,
-		lengthAxis,
-		widthAxis,
-		lengthMin,
-		widthMin,
-		lengthSpan,
-		widthSpan,
-		heelAtMin,
-		mmToWorld,
-	} = context;
-
-	const defaults = getDefaultPlacementForSide(item, el.side);
-	const deltaU = el.positionU - defaults.positionU;
-	const deltaV = el.positionV - defaults.positionV;
-	const deltaRotation = el.rotationRad - defaults.rotationRad;
-
-	// Profile the midfoot region (U ≈ 0.25 – 0.65) to find the widest slice
-	const BINS = 40;
-	const bins = Array.from({ length: BINS }, (_, index) => ({
-		u: (index + 0.5) / BINS,
-		minV: Infinity,
-		maxV: -Infinity,
-		count: 0,
-	}));
-
-	for (let i = 0; i < vertexCount; i++) {
-		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const widthVal = getAxisValue(positions, i, widthAxis);
-		const rawU = (lengthVal - lengthMin) / Math.max(lengthSpan, 1e-6);
-		const u = heelAtMin ? rawU : 1 - rawU;
-		if (u < 0.25 || u > 0.65) continue;
-		const v = (widthVal - widthMin) / Math.max(widthSpan, 1e-6);
-		const binIndex = Math.max(0, Math.min(BINS - 1, Math.floor(u * BINS)));
-		const bin = bins[binIndex];
-		if (v < bin.minV) bin.minV = v;
-		if (v > bin.maxV) bin.maxV = v;
-		bin.count++;
-	}
-
-	// Pick the widest midfoot cross-section around U≈0.45
-	let bestBin: (typeof bins)[number] | null = null;
-	let bestScore = -Infinity;
-	for (const bin of bins) {
-		if (
-			bin.count < 8 ||
-			!Number.isFinite(bin.minV) ||
-			!Number.isFinite(bin.maxV)
-		)
-			continue;
-		const widthNorm = bin.maxV - bin.minV;
-		if (widthNorm < 0.1) continue;
-		const midfootBias = Math.max(0, 1 - Math.abs(bin.u - 0.45) / 0.18);
-		const score = widthNorm * (0.5 + midfootBias);
-		if (score > bestScore) {
-			bestScore = score;
-			bestBin = bin;
-		}
-	}
-
-	if (!bestBin) {
-		return {
-			positionU: clamp01(el.positionU),
-			positionV: clamp01(el.positionV),
-			rotationRad: el.rotationRad,
-		};
-	}
-
-	// Full insole width at this cross-section
-	const insoleMinV = bestBin.minV;
-	const insoleMaxV = bestBin.maxV;
-	const insoleWidthNorm = Math.max(0.2, insoleMaxV - insoleMinV);
-	const insoleWidthAtSliceMm =
-		(insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
-
-	const adaptiveU = clamp01(Math.max(0.35, Math.min(0.55, bestBin.u)));
-	// vCenterBias shifts the element medially (>0.5) or laterally (<0.5)
-	const adaptiveV = clamp01(insoleMinV + insoleWidthNorm * opts.vCenterBias);
-	const baseWidthMm = Math.max(40, insoleWidthAtSliceMm * opts.widthFactor);
-	const aspect =
-		(item?.stlSizeMm?.[1] ?? 82.4) /
-		Math.max(1e-6, item?.stlSizeMm?.[0] ?? 86.6);
-	const baseLengthMm = Math.max(25, baseWidthMm * aspect * opts.lengthFactor);
-
-	return {
-		positionU: clamp01(adaptiveU + deltaU),
-		positionV: clamp01(adaptiveV + deltaV),
-		rotationRad: 0 + deltaRotation,
-		targetWidthMm: baseWidthMm,
-		targetLengthMm: baseLengthMm,
-	};
-}
-
-// All RCTB variants share the same footprint — differences come from vertex
-// deformation, not from scaling.  Width overshoots 120% for clean insole clipping.
-const RCTB_PARAMS: Record<
-	string,
-	{ widthFactor: number; lengthFactor: number; vCenterBias: number }
-> = {
-	'rctb-3': { widthFactor: 1.2, lengthFactor: 0.7, vCenterBias: 0.5 },
-	'rctb-2': { widthFactor: 1.2, lengthFactor: 0.7, vCenterBias: 0.5 },
-	'rctb-1': { widthFactor: 1.2, lengthFactor: 0.7, vCenterBias: 0.5 },
-	'rctb-pronatie': { widthFactor: 1.2, lengthFactor: 0.7, vCenterBias: 0.5 },
-	'peloitte-2': { widthFactor: 0.55, lengthFactor: 0.9, vCenterBias: 0.5 },
+type ElementPlacementSpec = {
+	/** Base orientation in degrees (0 or 180); side-adjusted like defaults. */
+	baseRotationDeg: number;
+	widthMode: ElementWidthMode;
+	edgeSnap: ElementEdgeSnap;
+	/**
+	 * Initial U anchor (heel=0 → toe=1). When set, the element is placed/profiled
+	 * here (+ user drag). When omitted, the element keeps its authored default U.
+	 */
+	anchorU?: number;
+	/** Multiplier applied to the profiled insole width (span mode). */
+	widthFactor?: number;
+	/** Fraction of insole width excluded from the medial side (span mode). */
+	medialInsetFrac?: number;
+	/** Fraction of forefoot width used as the pad width (toe mode). */
+	toeWidthFrac?: number;
+	/**
+	 * Toe mode + medial snap: centre as fraction of forefoot width inward from medial rim.
+	 */
+	toeMedialCenterFrac?: number;
+	/** Legacy inset; use toeMedialCenterFrac for medial snap. */
+	toeInsetFrac?: number;
+	/** Multiplier applied to the native mesh length. */
+	lengthScale?: number;
+	/**
+	 * Span-band centre along V after medial inset: 0 = medial edge, 1 = lateral.
+	 * Applied in a side-aware way (always toward the 5th-toe side).
+	 */
+	spanLateralCenterBias?: number;
+	/**
+	 * Extra rotation (rad) on top of baseRotationDeg; right foot uses −offset,
+	 * left foot uses +offset.
+	 */
+	rotationOffsetRad?: number;
+	/** Rotate toe pads to follow the insole rim tangent (medial wall). */
+	alignRotationToRim?: boolean;
+	/** Added to rim tangent (rad); default π/2 so the pad sits on the wall. */
+	rimRotationOffsetRad?: number;
+	/** Remap source mesh width to the insole rim at each vertex's U slice. */
+	conformWidthToInsole?: boolean;
+	/** Mirror the mesh across the width axis (flat edge to opposite side). */
+	mirrorWidth?: boolean;
 };
 
-// ── RCTB per-variant vertex deformation ─────────────────────────────────────
-//
-// All variants start from the RCTB 3 mesh and apply localised height
-// modifications.  The deformation functions receive normalised coordinates:
-//   nu: 0→1 across element width  (right foot: 0=lateral, 1=medial)
-//   nv: 0→1 along element length  (0=heel-side edge, 1=toe-side edge)
-// They return ADDITIONAL height in mm at that point.
-
-/** Smooth radial bump centred at (cx,cy) with standard deviation sigma */
-function gaussianBump(
-	x: number,
-	y: number,
-	cx: number,
-	cy: number,
-	sigma: number,
-): number {
-	const dx = x - cx,
-		dy = y - cy;
-	return Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma));
-}
-
-type RctbDeformFn = (nu: number, nv: number, side: 'left' | 'right') => number;
-
-const RCTB_DEFORM: Record<string, RctbDeformFn> = {
-	// RCTB 3 — baseline, no deformation
-	'rctb-3': () => 0,
-
-	// RCTB 2 — moderate enhancement: raised central arch + top-right boost
-	'rctb-2': (nu, nv) => {
-		const archRaise = gaussianBump(nu, nv, 0.5, 0.5, 0.3) * 0.8;
-		const upperBoost = gaussianBump(nu, nv, 0.65, 0.62, 0.22) * 0.5;
-		return archRaise + upperBoost;
+const ELEMENT_PLACEMENT: Record<string, ElementPlacementSpec> = {
+	// Forefoot skin pads spanning the full metatarsal width, heel/toe-flipped.
+	'sd-1-5': {
+		baseRotationDeg: 180,
+		widthMode: 'span',
+		edgeSnap: 'none',
+		anchorU: 0.78,
+		widthFactor: 1.2,
 	},
-
-	// RCTB 1 — strong enhancement: higher arch, spread, lateral→medial slope
-	'rctb-1': (nu, nv) => {
-		const archRaise = gaussianBump(nu, nv, 0.5, 0.48, 0.32) * 1.5;
-		const upperRight = gaussianBump(nu, nv, 0.72, 0.55, 0.25) * 1.0;
-		const slope = nu * 0.5; // gradual lateral → medial slope
-		return archRaise + upperRight + slope;
+	'sa-rechts-1-5': {
+		baseRotationDeg: 180,
+		widthMode: 'span',
+		edgeSnap: 'none',
+		anchorU: 0.78,
+		widthFactor: 1.2,
 	},
-
-	// RCTB Pronatie — strong asymmetric medial raise for pronation correction
-	'rctb-pronatie': (nu, nv, side) => {
-		// Medial side: higher nu for right foot, lower nu for left
-		const medialNu = side === 'right' ? nu : 1 - nu;
-		const medialRaise = medialNu * medialNu * 2.2;
-		const centerBoost = gaussianBump(nu, nv, 0.5, 0.5, 0.32) * 0.5;
-		return medialRaise + centerBoost;
+	// Met 2-5: metatarsals 2–5, centred in the band (not on the outer rim), ~30° diagonal.
+	'sd-2-5': {
+		baseRotationDeg: 180,
+		widthMode: 'span',
+		edgeSnap: 'none',
+		anchorU: 0.8,
+		medialInsetFrac: 0.22,
+		// Lower = toward medial / screen-right on a top view (away from the outer edge).
+		spanLateralCenterBias: 0.38,
+		// Right foot gets −60° on top of 180° (30° on the opposite side from before).
+		rotationOffsetRad: Math.PI / 3 + (3 * Math.PI) / 2,
 	},
-};
-
-// ── SPSA Vlak adaptive layout ───────────────────────────────────────────────
-//
-// The SPSA Vlak is a large heel-through-arch stabiliser covering the medial
-// half of the insole from the very heel up through the arch (~55 % of length).
-// Right foot: medial = low V (minV).  Left foot: medial = high V (maxV).
-// The element overshoots to the medial edge and relies on insole boundary
-// clipping to trim it flush.
-
-function resolveAdaptiveSpsaVlakLayout(
-	item: ReturnType<typeof getElementByKey>,
-	el: PlacedElement,
-	context: PlacementContext,
-): ResolvedElementLayout {
-	const {
-		positions,
-		vertexCount,
-		lengthAxis,
-		widthAxis,
-		lengthMin,
-		widthMin,
-		lengthSpan,
-		widthSpan,
-		heelAtMin,
-		mmToWorld,
-	} = context;
-
-	const defaults = getDefaultPlacementForSide(item, el.side);
-	const deltaU = el.positionU - defaults.positionU;
-	const deltaV = el.positionV - defaults.positionV;
-	const deltaRotation = el.rotationRad - defaults.rotationRad;
-
-	// Profile the heel-to-arch region (U ≈ 0.02 – 0.65)
-	const BINS = 40;
-	const bins = Array.from({ length: BINS }, (_, index) => ({
-		u: (index + 0.5) / BINS,
-		minV: Infinity,
-		maxV: -Infinity,
-		count: 0,
-	}));
-
-	for (let i = 0; i < vertexCount; i++) {
-		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const widthVal = getAxisValue(positions, i, widthAxis);
-		const rawU = (lengthVal - lengthMin) / Math.max(lengthSpan, 1e-6);
-		const u = heelAtMin ? rawU : 1 - rawU;
-		if (u < 0.02 || u > 0.65) continue;
-		const v = (widthVal - widthMin) / Math.max(widthSpan, 1e-6);
-		const binIndex = Math.max(0, Math.min(BINS - 1, Math.floor(u * BINS)));
-		const bin = bins[binIndex];
-		if (v < bin.minV) bin.minV = v;
-		if (v > bin.maxV) bin.maxV = v;
-		bin.count++;
-	}
-
-	// Find the widest heel-arch cross-section around U≈0.28
-	let bestBin: (typeof bins)[number] | null = null;
-	let bestScore = -Infinity;
-	for (const bin of bins) {
-		if (
-			bin.count < 8 ||
-			!Number.isFinite(bin.minV) ||
-			!Number.isFinite(bin.maxV)
-		)
-			continue;
-		const widthNorm = bin.maxV - bin.minV;
-		if (widthNorm < 0.1) continue;
-		const heelArchBias = Math.max(0, 1 - Math.abs(bin.u - 0.28) / 0.25);
-		const score = widthNorm * (0.5 + heelArchBias);
-		if (score > bestScore) {
-			bestScore = score;
-			bestBin = bin;
-		}
-	}
-
-	if (!bestBin) {
-		return {
-			positionU: clamp01(el.positionU),
-			positionV: clamp01(el.positionV),
-			rotationRad: el.rotationRad,
-		};
-	}
-
-	const insoleMinV = bestBin.minV;
-	const insoleMaxV = bestBin.maxV;
-	const insoleWidthNorm = Math.max(0.2, insoleMaxV - insoleMinV);
-	const insoleWidthAtSliceMm =
-		(insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
-	const insoleLengthMm = lengthSpan / Math.max(mmToWorld, 1e-6);
-
-	// Centre at U ≈ 0.26 (biased toward heel so the mesh overshoots the heel tip
-	// and the contour clipper can trim it flush)
-	const adaptiveU = clamp01(Math.max(0.2, Math.min(0.32, bestBin.u)));
-
-	// Position on the lateral half – centre close to the lateral edge (5th toe
-	// side) so the element is flush against it.  Boundary clipping trims overshoot.
-	// Right foot: lateral = high V (maxV).  Left foot: lateral = low V (minV).
-	const lateralEdge = el.side === 'right' ? insoleMaxV : insoleMinV;
-	const insetFraction = 0.22;
-	const adaptiveV =
-		el.side === 'right'
-			? clamp01(lateralEdge - insoleWidthNorm * insetFraction)
-			: clamp01(lateralEdge + insoleWidthNorm * insetFraction);
-
-	// Width: 120% overshoot of insole width for clean edge clipping
-	const baseWidthMm = Math.max(40, insoleWidthAtSliceMm * 1.2);
-	// Length: ~80% of total insole length — generous overshoot past the heel tip
-	// so the contour clipper has material to trim flush with no gaps
-	const baseLengthMm = Math.max(80, insoleLengthMm * 0.8);
-
-	return {
-		positionU: clamp01(adaptiveU + deltaU),
-		positionV: clamp01(adaptiveV + deltaV),
-		rotationRad: 0 + deltaRotation,
-		targetWidthMm: baseWidthMm,
-		targetLengthMm: baseLengthMm,
-	};
-}
-
-// ── PPSA adaptive layout ────────────────────────────────────────────────────
-//
-// The PPSA is the mirror of SPSA Vlak — same heel-through-arch stabiliser but
-// placed on the medial (1st toe / arch) side instead of the lateral side.
-// Right foot: medial = low V (minV).  Left foot: medial = high V (maxV).
-
-function resolveAdaptivePpsaLayout(
-	item: ReturnType<typeof getElementByKey>,
-	el: PlacedElement,
-	context: PlacementContext,
-): ResolvedElementLayout {
-	const {
-		positions,
-		vertexCount,
-		lengthAxis,
-		widthAxis,
-		lengthMin,
-		widthMin,
-		lengthSpan,
-		widthSpan,
-		heelAtMin,
-		mmToWorld,
-	} = context;
-
-	const defaults = getDefaultPlacementForSide(item, el.side);
-	const deltaU = el.positionU - defaults.positionU;
-	const deltaV = el.positionV - defaults.positionV;
-	const deltaRotation = el.rotationRad - defaults.rotationRad;
-
-	// Profile the heel-to-arch region (U ≈ 0.02 – 0.65)
-	const BINS = 40;
-	const bins = Array.from({ length: BINS }, (_, index) => ({
-		u: (index + 0.5) / BINS,
-		minV: Infinity,
-		maxV: -Infinity,
-		count: 0,
-	}));
-
-	for (let i = 0; i < vertexCount; i++) {
-		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const widthVal = getAxisValue(positions, i, widthAxis);
-		const rawU = (lengthVal - lengthMin) / Math.max(lengthSpan, 1e-6);
-		const u = heelAtMin ? rawU : 1 - rawU;
-		if (u < 0.02 || u > 0.65) continue;
-		const v = (widthVal - widthMin) / Math.max(widthSpan, 1e-6);
-		const binIndex = Math.max(0, Math.min(BINS - 1, Math.floor(u * BINS)));
-		const bin = bins[binIndex];
-		if (v < bin.minV) bin.minV = v;
-		if (v > bin.maxV) bin.maxV = v;
-		bin.count++;
-	}
-
-	let bestBin: (typeof bins)[number] | null = null;
-	let bestScore = -Infinity;
-	for (const bin of bins) {
-		if (
-			bin.count < 8 ||
-			!Number.isFinite(bin.minV) ||
-			!Number.isFinite(bin.maxV)
-		)
-			continue;
-		const widthNorm = bin.maxV - bin.minV;
-		if (widthNorm < 0.1) continue;
-		const heelArchBias = Math.max(0, 1 - Math.abs(bin.u - 0.28) / 0.25);
-		const score = widthNorm * (0.5 + heelArchBias);
-		if (score > bestScore) {
-			bestScore = score;
-			bestBin = bin;
-		}
-	}
-
-	if (!bestBin) {
-		return {
-			positionU: clamp01(el.positionU),
-			positionV: clamp01(el.positionV),
-			rotationRad: el.rotationRad,
-		};
-	}
-
-	const insoleMinV = bestBin.minV;
-	const insoleMaxV = bestBin.maxV;
-	const insoleWidthNorm = Math.max(0.2, insoleMaxV - insoleMinV);
-	const insoleWidthAtSliceMm =
-		(insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
-	const insoleLengthMm = lengthSpan / Math.max(mmToWorld, 1e-6);
-
-	const adaptiveU = clamp01(Math.max(0.2, Math.min(0.32, bestBin.u)));
-
-	// Position on the medial half – centre close to the medial edge (1st toe
-	// / arch side).  Boundary clipping trims overshoot.
-	// Right foot: medial = low V (minV).  Left foot: medial = high V (maxV).
-	const medialEdge = el.side === 'right' ? insoleMinV : insoleMaxV;
-	const insetFraction = 0.22;
-	const adaptiveV =
-		el.side === 'right'
-			? clamp01(medialEdge + insoleWidthNorm * insetFraction)
-			: clamp01(medialEdge - insoleWidthNorm * insetFraction);
-
-	const baseWidthMm = Math.max(40, insoleWidthAtSliceMm * 1.2);
-	const baseLengthMm = Math.max(80, insoleLengthMm * 0.8);
-
-	return {
-		positionU: clamp01(adaptiveU + deltaU),
-		positionV: clamp01(adaptiveV + deltaV),
-		rotationRad: 0 + deltaRotation,
+	// Big-toe pad: flush on medial wall, centre ~10% in from edge (competitor left insole).
+	'sd-1': {
+		baseRotationDeg: 0,
+		widthMode: 'toe',
+		edgeSnap: 'medial',
+		anchorU: 0.82,
+		toeWidthFrac: 0.35,
+		toeMedialCenterFrac: 0.1,
+	},
+	'sa-recht-1': {
+		baseRotationDeg: 0,
+		widthMode: 'toe',
+		edgeSnap: 'medial',
+		anchorU: 0.82,
+		toeWidthFrac: 0.33,
+		toeMedialCenterFrac: 0.1,
+		lengthScale: 0.6,
+	},
+	// Depth (inset) elements sit at their drop position with their native STL
+	// footprint and carve a rounded pocket into the insole — no span/toe snapping,
+	// so they behave like before the placement refactor.
+	// Midfoot RCTB bars spanning the full width, heel/toe-flipped.
+	'rctb-1': { baseRotationDeg: 180, widthMode: 'span', edgeSnap: 'none', anchorU: 0.45, conformWidthToInsole: true },
+	'rctb-2': { baseRotationDeg: 180, widthMode: 'span', edgeSnap: 'none', anchorU: 0.45, conformWidthToInsole: true },
+	'rctb-3': { baseRotationDeg: 180, widthMode: 'span', edgeSnap: 'none', anchorU: 0.45, conformWidthToInsole: true },
+	'rctb-pronatie': {
+		baseRotationDeg: 180,
+		widthMode: 'span',
+		edgeSnap: 'none',
+		anchorU: 0.45,
+		conformWidthToInsole: true,
+	},
+	// Heel cup: seat on the heel back and fill the heel width with a UNIFORM scale
+	// (span, no per-vertex conform) so the authored cup shape is preserved — the
+	// rim clamp + height fade handle any overflow, and the colour-fade overlay
+	// melts the perimeter into the insole so it reads as one surface.
+	'sc-bol': {
+		baseRotationDeg: 180,
+		widthMode: 'span',
+		edgeSnap: 'none',
+		anchorU: 0.08,
+		widthFactor: 1.12,
+		lengthScale: 1.1,
+	},
+	// Native-footprint stabilisers placed at their authored default position.
+	'spsa-vlak': { baseRotationDeg: 0, widthMode: 'native', edgeSnap: 'none' },
+	'ppsa': {
+		baseRotationDeg: 0,
+		widthMode: 'native',
+		edgeSnap: 'none',
 		mirrorWidth: true,
-		targetWidthMm: baseWidthMm,
-		targetLengthMm: baseLengthMm,
-	};
-}
-
-// ── SC Bol adaptive layout ──────────────────────────────────────────────────
-//
-// The SC Bol (schaal bol = bowl cup) covers the heel area of the insole,
-// like a cup around the heel.  Scaled to overshoot all edges so the contour
-// clipper trims it to the insole silhouette.
-
-function resolveAdaptiveScBolLayout(
-	item: ReturnType<typeof getElementByKey>,
-	el: PlacedElement,
-	context: PlacementContext,
-): ResolvedElementLayout {
-	const {
-		positions,
-		vertexCount,
-		lengthAxis,
-		widthAxis,
-		lengthMin,
-		widthMin,
-		lengthSpan,
-		widthSpan,
-		heelAtMin,
-		mmToWorld,
-	} = context;
-
-	const defaults = getDefaultPlacementForSide(item, el.side);
-	const deltaU = el.positionU - defaults.positionU;
-	const deltaV = el.positionV - defaults.positionV;
-	const deltaRotation = el.rotationRad - defaults.rotationRad;
-
-	// Profile the heel region (U ≈ 0.02 – 0.50)
-	const BINS = 40;
-	const bins = Array.from({ length: BINS }, (_, index) => ({
-		u: (index + 0.5) / BINS,
-		minV: Infinity,
-		maxV: -Infinity,
-		count: 0,
-	}));
-
-	for (let i = 0; i < vertexCount; i++) {
-		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const widthVal = getAxisValue(positions, i, widthAxis);
-		const rawU = (lengthVal - lengthMin) / Math.max(lengthSpan, 1e-6);
-		const u = heelAtMin ? rawU : 1 - rawU;
-		if (u < 0.02 || u > 0.5) continue;
-		const v = (widthVal - widthMin) / Math.max(widthSpan, 1e-6);
-		const binIndex = Math.max(0, Math.min(BINS - 1, Math.floor(u * BINS)));
-		const bin = bins[binIndex];
-		if (v < bin.minV) bin.minV = v;
-		if (v > bin.maxV) bin.maxV = v;
-		bin.count++;
-	}
-
-	// Find widest heel cross-section biased toward U≈0.20
-	let bestBin: (typeof bins)[number] | null = null;
-	let bestScore = -Infinity;
-	for (const bin of bins) {
-		if (
-			bin.count < 8 ||
-			!Number.isFinite(bin.minV) ||
-			!Number.isFinite(bin.maxV)
-		)
-			continue;
-		const widthNorm = bin.maxV - bin.minV;
-		if (widthNorm < 0.1) continue;
-		const heelBias = Math.max(0, 1 - Math.abs(bin.u - 0.2) / 0.2);
-		const score = widthNorm * (0.5 + heelBias);
-		if (score > bestScore) {
-			bestScore = score;
-			bestBin = bin;
-		}
-	}
-
-	if (!bestBin) {
-		return {
-			positionU: clamp01(el.positionU),
-			positionV: clamp01(el.positionV),
-			rotationRad: el.rotationRad,
-		};
-	}
-
-	const insoleMinV = bestBin.minV;
-	const insoleMaxV = bestBin.maxV;
-	const insoleWidthNorm = Math.max(0.2, insoleMaxV - insoleMinV);
-	const insoleWidthAtSliceMm =
-		(insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
-	const insoleLengthMm = lengthSpan / Math.max(mmToWorld, 1e-6);
-
-	// Centre the bowl very low (U ≈ 0.08) so the mesh generously overshoots
-	// the heel tip and the contour clipper trims it flush — no gap at the base
-	const adaptiveU = clamp01(Math.max(0.06, Math.min(0.12, bestBin.u - 0.1)));
-	const adaptiveV = clamp01(insoleMinV + insoleWidthNorm * 0.5);
-
-	// Width: 130% overshoot so the contour clipper trims both side edges
-	const baseWidthMm = Math.max(50, insoleWidthAtSliceMm * 1.3);
-	// Length: ~27% of total insole length — just the heel cup
-	const baseLengthMm = Math.max(40, insoleLengthMm * 0.27);
-
-	return {
-		positionU: clamp01(adaptiveU + deltaU),
-		positionV: clamp01(adaptiveV + deltaV),
-		rotationRad: 0 + deltaRotation,
-		targetWidthMm: baseWidthMm,
-		targetLengthMm: baseLengthMm,
-	};
-}
-
-// ── SC Bol / PPSI / SPSI diagonal slope deformation ─────────────────────
-//
-// PPSI and SPSI are the same heel cup as SC Bol but with a 45° diagonal cut
-// across the upper (toe-side) edge.
-//   PPSI: medial side stays full height, lateral side is cut away
-//   SPSI: lateral side stays full height, medial side is cut away
-//
-// The function returns a height MULTIPLIER (0–1) for each STL vertex.
-//   nu: 0→1 across STL width  (right foot: 0=medial, 1=lateral)
-//   nv: 0→1 along STL length  (0=heel edge, 1=toe edge)
-
-type ScBolSlopeFn = (nu: number, nv: number, side: 'left' | 'right') => number;
-
-const SC_BOL_SLOPE: Record<string, ScBolSlopeFn> = {
-	// SC Bol — no slope, full bowl
-	'sc-bol': () => 1,
-
-	// PPSI — medial side stays high, lateral side gets cut at the toe edge
-	ppsi: (nu, nv, side) => {
-		// For right foot: nu=0 = medial.  Lateral fraction increases with nu.
-		const lateralFrac = side === 'right' ? nu : 1 - nu;
-		// Slope only affects the upper portion (toe-side edge, nv > 0.3)
-		const nvInfluence = Math.max(0, (nv - 0.3) / 0.7);
-		return Math.max(0, 1 - lateralFrac * nvInfluence);
 	},
-
-	// SPSI — lateral side stays high, medial side gets cut at the toe edge
-	spsi: (nu, nv, side) => {
-		const medialFrac = side === 'right' ? 1 - nu : nu;
-		const nvInfluence = Math.max(0, (nv - 0.3) / 0.7);
-		return Math.max(0, 1 - medialFrac * nvInfluence);
-	},
+	'ppsi': { baseRotationDeg: 180, widthMode: 'native', edgeSnap: 'none' },
+	'spsi': { baseRotationDeg: 180, widthMode: 'native', edgeSnap: 'none' },
+	// Arch pad: native footprint snapped to the medial edge.
+	'hai-vlak-2': { baseRotationDeg: 0, widthMode: 'native', edgeSnap: 'medial' },
+	// Midfoot pelotte, native footprint, heel/toe-flipped.
+	'peloitte-2': { baseRotationDeg: 180, widthMode: 'native', edgeSnap: 'none' },
 };
 
-// ── HAI Vlak 2 adaptive layout ───────────────────────────────────────────
-//
-// The HAI Vlak 2 is a tall narrow arch support pad placed on the medial side
-// (1st toe / arch side) in the midfoot region.  It snaps to the medial edge
-// and covers heel-through-midfoot.
-// Right foot: medial = low V (minV).  Left foot: medial = high V (maxV).
+type InsoleProfile = {
+	minV: number;
+	maxV: number;
+	centerV: number;
+	widthNorm: number;
+	widthMm: number;
+};
 
-function resolveAdaptiveHaiVlak2Layout(
-	item: ReturnType<typeof getElementByKey>,
-	el: PlacedElement,
+/** Profile the insole width band around a normalised U using the smoothed rim. */
+function profileInsoleAtU(
 	context: PlacementContext,
-): ResolvedElementLayout {
-	const {
-		positions,
-		vertexCount,
-		lengthAxis,
-		widthAxis,
-		lengthMin,
-		widthMin,
-		lengthSpan,
-		widthSpan,
-		heelAtMin,
-		mmToWorld,
-	} = context;
-
-	const defaults = getDefaultPlacementForSide(item, el.side);
-	const deltaU = el.positionU - defaults.positionU;
-	const deltaV = el.positionV - defaults.positionV;
-	const deltaRotation = el.rotationRad - defaults.rotationRad;
-
-	// Profile the arch region (U ≈ 0.20 – 0.60)
-	const BINS = 40;
-	const bins = Array.from({ length: BINS }, (_, index) => ({
-		u: (index + 0.5) / BINS,
-		minV: Infinity,
-		maxV: -Infinity,
-		count: 0,
-	}));
-
-	for (let i = 0; i < vertexCount; i++) {
-		const lengthVal = getAxisValue(positions, i, lengthAxis);
-		const widthVal = getAxisValue(positions, i, widthAxis);
-		const rawU = (lengthVal - lengthMin) / Math.max(lengthSpan, 1e-6);
-		const u = heelAtMin ? rawU : 1 - rawU;
-		if (u < 0.2 || u > 0.6) continue;
-		const v = (widthVal - widthMin) / Math.max(widthSpan, 1e-6);
-		const binIndex = Math.max(0, Math.min(BINS - 1, Math.floor(u * BINS)));
-		const bin = bins[binIndex];
-		if (v < bin.minV) bin.minV = v;
-		if (v > bin.maxV) bin.maxV = v;
-		bin.count++;
-	}
-
-	// Find widest cross-section around the arch (U≈0.42)
-	let bestBin: (typeof bins)[number] | null = null;
-	let bestScore = -Infinity;
-	for (const bin of bins) {
-		if (
-			bin.count < 8 ||
-			!Number.isFinite(bin.minV) ||
-			!Number.isFinite(bin.maxV)
-		)
-			continue;
-		const widthNorm = bin.maxV - bin.minV;
-		if (widthNorm < 0.1) continue;
-		const archBias = Math.max(0, 1 - Math.abs(bin.u - 0.42) / 0.2);
-		const score = widthNorm * (0.5 + archBias);
-		if (score > bestScore) {
-			bestScore = score;
-			bestBin = bin;
+	u: number,
+	halfBand = 0.03,
+): InsoleProfile {
+	const { sampleInsoleExtent, widthSpan, mmToWorld } = context;
+	let minSum = 0;
+	let maxSum = 0;
+	let n = 0;
+	for (const offset of [-halfBand, 0, halfBand]) {
+		const cu = Math.max(0, Math.min(1, u + offset));
+		const { minV, maxV } = sampleInsoleExtent(cu);
+		if (maxV > minV) {
+			minSum += minV;
+			maxSum += maxV;
+			n++;
 		}
 	}
-
-	if (!bestBin) {
+	const minV = n > 0 ? minSum / n : 0.1;
+	const maxV = n > 0 ? maxSum / n : 0.9;
+	const widthNorm = Math.max(0.05, maxV - minV);
 		return {
-			positionU: clamp01(el.positionU),
-			positionV: clamp01(el.positionV),
-			rotationRad: el.rotationRad,
-		};
-	}
-
-	const insoleMinV = bestBin.minV;
-	const insoleMaxV = bestBin.maxV;
-	const insoleWidthNorm = Math.max(0.2, insoleMaxV - insoleMinV);
-	const insoleWidthAtSliceMm =
-		(insoleWidthNorm * widthSpan) / Math.max(mmToWorld, 1e-6);
-	const insoleLengthMm = lengthSpan / Math.max(mmToWorld, 1e-6);
-
-	// Centre at the arch (U ≈ 0.42)
-	const adaptiveU = clamp01(Math.max(0.36, Math.min(0.48, bestBin.u)));
-
-	// Snap to the medial edge (1st toe / arch side)
-	// Right foot: medial = low V (minV).  Left foot: medial = high V (maxV).
-	const medialEdge = el.side === 'right' ? insoleMinV : insoleMaxV;
-	const insetFraction = 0.05;
-	const adaptiveV =
-		el.side === 'right'
-			? clamp01(medialEdge + insoleWidthNorm * insetFraction)
-			: clamp01(medialEdge - insoleWidthNorm * insetFraction);
-
-	// Width: ~46% of insole width with overshoot for clipping
-	const baseWidthMm = Math.max(22, insoleWidthAtSliceMm * 0.46);
-	// Length: ~42% of total insole length (arch region)
-	const baseLengthMm = Math.max(45, insoleLengthMm * 0.42);
-
-	return {
-		positionU: clamp01(adaptiveU + deltaU),
-		positionV: clamp01(adaptiveV + deltaV),
-		rotationRad: 0 + deltaRotation,
-		targetWidthMm: baseWidthMm,
-		targetLengthMm: baseLengthMm,
+		minV,
+		maxV,
+		centerV: (minV + maxV) / 2,
+		widthNorm,
+		widthMm: (widthNorm * widthSpan) / Math.max(mmToWorld, 1e-6),
 	};
+}
+
+/** Tangent angle (rad) of the insole rim at normalised U along the medial edge. */
+function sampleRimTangentRad(
+	context: PlacementContext,
+	u: number,
+	medialAtMin: boolean,
+): number {
+	const eps = 0.012;
+	const u0 = Math.max(0, u - eps);
+	const u1 = Math.min(1, u + eps);
+	const { sampleInsoleExtent, widthSpan, lengthSpan } = context;
+	const v0 = medialAtMin
+		? sampleInsoleExtent(u0).minV
+		: sampleInsoleExtent(u0).maxV;
+	const v1 = medialAtMin
+		? sampleInsoleExtent(u1).minV
+		: sampleInsoleExtent(u1).maxV;
+	const du = u1 - u0;
+	const dv = v1 - v0;
+	if (Math.abs(du) < 1e-8) return 0;
+	return Math.atan2(dv * widthSpan, du * lengthSpan);
 }
 
 function resolveElementLayout(
@@ -2095,41 +1080,132 @@ function resolveElementLayout(
 	el: PlacedElement,
 	context: PlacementContext,
 ): ResolvedElementLayout {
-	if (item?.key === 'sd-2-5') {
-		return resolveAdaptiveSd25Layout(item, el, context);
-	}
-	if (item?.key === 'sd-1-5' || item?.key === 'sa-rechts-1-5') {
-		return resolveAdaptiveSd15Layout(item, el, context);
-	}
-	if (
-		item?.key === 'sd-1' ||
-		item?.key === 'sa-recht-1' ||
-		item?.key === 'diep-rond' ||
-		item?.key === 'diep-ovaal'
-	) {
-		return resolveAdaptiveSd1Layout(item, el, context);
-	}
-	if (item?.key === 'spsa-vlak') {
-		return resolveAdaptiveSpsaVlakLayout(item, el, context);
-	}
-	if (item?.key === 'ppsa') {
-		return resolveAdaptivePpsaLayout(item, el, context);
-	}
-	if (item?.key === 'sc-bol' || item?.key === 'ppsi' || item?.key === 'spsi') {
-		return resolveAdaptiveScBolLayout(item, el, context);
-	}
-	if (item?.key === 'hai-vlak-2') {
-		return resolveAdaptiveHaiVlak2Layout(item, el, context);
-	}
-	const rctbParams = item?.key ? RCTB_PARAMS[item.key] : undefined;
-	if (rctbParams) {
-		return resolveAdaptiveRctbLayout(item, el, context, rctbParams);
+	const spec = item?.key ? ELEMENT_PLACEMENT[item.key] : undefined;
+	if (!spec) {
+		return {
+			positionU: el.positionU,
+			positionV: el.positionV,
+			rotationRad: el.rotationRad,
+		};
 	}
 
+	const defaults = getDefaultPlacementForSide(item, el.side);
+	const deltaU = el.positionU - defaults.positionU;
+	const deltaV = el.positionV - defaults.positionV;
+	const deltaRotation = el.rotationRad - defaults.rotationRad;
+
+	const baseRad = (spec.baseRotationDeg * Math.PI) / 180;
+	const sideBaseRad = el.side === 'right' ? baseRad : -baseRad;
+	const rotOff = spec.rotationOffsetRad ?? 0;
+	const sideRotOff = el.side === 'right' ? -rotOff : rotOff;
+	let rotationRad = sideBaseRad + sideRotOff + deltaRotation;
+
+	// Right foot: medial = low V (big-toe / arch side). Left foot mirrors.
+	const medialAtMin = el.side === 'right';
+
+	// Base U: pinned to the spec anchor (+ drag) when given, else authored U.
+	const positionU =
+		spec.anchorU !== undefined
+			? clamp01(spec.anchorU + deltaU)
+			: clamp01(el.positionU);
+
+	if (spec.widthMode === 'native') {
+		const positionV =
+			spec.edgeSnap === 'medial'
+				? (() => {
+						const profile = profileInsoleAtU(context, positionU);
+						const nativeWidthMm =
+							(item?.stlSizeMm?.[0] ?? profile.widthMm) * 1;
+						const halfWidthNorm =
+							(nativeWidthMm * context.mmToWorld) /
+							Math.max(context.widthSpan, 1e-6) /
+							2;
+						return medialAtMin
+							? clamp01(profile.minV + halfWidthNorm)
+							: clamp01(profile.maxV - halfWidthNorm);
+					})()
+				: clamp01(el.positionV);
+		return {
+			positionU: spec.anchorU !== undefined ? positionU : clamp01(el.positionU),
+			positionV: clamp01(positionV + (spec.edgeSnap === 'medial' ? 0 : deltaV)),
+			rotationRad,
+			conformWidthToInsole: spec.conformWidthToInsole,
+			mirrorWidth: spec.mirrorWidth,
+		};
+	}
+
+	const profile = profileInsoleAtU(context, positionU);
+	const nativeLengthMm = item?.stlSizeMm?.[1] ?? 50;
+	const targetLengthMm = nativeLengthMm * (spec.lengthScale ?? 1);
+
+	if (spec.widthMode === 'toe') {
+		const toeWidthMm = Math.max(
+			12,
+			profile.widthMm * (spec.toeWidthFrac ?? 0.22),
+		);
+		const halfWidthNorm =
+			(toeWidthMm * context.mmToWorld) /
+			Math.max(context.widthSpan, 1e-6) /
+			2;
+		const rim = context.sampleInsoleExtent(positionU);
+		const medialV = medialAtMin ? rim.minV : rim.maxV;
+		let positionV: number;
+		if (spec.edgeSnap === 'medial') {
+			const centreFrac =
+				spec.toeMedialCenterFrac ?? spec.toeInsetFrac ?? 0.1;
+			const centreInset = profile.widthNorm * centreFrac;
+			positionV = medialAtMin
+				? medialV + centreInset
+				: medialV - centreInset;
+		} else {
+			positionV = profile.centerV;
+		}
+
+		if (spec.alignRotationToRim) {
+			const rimTan = sampleRimTangentRad(context, positionU, medialAtMin);
+			const rimOffset = spec.rimRotationOffsetRad ?? 0;
+			const sideRimOffset = medialAtMin ? rimOffset : -rimOffset;
+			rotationRad = rimTan + sideRimOffset + deltaRotation;
+		}
+
+		return {
+			positionU,
+			positionV: clamp01(positionV + deltaV),
+			rotationRad,
+			targetWidthMm: toeWidthMm,
+			targetLengthMm,
+			conformWidthToInsole: spec.conformWidthToInsole,
+			mirrorWidth: spec.mirrorWidth,
+		};
+	}
+
+	// span mode — width from the insole rim at this U (not an averaged profile band)
+	const rimAtU = context.sampleInsoleExtent(positionU);
+	let lo = rimAtU.minV;
+	let hi = rimAtU.maxV;
+	const medialInset = spec.medialInsetFrac ?? 0;
+	if (medialInset > 0) {
+		const inset = (hi - lo) * medialInset;
+		if (medialAtMin) lo += inset;
+		else hi -= inset;
+	}
+	const spanWidthMm = Math.max(
+		20,
+		(((hi - lo) * context.widthSpan) / Math.max(context.mmToWorld, 1e-6)) *
+			(spec.widthFactor ?? 1),
+	);
+	const spanBias = spec.spanLateralCenterBias ?? 0.5;
+	const spanCenterV = medialAtMin
+		? lo + (hi - lo) * spanBias
+		: lo + (hi - lo) * (1 - spanBias);
 	return {
-		positionU: el.positionU,
-		positionV: el.positionV,
-		rotationRad: el.rotationRad,
+		positionU,
+		positionV: clamp01(spanCenterV + deltaV),
+		rotationRad,
+		targetWidthMm: spanWidthMm,
+		targetLengthMm,
+		conformWidthToInsole: spec.conformWidthToInsole,
+		mirrorWidth: spec.mirrorWidth,
 	};
 }
 
@@ -2156,6 +1232,24 @@ function getElementFootprintUv(
 	};
 }
 
+/**
+ * Precomputed transform for raising the insole top surface from an additive
+ * element's STL height field (export path; mirrors the on-screen overlay drape).
+ */
+interface PreparedStlDisplacement {
+	field: ElementStlHeightField;
+	scaleWidth: number;
+	scaleLength: number;
+	scaleHeight: number;
+	cos: number;
+	sin: number;
+	centreLengthWorld: number;
+	centreWidthWorld: number;
+	stlCenterX: number;
+	stlCenterY: number;
+	rejectRadius: number;
+}
+
 /* ── main entry point ────────────────────────── */
 
 /**
@@ -2169,12 +1263,19 @@ export function applyElements(
 	elements: PlacedElement[],
 	options?: {
 		mmToWorld?: number;
+		/**
+		 * Pre-loaded element STL geometries keyed by URL. When provided, additive
+		 * STL-backed elements raise the insole top surface from the STL's own height
+		 * field so the exported single-piece insole matches the on-screen overlay.
+		 */
+		stlGeometries?: Map<string, THREE.BufferGeometry>;
 	},
 ): void {
 	if (!elements || elements.length === 0) return;
 
 	const sortedElements = sortPlacedElementsByStack(elements);
 	const mmToWorld = options?.mmToWorld ?? 1;
+	const stlGeometries = options?.stlGeometries;
 	const geometryAnalysis = getCachedInsoleOverlayAnalysis(geometry);
 	const {
 		axes,
@@ -2232,6 +1333,8 @@ export function applyElements(
 			widthSpan,
 			heelAtMin,
 			mmToWorld,
+			sampleInsoleExtent: geometryAnalysis.sampleInsoleExtent,
+			sampleInsoleUExtent: geometryAnalysis.sampleInsoleUExtent,
 		});
 		const resolvedElement = {
 			...el,
@@ -2285,6 +1388,60 @@ export function applyElements(
 				? sampleSurfaceHeight(resolved.positionU, resolved.positionV)
 				: undefined;
 
+		// Additive STL-backed elements raise the insole top from the STL height
+		// field (matches the overlay drape); insets and thickness-only elements keep
+		// the procedural outline path below.
+		let stl: PreparedStlDisplacement | undefined;
+		if (
+			item &&
+			stlGeometries &&
+			el.heightMm > 0 &&
+			!isThicknessOnlyElement(item) &&
+			!isOverlayOnlyElement(item)
+		) {
+			const overlayStlUrl = getElementViewerStlUrls(item).find((url) =>
+				stlGeometries.has(url),
+			);
+			const srcGeom = overlayStlUrl
+				? stlGeometries.get(overlayStlUrl)
+				: undefined;
+			if (srcGeom) {
+				const field = getElementStlHeightField(
+					srcGeom,
+					Boolean(item.stlSwapYZ),
+				);
+				const targetWidthMm =
+					(resolved.targetWidthMm ?? item.stlSizeMm?.[0] ?? field.sourceWidthMm) *
+					el.scaleV;
+				const targetLengthMm =
+					(resolved.targetLengthMm ??
+						item.stlSizeMm?.[1] ??
+						field.sourceLengthMm) * el.scaleU;
+				const targetHeightMm = Math.max(0.2, Math.abs(el.heightMm));
+				let scaleWidth = (targetWidthMm * mmToWorld) / field.sourceWidthMm;
+				if (getEffectiveMirrorWidth(el.side, resolved.mirrorWidth))
+					scaleWidth = -scaleWidth;
+				const centreRawU = heelAtMin
+					? resolved.positionU
+					: 1 - resolved.positionU;
+				const halfW = (targetWidthMm * mmToWorld) / 2;
+				const halfL = (targetLengthMm * mmToWorld) / 2;
+				stl = {
+					field,
+					scaleWidth,
+					scaleLength: (targetLengthMm * mmToWorld) / field.sourceLengthMm,
+					scaleHeight: (targetHeightMm * mmToWorld) / field.sourceHeightMm,
+					cos: Math.cos(resolved.rotationRad),
+					sin: Math.sin(resolved.rotationRad),
+					centreLengthWorld: lengthMin + centreRawU * lengthSpan,
+					centreWidthWorld: widthMin + resolved.positionV * widthSpan,
+					stlCenterX: field.stlCenterX,
+					stlCenterY: field.stlCenterY,
+					rejectRadius: Math.hypot(halfW, halfL) * 1.06,
+				};
+			}
+		}
+
 		return {
 			el,
 			floorMode,
@@ -2295,6 +1452,7 @@ export function applyElements(
 			heightWorld,
 			baseSurfaceHeight,
 			blendNorm,
+			stl,
 			bboxMinU: minU - blendNorm,
 			bboxMaxU: maxU + blendNorm,
 			bboxMinV: minV - blendNorm,
@@ -2346,7 +1504,27 @@ export function applyElements(
 		let totalDisplacement = 0;
 
 		for (const p of prepared) {
+			if (isOverlayOnlyElement(p.item) && p.heightWorld > 0) continue;
 			if (isThicknessOnlyElement(p.item) && p.heightWorld > 0) continue;
+
+			// STL-backed additive element: raise the surface by the STL height field.
+			if (p.stl) {
+				const stl = p.stl;
+				if (
+					Math.abs(lengthVal - stl.centreLengthWorld) > stl.rejectRadius ||
+					Math.abs(widthVal - stl.centreWidthWorld) > stl.rejectRadius
+				)
+					continue;
+				const dx = widthVal - stl.centreWidthWorld;
+				const dy = lengthVal - stl.centreLengthWorld;
+				const localWidth = dx * stl.cos + dy * stl.sin;
+				const localLength = -dx * stl.sin + dy * stl.cos;
+				const rawX = localWidth / stl.scaleWidth + stl.stlCenterX;
+				const rawY = localLength / stl.scaleLength + stl.stlCenterY;
+				const padMm = sampleElementHeightMm(stl.field, rawX, rawY);
+				if (padMm > 1e-4) totalDisplacement += padMm * stl.scaleHeight;
+				continue;
+			}
 
 			// Early bounding-box reject
 			if (u < p.bboxMinU || u > p.bboxMaxU || v < p.bboxMinV || v > p.bboxMaxV)
@@ -2421,6 +1599,13 @@ export interface ElementOverlayData {
 	elementId: string;
 	stackOrder: number;
 	isInset?: boolean;
+	/**
+	 * When true the overlay geometry carries a per-vertex `color` attribute that
+	 * fades from the element colour at the raised interior to the insole colour at
+	 * the rim, so a "flow onto sole" pad reads as one continuous surface with the
+	 * insole (matte, no hard seam) instead of a glossy pad sitting on top.
+	 */
+	vertexColors?: boolean;
 }
 
 export function buildElementOverlayGeometries(
@@ -2430,9 +1615,17 @@ export function buildElementOverlayGeometries(
 		mmToWorld?: number;
 		/** Pre-loaded STL geometries keyed by URL (from catalog stlUrl) */
 		stlGeometries?: Map<string, THREE.BufferGeometry>;
+		/**
+		 * Base insole colour (hex) that "flow onto sole" pads fade toward at their
+		 * rim so the perimeter melts into the insole instead of showing a hard seam.
+		 */
+		insoleColorHex?: string;
 	},
 ): ElementOverlayData[] {
 	if (!elements || elements.length === 0) return [];
+
+	const insoleBlendColor = new THREE.Color(options?.insoleColorHex ?? '#d7dadd');
+	const overlayColorHex = `#${insoleBlendColor.getHexString()}`;
 
 	const sortedElements = sortPlacedElementsByStack(elements);
 
@@ -2478,6 +1671,9 @@ export function buildElementOverlayGeometries(
 	// is resolved by material polygonOffset in the viewer, not by a geometric lift.
 	const SURFACE_EPSILON = 0;
 	const INSET_OVERLAY_EPSILON = 0;
+	// Element seating uses the BVH surface sampler (true shrinkwrap) — see
+	// conformElementToInsole.ts — so no finite-difference height-field normal is
+	// needed here any more.
 
 	const buildInsetSurfaceOverlay = (
 		outline: [number, number][],
@@ -2895,6 +2091,9 @@ export function buildElementOverlayGeometries(
 	};
 
 	const result: ElementOverlayData[] = [];
+	// Built lazily (and cached per insole geometry) only when an STL-backed pad is
+	// actually seated. Read-only: never mutates the insole.
+	let surfaceSampler: InsoleSurfaceSampler | null = null;
 	const placementContext: PlacementContext = {
 		positions,
 		vertexCount,
@@ -2906,6 +2105,8 @@ export function buildElementOverlayGeometries(
 		widthSpan,
 		heelAtMin,
 		mmToWorld,
+		sampleInsoleExtent,
+		sampleInsoleUExtent,
 	};
 
 	for (const el of sortedElements) {
@@ -2933,38 +2134,15 @@ export function buildElementOverlayGeometries(
 			!isThicknessOnlyElement(item)
 		) {
 			const srcGeom = stlGeometries!.get(overlayStlUrl)!;
-			const cachedDistanceField = getCachedStlDistanceField(
+			const field = getElementStlHeightField(
 				srcGeom,
 				Boolean(item.stlSwapYZ),
 			);
-			let geom = getPreparedOverlayStlGeometry(
-				srcGeom,
-				Boolean(item.stlSwapYZ),
-			).clone();
-
-			// The STL is in mm, centred at origin in X, Y starts at 0.
-			// We need to:
-			// 1. Scale from mm to world units
-			// 2. Position at the element's UV placement on the insole
-			// 3. Snap the bottom to the insole surface height
-
-			const pos = geom.getAttribute('position') as THREE.BufferAttribute;
-			const vtxCount = pos.count;
 			const {
 				sourceWidthMm,
 				sourceLengthMm,
 				sourceHeightMm,
-				stlCenterX,
-				stlCenterY,
-				stlBaseZ,
-				stlMinX,
-				stlMinY,
-				cellW,
-				cellL,
-				cellSizeMm,
-				distGrid,
-				gridSize,
-			} = cachedDistanceField;
+			} = field;
 
 			const targetWidthMm =
 				(resolved.targetWidthMm ?? item.stlSizeMm?.[0] ?? sourceWidthMm) *
@@ -2980,210 +2158,54 @@ export function buildElementOverlayGeometries(
 			const scaleLength = (targetLengthMm * mmToWorld) / sourceLengthMm;
 			const scaleHeight = (targetHeightMm * mmToWorld) / sourceHeightMm;
 
-			// Wider blend zone (at least 8mm) for a gentle slope from the insole surface
-			const blendMm = Math.max(8, el.blendMm * 1.6);
-			const sampleEdgeFactor = (stlX: number, stlY: number): number => {
-				const gx = Math.min(
-					gridSize - 1,
-					Math.max(0, (stlX - stlMinX) / cellW),
-				);
-				const gy = Math.min(
-					gridSize - 1,
-					Math.max(0, (stlY - stlMinY) / cellL),
-				);
-				// Bilinear sample
-				const gxi = Math.min(gridSize - 2, Math.floor(gx));
-				const gyi = Math.min(gridSize - 2, Math.floor(gy));
-				const fx = gx - gxi,
-					fy = gy - gyi;
-				const d00 = distGrid[gyi * gridSize + gxi];
-				const d10 = distGrid[gyi * gridSize + gxi + 1];
-				const d01 = distGrid[(gyi + 1) * gridSize + gxi];
-				const d11 = distGrid[(gyi + 1) * gridSize + gxi + 1];
-				const dCells =
-					d00 * (1 - fx) * (1 - fy) +
-					d10 * fx * (1 - fy) +
-					d01 * (1 - fx) * fy +
-					d11 * fx * fy;
-				const dMm = dCells * cellSizeMm;
-				if (dMm >= blendMm) return 1.0;
-				const t = dMm / blendMm;
-				// Smooth quintic ease-in for a very gentle ramp
-				const t3 = t * t * t;
-				return t3 * (t * (t * 6 - 15) + 10);
-			};
-
-			// Where to place the element centre on the insole (world coords)
-			const centreU = resolved.positionU;
-			const centreV = resolved.positionV;
-			const centreRawU = heelAtMin ? centreU : 1 - centreU;
+			const centreRawU = heelAtMin
+				? resolved.positionU
+				: 1 - resolved.positionU;
 			const centreLengthWorld = lengthMin + centreRawU * lengthSpan;
-			const centreWidthWorld = widthMin + centreV * widthSpan;
+			const centreWidthWorld = widthMin + resolved.positionV * widthSpan;
 
-			// Build rotation matrix for the element
-			const cos = Math.cos(resolved.rotationRad);
-			const sin = Math.sin(resolved.rotationRad);
-
-			const insoleEdgeBlendMm = getAdditiveInsoleEdgeBlendMm(item.key);
-
-			// Transform each vertex:
-			// 1. Centre the STL at origin
-			// 2. Scale mm → world
-			// 3. Rotate
-			// 4. Translate to world position
-			// 5. Clip to insole boundary via shared utility
-			for (let i = 0; i < vtxCount; i++) {
-				// STL local coords (mm, centred)
-				const rawX = pos.getX(i);
-				const rawY = pos.getY(i);
-				const localWidth = (rawX - stlCenterX) * scaleWidth;
-				const localLength = (rawY - stlCenterY) * scaleLength;
-				let rawLocalHeight = (pos.getZ(i) - stlBaseZ) * scaleHeight;
-
-				// Per-variant regional deformation (e.g. RCTB 1/2/pronatie)
-				const deformFn = item.key ? RCTB_DEFORM[item.key] : undefined;
-				if (deformFn) {
-					const nu = (rawX - stlMinX) / sourceWidthMm;
-					const nv = (rawY - stlMinY) / sourceLengthMm;
-					// Only deform the top surface — scale by relative Z height
-					// so the bottom face stays flat on the insole
-					const heightFrac = Math.max(
-						0,
-						(pos.getZ(i) - stlBaseZ) / sourceHeightMm,
-					);
-					const extraMm = deformFn(nu, nv, el.side);
-					rawLocalHeight += extraMm * mmToWorld * heightFrac;
-				}
-
-				// Per-variant diagonal slope (SC Bol / PPSI / SPSI)
-				const slopeFn = item.key ? SC_BOL_SLOPE[item.key] : undefined;
-				if (slopeFn) {
-					const nu = (rawX - stlMinX) / sourceWidthMm;
-					const nv = (rawY - stlMinY) / sourceLengthMm;
-					rawLocalHeight *= slopeFn(nu, nv, el.side);
-				}
-
-				// Smooth edge blend — `taper` runs 1 deep inside the element down to
-				// 0 at the perimeter (STL boundary + insole edge clipping). It is the
-				// single shared factor that drives both the element height and the
-				// blend back onto the insole surface, so the base is always coincident.
-				let taper = sampleEdgeFactor(rawX, rawY);
-
-				// Rotate in the horizontal plane
-				const rx = localWidth * cos - localLength * sin;
-				const ry = localWidth * sin + localLength * cos;
-				let worldWidth = centreWidthWorld + rx;
-				let worldLength = centreLengthWorld + ry;
-				const rawSampleU =
-					(worldLength - lengthMin) / Math.max(lengthSpan, 1e-6);
-				let sampleUValue = heelAtMin ? rawSampleU : 1 - rawSampleU;
-				let sampleVValue = (worldWidth - widthMin) / Math.max(widthSpan, 1e-6);
-				const sampleUClamped = Math.max(0, Math.min(1, sampleUValue));
-
-				// ── Clip to insole boundary: V direction (width edges) ──
-				const clip = clipVertexToInsole(
-					sampleUClamped,
-					sampleVValue,
-					worldWidth,
-					sampleInsoleExtent,
-					widthMin,
-					widthSpan,
-					mmToWorld,
-					insoleEdgeBlendMm,
-					true,
-				);
-				sampleVValue = clip.clippedV;
-				worldWidth = clip.clippedWorldWidth;
-				taper *= clip.heightMultiplier;
-
-				// ── Clip to insole boundary: U direction (heel/toe contour) ──
-				const vForUClip = Math.max(0, Math.min(1, sampleVValue));
-				const { minU: insoleMinUAtV, maxU: insoleMaxUAtV } =
-					sampleInsoleUExtent(vForUClip);
-				const distToHeelMm =
-					((sampleUValue - insoleMinUAtV) * lengthSpan) /
-					Math.max(mmToWorld, 1e-6);
-				const distToToeMm =
-					((insoleMaxUAtV - sampleUValue) * lengthSpan) /
-					Math.max(mmToWorld, 1e-6);
-				const distToUEdgeMm = Math.min(distToHeelMm, distToToeMm);
-				if (distToUEdgeMm < 0) {
-					const overshootMm = -distToUEdgeMm;
-					const clampedU = Math.max(
-						insoleMinUAtV,
-						Math.min(insoleMaxUAtV, sampleUValue),
-					);
-					sampleUValue = clampedU;
-					const clampedRawU = heelAtMin ? clampedU : 1 - clampedU;
-					worldLength = lengthMin + clampedRawU * lengthSpan;
-					const fadeSpan = insoleEdgeBlendMm * 2;
-					if (overshootMm >= fadeSpan) {
-						taper = 0;
-					} else {
-						taper *= quinticEase(1 - overshootMm / fadeSpan);
-					}
-				} else if (distToUEdgeMm < insoleEdgeBlendMm) {
-					taper *= quinticEase(distToUEdgeMm / insoleEdgeBlendMm);
-				}
-
-				const sampleVClamped = Math.max(0, Math.min(1, sampleVValue));
-				const sampleUFinal = Math.max(0, Math.min(1, sampleUValue));
-				const surfaceH = sampleHeight(sampleUFinal, sampleVClamped);
-
-				// Map local XY to insole axes
-				const c: Record<string, number> = { x: 0, y: 0, z: 0 };
-				c[widthAxis] = worldWidth;
-				c[lengthAxis] = worldLength;
-				// Blend between the per-vertex insole surface (taper = 0, at the
-				// perimeter → zero gap) and the element's target height (taper = 1,
-				// deep inside). Inset elements carve a bowl below the surface; additive
-				// elements ride a flat therapeutic plateau (centre-based) inside while
-				// still meeting the surface exactly at the rim.
-				if (isInset) {
-					const depthWorld = targetHeightMm * mmToWorld;
-					c[heightAxis] = surfaceH - depthWorld * taper;
-				} else if (floorMode === 'sole') {
-					c[heightAxis] = surfaceH + rawLocalHeight * taper;
-				} else {
-					const plateauTop = (baseSurfaceHeight ?? surfaceH) + rawLocalHeight;
-					c[heightAxis] = surfaceH + (plateauTop - surfaceH) * taper;
-				}
-
-				pos.setXYZ(i, c.x, c.y, c.z);
+			// Build the read-only insole surface sampler on first use (cached).
+			if (!surfaceSampler) {
+				surfaceSampler = getInsoleSurfaceSampler(insoleGeometry);
 			}
 
-			if (floorMode !== 'sole') {
-				const trimmedGeom = trimAdditiveOverlayGeometry({
-					geometry: geom,
+			// Render the element as a smooth raised pad built from its top-surface
+			// height field and conformed onto the insole (the same representation as
+			// the exported single-piece insole). This fills the footprint, melts
+			// flush at the boundary (zero gap), and rises to the requested peak
+			// height for every element regardless of the STL's native thickness.
+			const sheet = buildConformedElementSheet({
+				field,
+				sampler: surfaceSampler,
+				centreLengthWorld,
+				centreWidthWorld,
+				rotationRad: resolved.rotationRad,
+				scaleWidth,
+				scaleLength,
+				scaleHeight,
 					lengthAxis,
 					widthAxis,
 					heightAxis,
-					lengthMin,
-					widthMin,
-					lengthSpan,
-					widthSpan,
-					heelAtMin,
-					surfaceHeightSampler: sampleHeight,
-					epsilon: SURFACE_EPSILON,
-				});
-				if (!trimmedGeom) {
-					warnTrimFallbackOnce(el.id);
-				} else {
-					geom = trimmedGeom;
-				}
-			}
-
-			pos.needsUpdate = true;
-			geom = smoothElementOverlayGeometry(geom, mmToWorld, {
-				preservePlateau: true,
+				seedHeight: (lengthWorld, widthWorld) => {
+					const rawUSeed =
+						(lengthWorld - lengthMin) / Math.max(lengthSpan, 1e-6);
+					const uSeed = heelAtMin ? rawUSeed : 1 - rawUSeed;
+					const vSeed = (widthWorld - widthMin) / Math.max(widthSpan, 1e-6);
+					return sampleHeight(uSeed, vSeed);
+				},
+				maxRiseWorld: targetHeightMm * mmToWorld,
+				edgeFadeCells: 7,
+				elementColorHex: overlayColorHex,
+				insoleColorHex: overlayColorHex,
 			});
 
 			result.push({
-				geometry: geom,
-				colorHex: ELEMENT_COLORS[item.color] ?? '#999',
+				geometry: sheet,
+				colorHex: overlayColorHex,
 				elementId: el.id,
 				stackOrder,
 				isInset: false,
+				vertexColors: true,
 			});
 			continue;
 		}
@@ -3233,7 +2255,7 @@ export function buildElementOverlayGeometries(
 			if (insetGeom) {
 				result.push({
 					geometry: smoothElementOverlayGeometry(insetGeom, mmToWorld),
-					colorHex: ELEMENT_COLORS[item.color] ?? '#999',
+					colorHex: overlayColorHex,
 					elementId: el.id,
 					stackOrder,
 					isInset: true,
@@ -3262,7 +2284,7 @@ export function buildElementOverlayGeometries(
 				geometry: smoothElementOverlayGeometry(overlayGeom, mmToWorld, {
 					preservePlateau: !isThicknessOnlyElement(item),
 				}),
-				colorHex: ELEMENT_COLORS[item.color] ?? '#999',
+				colorHex: overlayColorHex,
 				elementId: el.id,
 				stackOrder,
 				isInset: false,
@@ -3285,7 +2307,7 @@ export function buildElementOverlayGeometries(
 			geometry: smoothElementOverlayGeometry(volumeGeom, mmToWorld, {
 				preservePlateau: !isThicknessOnlyElement(item),
 			}),
-			colorHex: ELEMENT_COLORS[item.color] ?? '#999',
+			colorHex: overlayColorHex,
 			elementId: el.id,
 			stackOrder,
 			isInset: false,
@@ -3349,6 +2371,8 @@ export function applyElementColors(
 			widthSpan,
 			heelAtMin,
 			mmToWorld: options?.mmToWorld ?? 1,
+			sampleInsoleExtent: geometryAnalysis.sampleInsoleExtent,
+			sampleInsoleUExtent: geometryAnalysis.sampleInsoleUExtent,
 		});
 		const resolvedElement = {
 			...el,

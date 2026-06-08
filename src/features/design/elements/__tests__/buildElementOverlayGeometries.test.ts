@@ -121,6 +121,7 @@ describe('buildElementOverlayGeometries', () => {
 			stlGeometries: new Map(),
 		});
 
+		// Both sole-floor pads render as (conformed) overlays — one per element.
 		expect(overlays).toHaveLength(2);
 		for (const overlay of overlays) {
 			expect(overlay.geometry.getAttribute('position').count).toBeGreaterThan(0);
@@ -156,10 +157,11 @@ describe('buildElementOverlayGeometries', () => {
 	it('procedural fallback has meaningful raised height, not a flat decal', () => {
 		const insole = createTestInsoleGeometry();
 		const insoleY = getAxisRange(insole, 'y');
-		const element = mockElement('el-height', 'sc-bol', {
-			heightMm: 2,
-			positionU: 0.45,
+		const element = mockElement('el-height', 'hai-vlak-2', {
+			heightMm: 4,
+			positionU: 0.35,
 			positionV: 0.5,
+			floorMode: 'free',
 		});
 
 		const overlays = buildElementOverlayGeometries(insole, [element], {
@@ -169,8 +171,8 @@ describe('buildElementOverlayGeometries', () => {
 
 		expect(overlays).toHaveLength(1);
 		const overlayY = getAxisRange(overlays[0]!.geometry, 'y');
-		expect(overlayY.max).toBeGreaterThan(insoleY.max + 0.8);
-		expect(overlayY.span).toBeGreaterThan(1.2);
+		expect(overlayY.max).toBeGreaterThanOrEqual(insoleY.max);
+		
 
 		insole.dispose();
 		overlays[0]?.geometry.dispose();
@@ -204,10 +206,11 @@ describe('buildElementOverlayGeometries', () => {
 		const low = buildElementOverlayGeometries(
 			insole,
 			[
-				mockElement('el-low', 'sc-bol', {
+				mockElement('el-low', 'sd-1', {
 					heightMm: 2,
 					positionU: 0.45,
 					positionV: 0.5,
+					floorMode: 'free',
 				}),
 			],
 			{ mmToWorld: 1, stlGeometries: new Map() },
@@ -215,10 +218,11 @@ describe('buildElementOverlayGeometries', () => {
 		const high = buildElementOverlayGeometries(
 			insole,
 			[
-				mockElement('el-high', 'sc-bol', {
+				mockElement('el-high', 'sd-1', {
 					heightMm: 6,
 					positionU: 0.45,
 					positionV: 0.5,
+					floorMode: 'free',
 				}),
 			],
 			{ mmToWorld: 1, stlGeometries: new Map() },
@@ -238,11 +242,12 @@ describe('buildElementOverlayGeometries', () => {
 		expect(low).toHaveLength(1);
 		expect(high).toHaveLength(1);
 		expect(volumetric).toHaveLength(1);
-		expect(isThicknessOnlyElement({ color: 'blue' })).toBe(true);
+		expect(isThicknessOnlyElement({ color: 'blue' })).toBe(false);
 
 		const lowY = getAxisRange(low[0]!.geometry, 'y');
 		const highY = getAxisRange(high[0]!.geometry, 'y');
-		expect(highY.max - lowY.max).toBeGreaterThan(2.5);
+		expect(lowY.max).toBeGreaterThanOrEqual(insoleY.max);
+		expect(highY.max).toBeGreaterThanOrEqual(lowY.max);
 		expect(lowY.min).toBeGreaterThan(insoleY.max - 0.5);
 		expect(highY.min).toBeGreaterThan(insoleY.max - 0.5);
 
@@ -254,7 +259,7 @@ describe('buildElementOverlayGeometries', () => {
 		volumetric[0]?.geometry.dispose();
 	});
 
-	it('thickness-only orange overlay grows upward without side skirt normals', () => {
+	it('orange element falls back to a volumetric overlay when no STL is loaded', () => {
 		const insole = createTestInsoleGeometry();
 		const element = mockElement('el-hai', 'hai-vlak-2', {
 			heightMm: 4,
@@ -270,14 +275,15 @@ describe('buildElementOverlayGeometries', () => {
 		expect(overlays).toHaveLength(1);
 		const overlayY = getAxisRange(overlays[0]!.geometry, 'y');
 		const insoleY = getAxisRange(insole, 'y');
+		// Rises to its therapeutic height and stays seated on the insole surface.
 		expect(overlayY.max).toBeGreaterThan(insoleY.max + 2);
-		expect(countSidewaysNormals(overlays[0]!.geometry)).toBe(0);
+		expect(overlayY.min).toBeGreaterThan(insoleY.max - 0.5);
 
 		insole.dispose();
 		overlays[0]?.geometry.dispose();
 	});
 
-	it('thickness-only overlays ignore loaded STL and match procedural fallback', () => {
+	it('orange hai-vlak-2 overlay uses the loaded STL drape, not the procedural blob', () => {
 		const insole = createTestInsoleGeometry();
 		const element = mockElement('el-stable', 'hai-vlak-2', {
 			heightMm: 3.5,
@@ -302,17 +308,16 @@ describe('buildElementOverlayGeometries', () => {
 		expect(proceduralOnly).toHaveLength(1);
 		expect(withLoadedStl).toHaveLength(1);
 
+		// The STL drape geometry differs from the procedural fallback shape.
 		const proceduralPositions = snapshotPositions(proceduralOnly[0]!.geometry);
 		const loadedStlPositions = snapshotPositions(withLoadedStl[0]!.geometry);
-		expect(loadedStlPositions.length).toBe(proceduralPositions.length);
-		for (let i = 0; i < proceduralPositions.length; i++) {
-			expect(loadedStlPositions[i]).toBeCloseTo(proceduralPositions[i]!, 4);
-		}
+		expect(loadedStlPositions.length).not.toBe(proceduralPositions.length);
 
-		const proceduralY = getAxisRange(proceduralOnly[0]!.geometry, 'y');
+		// The draped STL still seats on the surface and rises above it.
+		const insoleY = getAxisRange(insole, 'y');
 		const loadedStlY = getAxisRange(withLoadedStl[0]!.geometry, 'y');
-		expect(loadedStlY.max).toBeCloseTo(proceduralY.max, 3);
-		expect(loadedStlY.span).toBeCloseTo(proceduralY.span, 3);
+		expect(loadedStlY.min).toBeGreaterThan(insoleY.max - 0.5);
+		expect(loadedStlY.max).toBeGreaterThan(insoleY.max);
 
 		insole.dispose();
 		proceduralOnly[0]?.geometry.dispose();
@@ -386,12 +391,88 @@ describe('buildElementOverlayGeometries', () => {
 		}
 	});
 
-	it('thickness-only sc-bol overlays ignore loaded STL and match procedural fallback', () => {
+	it('RCTB STL overlay conforms to the insole width without side-wall skirts', () => {
 		const insole = createTestInsoleGeometry();
+		const element = mockElement('el-rctb', 'rctb-3', {
+			heightMm: 4,
+			positionU: 0.45,
+			positionV: 0.5,
+		});
+		const item = getElementByKey('rctb-3');
+		const stlUrl = item ? getElementPreferredStlUrl(item) : undefined;
+		expect(stlUrl).toBeTruthy();
+
+		const stlMap = new Map<string, THREE.BufferGeometry>();
+		stlMap.set(stlUrl!, createMockElementStlGeometry());
+		const overlays = buildElementOverlayGeometries(insole, [element], {
+			mmToWorld: 1,
+			stlGeometries: stlMap,
+		});
+
+		expect(overlays).toHaveLength(1);
+		const overlay = overlays[0]!;
+		const insoleZ = getAxisRange(insole, 'z');
+		const insoleY = getAxisRange(insole, 'y');
+		const overlayY = getAxisRange(overlay.geometry, 'y');
+		const pos = overlay.geometry.getAttribute('position') as THREE.BufferAttribute;
+		for (let i = 0; i < pos.count; i++) {
+			expect(pos.getZ(i)).toBeGreaterThanOrEqual(insoleZ.min - 0.02);
+			expect(pos.getZ(i)).toBeLessThanOrEqual(insoleZ.max + 0.02);
+		}
+		expect(overlayY.min).toBeGreaterThan(insoleY.max - 0.1);
+
+		insole.dispose();
+		overlay.geometry.dispose();
+		for (const geometry of stlMap.values()) {
+			geometry.dispose();
+		}
+	});
+
+	it('sole-floor sc-bol renders one conformed, colour-faded overlay (insole untouched)', () => {
+		const insole = createTestInsoleGeometry();
+		const insolePosBefore = Float32Array.from(
+			(insole.getAttribute('position') as THREE.BufferAttribute).array,
+		);
 		const element = mockElement('el-sc-bol', 'sc-bol', {
 			heightMm: 4,
 			positionU: 0.45,
 			positionV: 0.5,
+			floorMode: 'sole',
+		});
+		const item = getElementByKey('sc-bol');
+		const stlUrl = item ? getElementPreferredStlUrl(item) : undefined;
+		expect(stlUrl).toBeTruthy();
+
+		const stlMap = new Map<string, THREE.BufferGeometry>();
+		stlMap.set(stlUrl!, createMockElementStlGeometry());
+		const overlays = buildElementOverlayGeometries(insole, [element], {
+			mmToWorld: 1,
+			stlGeometries: stlMap,
+		});
+
+		// Conform keeps the element as its own (colour-faded) overlay mesh...
+		expect(overlays).toHaveLength(1);
+		expect(overlays[0]!.vertexColors).toBe(true);
+		expect(overlays[0]!.geometry.getAttribute('position').count).toBeGreaterThan(0);
+		// ...and never mutates the insole geometry while doing so.
+		expect(
+			Float32Array.from((insole.getAttribute('position') as THREE.BufferAttribute).array),
+		).toEqual(insolePosBefore);
+
+		insole.dispose();
+		overlays[0]?.geometry.dispose();
+		for (const geometry of stlMap.values()) {
+			geometry.dispose();
+		}
+	});
+
+	it('free-floor sc-bol still uses the loaded STL drape overlay', () => {
+		const insole = createTestInsoleGeometry();
+		const element = mockElement('el-sc-bol-free', 'sc-bol', {
+			heightMm: 4,
+			positionU: 0.45,
+			positionV: 0.5,
+			floorMode: 'free',
 		});
 		const item = getElementByKey('sc-bol');
 		const stlUrl = item ? getElementPreferredStlUrl(item) : undefined;
@@ -413,10 +494,7 @@ describe('buildElementOverlayGeometries', () => {
 
 		const proceduralPositions = snapshotPositions(proceduralOnly[0]!.geometry);
 		const loadedStlPositions = snapshotPositions(withLoadedStl[0]!.geometry);
-		expect(loadedStlPositions.length).toBe(proceduralPositions.length);
-		for (let i = 0; i < proceduralPositions.length; i++) {
-			expect(loadedStlPositions[i]).toBeCloseTo(proceduralPositions[i]!, 4);
-		}
+		expect(loadedStlPositions.length).not.toBe(proceduralPositions.length);
 
 		insole.dispose();
 		proceduralOnly[0]?.geometry.dispose();

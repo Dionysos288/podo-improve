@@ -30,7 +30,7 @@ const TABS: { key: ElementTab; label: string }[] = [
 type StlSilhouette = { points: [number, number][]; w: number; h: number };
 const silhouetteCache = new Map<string, StlSilhouette>();
 
-/** Load the STL and project its vertices top-down to get a 2D silhouette */
+/** Load the STL and project its top-surface footprint for a clean 2D thumbnail. */
 function buildStlSilhouette(geom: BufferGeometry): StlSilhouette {
 	geom.computeBoundingBox();
 	const bb = geom.boundingBox!;
@@ -38,15 +38,25 @@ function buildStlSilhouette(geom: BufferGeometry): StlSilhouette {
 	const count = pos.count;
 	const sx = bb.max.x - bb.min.x;
 	const sy = bb.max.y - bb.min.y;
+	const sz = bb.max.z - bb.min.z;
 	const w = Math.max(sx, 1e-6);
 	const h = Math.max(sy, 1e-6);
-	const GRID = 32;
+	const topZ = bb.max.z - Math.max(sz * 0.08, 0.05);
+	const GRID = 64;
 	const occupied = new Uint8Array(GRID * GRID);
 	for (let i = 0; i < count; i++) {
+		const z = pos.getZ(i);
+		if (z < topZ) continue;
 		const x = pos.getX(i);
 		const y = pos.getY(i);
-		const gx = Math.min(GRID - 1, Math.max(0, Math.floor(((x - bb.min.x) / w) * GRID)));
-		const gy = Math.min(GRID - 1, Math.max(0, Math.floor(((y - bb.min.y) / h) * GRID)));
+		const gx = Math.min(
+			GRID - 1,
+			Math.max(0, Math.floor(((x - bb.min.x) / w) * GRID)),
+		);
+		const gy = Math.min(
+			GRID - 1,
+			Math.max(0, Math.floor(((y - bb.min.y) / h) * GRID)),
+		);
 		occupied[gy * GRID + gx] = 1;
 	}
 	const boundary: [number, number][] = [];
@@ -183,16 +193,25 @@ function ElementThumbnail({
 		}
 		ctx.closePath();
 
-		// Gradient fill for a 3D-ish look
-		const grad = ctx.createLinearGradient(0, 0, size, size);
+		// Gradient fill for a soft 3D-ish pad preview
+		const grad = ctx.createLinearGradient(0, 0, size * 0.35, size);
 		grad.addColorStop(0, fillColor);
-		grad.addColorStop(1, fillColor + '88');
+		grad.addColorStop(0.55, fillColor);
+		grad.addColorStop(1, `${fillColor}55`);
 		ctx.fillStyle = grad;
 		ctx.fill();
 
+		// Soft highlight
+		ctx.save();
+		ctx.globalAlpha = 0.22;
+		ctx.fillStyle = '#ffffff';
+		ctx.fill();
+		ctx.restore();
+
 		// Outline
-		ctx.strokeStyle = fillColor;
-		ctx.lineWidth = 1.5;
+		ctx.strokeStyle = `${fillColor}cc`;
+		ctx.lineWidth = 1.25;
+		ctx.lineJoin = 'round';
 		ctx.stroke();
 	}, [silhouette, item.outline, size, fillColor]);
 
@@ -318,7 +337,7 @@ export function ElementsModal({ open, onClose, onAdd, side }: Props) {
 												'hover:border-ui-accent/50 hover:bg-[rgba(255,255,255,0.05)]'
 											)}
 										>
-											<ElementThumbnail item={item} size={48} />
+											<ElementThumbnail item={item} size={56} />
 											<span className="text-center text-[11px] font-medium leading-tight text-ui-text">
 												{item.label}
 											</span>

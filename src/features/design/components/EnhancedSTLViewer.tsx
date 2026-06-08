@@ -35,7 +35,7 @@ import { flattenInsoleBottom } from '@/src/features/design/utils/flattenInsoleBo
 import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpPanel';
 import type { CorrectionKey } from '@/src/shared/components/design/correctionsCatalog';
 import type { PlacedElement } from '@/src/features/design/elements/types';
-import { applyElements, applyElementColors, buildElementOverlayGeometries, DIEPELEMENTEN_ITEMS, ELEMENTEN_ITEMS, getElementByKey, getElementPreferredStlUrl, getElementStlLoadUrls, type ElementOverlayData } from '@/src/features/design/elements';
+import { applyElementColors, applyElements, buildElementOverlayGeometries, DIEPELEMENTEN_ITEMS, ELEMENTEN_ITEMS, getElementByKey, getElementPreferredStlUrl, getElementStlLoadUrls, type ElementOverlayData } from '@/src/features/design/elements';
 import { VIEWER_MATERIALS } from '@/src/features/design/viewer/viewerMaterialProfile';
 import {
 	getScanOverlayMaterialProps,
@@ -43,7 +43,7 @@ import {
 	SCAN_OVERLAY_RENDER_ORDER,
 	type ScanOverlayViewerMode,
 } from '@/src/features/design/viewer/scanOverlayRender';
-import { tessellateAndWeldGeometry, meltElementOverlayGeometry } from '@/src/features/design/viewer/smoothOverlayGeometry';
+import { tessellateAndWeldGeometry } from '@/src/features/design/viewer/smoothOverlayGeometry';
 import { applyTrimlineRimSilhouette } from '@/src/features/design/viewer/trimlineRimSilhouette';
 import { applyElementTrimlineFootprint } from '@/src/features/design/viewer/elementTrimlineFootprint';
 import { ViewerPostFX } from '@/src/features/design/viewer/ViewerPostFX';
@@ -68,7 +68,7 @@ import { CrossSectionView } from './CrossSectionView';
 import { ScanInsoleUpAxisSampler } from './ScanInsoleUpAxisSampler';
 import { composeOverlayManualYawMatrix } from '@/src/features/design/utils/scanManualAlignment';
 import {
-	computeOverlayTopSurfaceAlignOffset,
+	computeOverlayRestingPose,
 	DEFAULT_EMBED_SCAN_HEIGHT_FRACTION,
 	DEFAULT_SINK_BIAS_MM,
 } from '@/src/features/design/utils/scanOverlayAlignment';
@@ -327,6 +327,8 @@ const MM_TO_WORLD = 0.4;
 // Distinct from element colors; reads as carved-away material in the side view.
 const SIDE_ENGRAVING_COLOR = '#38bdf8';
 const SCAN_OVERLAY_LATERAL_WORLD = { left: -30, right: 30 } as const;
+// Stable placeholder for computeOverlayRestingPose's unused insoleUpWorld arg.
+const REST_POSE_UP_PLACEHOLDER = new THREE.Vector3(0, 1, 0);
 const DEFAULT_VEC3: [number, number, number] = [0, 0, 0];
 const EMPTY_TEXT_ANNOTATIONS: TextAnnotation[] = [];
 const EMPTY_PICKED_POINTS: [number, number, number][] = [];
@@ -1077,107 +1079,6 @@ function smoothInsoleTopSurface(
 	for (let v = 0; v < vertCount; v++) {
 		if (!topFacing[v]) continue;
 		pos[v * 3 + hAxisIdx] = smoothRef[v] + residualFactor * (origHeights[v] - smoothRef[v]);
-	}
-
-	posAttr.needsUpdate = true;
-	geometry.computeVertexNormals();
-	return geometry;
-}
-
-/**
- * Blend placed elements smoothly into the insole top surface ("Elementen vloeien").
- *
- * Runs AFTER applyElements has displaced the top surface into raised element pads.
- * Crucially this only smooths the vertices the ELEMENTS moved (detected by diffing
- * against the pre-element height snapshot), plus a few transition rings around them
- * so the element edges melt into the surrounding insole. The rest of the insole top
- * surface is left completely untouched. A moderate iterative Laplacian smooth (along
- * the height axis, averaging over all neighbours) rounds the seams while the low pass
- * count preserves the broad therapeutic element volume.
- */
-function smoothElementsIntoInsole(
-	geometry: THREE.BufferGeometry,
-	/** Height-axis positions captured BEFORE applyElements (full x/y/z array). */
-	basePositions: Float32Array,
-	passes = 14,
-	alpha = 0.5,
-	dilateRings = 3,
-	normalThreshold = 0.2,
-): THREE.BufferGeometry {
-	if (!geometry.index) return geometry;
-	const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute | null;
-	const normalAttr = geometry.getAttribute('normal') as THREE.BufferAttribute | null;
-	if (!posAttr || !normalAttr) return geometry;
-
-	const vertCount = posAttr.count;
-	if (basePositions.length < vertCount * 3) return geometry;
-	const idxArr = geometry.index.array;
-	const faceCount = idxArr.length / 3;
-
-	geometry.computeBoundingBox();
-	const bbox = geometry.boundingBox!;
-	const sz = bbox.getSize(new THREE.Vector3());
-	const hAxisIdx: 0 | 1 | 2 = sz.x <= sz.y && sz.x <= sz.z ? 0 : sz.y <= sz.z ? 1 : 2;
-
-	const neighborSets: Set<number>[] = Array.from({ length: vertCount }, () => new Set<number>());
-	for (let f = 0; f < faceCount; f++) {
-		const a = idxArr[f * 3], b = idxArr[f * 3 + 1], c = idxArr[f * 3 + 2];
-		neighborSets[a].add(b); neighborSets[a].add(c);
-		neighborSets[b].add(a); neighborSets[b].add(c);
-		neighborSets[c].add(a); neighborSets[c].add(b);
-	}
-
-	const normals = normalAttr.array as Float32Array;
-	const topFacing = new Uint8Array(vertCount);
-	for (let v = 0; v < vertCount; v++) {
-		if (normals[v * 3 + hAxisIdx] > normalThreshold) topFacing[v] = 1;
-	}
-
-	const pos = posAttr.array as Float32Array;
-
-	// Mark only the vertices the elements actually displaced.
-	let maxDelta = 1e-6;
-	const deltas = new Float32Array(vertCount);
-	for (let v = 0; v < vertCount; v++) {
-		const d = Math.abs(pos[v * 3 + hAxisIdx] - basePositions[v * 3 + hAxisIdx]);
-		deltas[v] = d;
-		if (d > maxDelta) maxDelta = d;
-	}
-	// Nothing moved → no elements affect the surface, leave the insole alone.
-	if (maxDelta <= 1e-5) return geometry;
-	const threshold = Math.max(1e-5, maxDelta * 0.02);
-	const affected = new Uint8Array(vertCount);
-	for (let v = 0; v < vertCount; v++) {
-		if (deltas[v] > threshold) affected[v] = 1;
-	}
-	// Dilate the affected region so the element edges blend into the insole.
-	for (let r = 0; r < dilateRings; r++) {
-		const snapshot = affected.slice();
-		for (let v = 0; v < vertCount; v++) {
-			if (!snapshot[v]) continue;
-			for (const nb of neighborSets[v]) affected[nb] = 1;
-		}
-	}
-
-	const heights = new Float32Array(vertCount);
-	for (let v = 0; v < vertCount; v++) heights[v] = pos[v * 3 + hAxisIdx];
-	const tmp = heights.slice();
-
-	for (let p = 0; p < passes; p++) {
-		for (let v = 0; v < vertCount; v++) {
-			if (!affected[v] || !topFacing[v]) { tmp[v] = heights[v]; continue; }
-			const nbs = neighborSets[v];
-			if (nbs.size === 0) { tmp[v] = heights[v]; continue; }
-			let sum = 0;
-			for (const nb of nbs) sum += heights[nb]; // ALL neighbours (incl. surrounding insole) pull edges in
-			tmp[v] = heights[v] + alpha * (sum / nbs.size - heights[v]);
-		}
-		heights.set(tmp);
-	}
-
-	for (let v = 0; v < vertCount; v++) {
-		if (!affected[v] || !topFacing[v]) continue;
-		pos[v * 3 + hAxisIdx] = heights[v];
 	}
 
 	posAttr.needsUpdate = true;
@@ -2148,6 +2049,25 @@ function refineRigidICPTrimmed(
 	return { matrix: current, rmseWorld: lastRmse };
 }
 
+/**
+ * ICP-fit acceptance thresholds, scaled to foot length so both feet are judged
+ * identically regardless of scan size. A fit whose RMSE exceeds the threshold,
+ * or that drifts the heel anchor implausibly far from the deterministic frame
+ * fit, is rejected in favour of the frame-based `base` matrix.
+ */
+const REG_RMSE_FLOOR_MM = 4;
+const REG_RMSE_LEN_FRACTION = 0.06;
+const REG_MAX_HEEL_DRIFT_FRACTION = 0.12;
+
+function frameAnchorLengthWorld(anchors: {
+	heel: THREE.Vector3;
+	meta1: THREE.Vector3;
+	meta5: THREE.Vector3;
+}): number {
+	const fore = new THREE.Vector3().addVectors(anchors.meta1, anchors.meta5).multiplyScalar(0.5);
+	return Math.max(1e-6, anchors.heel.distanceTo(fore));
+}
+
 function computeOverlayRegistration(
 	source: THREE.BufferGeometry | null,
 	target: THREE.BufferGeometry | null,
@@ -2172,9 +2092,34 @@ function computeOverlayRegistration(
 	}
 	const refined = refineRigidICPTrimmed(source, target, base, 5);
 
+	// Deterministic fallback: reject a bad ICP fit and snap back to the stable
+	// frame-based alignment so left/right register with comparable quality.
+	const footLenWorld = frameAnchorLengthWorld(tgtAnchors);
+	const footLenMm = footLenWorld * worldToMm;
+	const rmseThresholdMm = Math.max(REG_RMSE_FLOOR_MM, footLenMm * REG_RMSE_LEN_FRACTION);
+	const rmseMm = refined.rmseWorld * worldToMm;
+
+	const baseHeel = srcAnchors.heel.clone().applyMatrix4(base);
+	const refinedHeel = srcAnchors.heel.clone().applyMatrix4(refined.matrix);
+	const heelDriftWorld = baseHeel.distanceTo(refinedHeel);
+	const maxHeelDriftWorld = footLenWorld * REG_MAX_HEEL_DRIFT_FRACTION;
+
+	const icpRejected =
+		!Number.isFinite(rmseMm) ||
+		rmseMm > rmseThresholdMm ||
+		heelDriftWorld > maxHeelDriftWorld;
+
+	if (icpRejected) {
+		return {
+			matrix: base,
+			rmseMm: Number.isFinite(rmseMm) ? rmseMm : 0,
+			valid: true,
+		};
+	}
+
 	return {
 		matrix: refined.matrix,
-		rmseMm: refined.rmseWorld * worldToMm,
+		rmseMm,
 		valid: true,
 	};
 }
@@ -2272,6 +2217,33 @@ function buildTrimlineProfileFromGeometry(
 		samplesT,
 		halfWidthsWorld,
 	};
+}
+
+const OVERLAY_RISE_EMISSIVE_KEY = 'podo-overlay-rise-emissive';
+
+function patchOverlayRiseEmissiveShader(
+	shader: THREE.WebGLProgramParametersWithUniforms,
+): void {
+	shader.vertexShader = shader.vertexShader.replace(
+		'#include <common>',
+		`#include <common>
+attribute float rise;
+varying float vElementRise;`,
+	);
+	shader.vertexShader = shader.vertexShader.replace(
+		'#include <begin_vertex>',
+		`#include <begin_vertex>
+vElementRise = rise;`,
+	);
+	shader.fragmentShader = shader.fragmentShader.replace(
+		'#include <common>',
+		`#include <common>
+varying float vElementRise;`,
+	);
+	shader.fragmentShader = shader.fragmentShader.replace(
+		'vec3 totalEmissiveRadiance = emissive;',
+		'vec3 totalEmissiveRadiance = emissive * smoothstep(0.03, 0.18, vElementRise);',
+	);
 }
 
 function STLMesh({
@@ -3634,20 +3606,17 @@ function STLMesh({
 		const overlays = buildElementOverlayGeometries(geom, currentPlacedElements, {
 			mmToWorld: currentMmToWorld,
 			stlGeometries: elementStlGeometriesRef.current,
+			insoleColorHex: color,
 		});
 		const mw = currentMmToWorld;
-		const vloeien = currentVloeien;
 		for (const overlay of overlays) {
 			const effectiveOffsets = boxOffsetsByElementId.get(overlay.elementId);
 			overlay.geometry = applySavedBoxGridOffsetsToGeometry(overlay.geometry, effectiveOffsets, mw);
 			// Trimline edit follows box-grid so the rim reshape matches the geometry the
 			// user was dragging on (box lattice is applied first during editing too).
 			applyElementTrimlineFootprint(overlay.geometry, trimlineProfileByElementId.get(overlay.elementId), mw);
-			// "Elementen vloeien": melt the visible pad into the body (round + lower
-			// its raised profile) while staying a pickable mesh.
-			if (vloeien) {
-				overlay.geometry = meltElementOverlayGeometry(overlay.geometry);
-			}
+			// The element STLs already blend smoothly onto the insole surface, so no
+			// extra melt/smoothing is applied to the overlay pad.
 		}
 		lastOverlayBuildRef.current = {
 			geometry: geom,
@@ -4076,20 +4045,19 @@ function STLMesh({
 		if (nextSideProfileGeometry) {
 			applyHeelEdgeThicknessBand(nextSideProfileGeometry, heelEdgeThicknessMm, mmToWorld || 1, side);
 		}
-		// Apply element height displacements (raised pads)
-		if (hasPlacedElements && currentPlacedElements) {
-			// "Elementen vloeien" melts the elements (not the whole insole) into the
-			// body. Snapshot the surface BEFORE applyElements so we can detect exactly
-			// which vertices the elements moved and smooth only those.
-			const doVloeien = elementsVloeienRef.current && meshRole === 'insole';
-			let preElementPositions: Float32Array | null = null;
-			if (doVloeien) {
-				const prePos = finalGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
-				if (prePos) preElementPositions = new Float32Array(prePos.array as Float32Array);
-			}
-			applyElements(finalGeometry, currentPlacedElements, { mmToWorld: mmToWorld || 1 });
-			if (doVloeien && preElementPositions) {
-				smoothElementsIntoInsole(finalGeometry, preElementPositions);
+		// Additive element pads render as separate draped overlays and must NOT
+		// deform the base insole. Depth (inset) elements are the exception: they
+		// carve their pocket into the insole surface here so the recess is visible
+		// in the viewer and matches the exported single-piece insole.
+		if (meshRole === 'insole') {
+			const insetElements = currentPlacedElements?.filter(
+				(element) => element.heightMm < 0,
+			);
+			if (insetElements && insetElements.length > 0) {
+				applyElements(finalGeometry, insetElements, {
+					mmToWorld: mmToWorld || 1,
+					stlGeometries: elementStlGeometriesRef.current,
+				});
 			}
 		}
 		applyHeelEdgeThicknessBand(finalGeometry, heelEdgeThicknessMm, mmToWorld || 1, side);
@@ -5046,6 +5014,20 @@ function STLMesh({
 						printElementSelectionHighlight && selectedHere;
 					const highlightHover = hoveredHere;
 					const highlightHere = highlightSelected || highlightHover;
+					// "Flow onto sole" pads carry a baked rim→interior colour fade. In
+					// the normal design view we render them matte (insole material) with
+					// those vertex colours so they read as one surface; in side
+					// inspection we keep the solid glossy colour so the form stays clear.
+					const useBlendedSurface =
+						overlay.vertexColors === true &&
+						!insoleSideInspection &&
+						overlay.geometry.getAttribute('color') != null;
+					const riseEmissiveProps = overlay.geometry.getAttribute('rise')
+						? {
+								onBeforeCompile: patchOverlayRiseEmissiveShader,
+								customProgramCacheKey: () => OVERLAY_RISE_EMISSIVE_KEY,
+							}
+						: {};
 					return (
 						<mesh
 							key={overlay.elementId}
@@ -5086,24 +5068,34 @@ function STLMesh({
 									: undefined
 							}
 						>
-							{VIEWER_MATERIALS.elementOverlay.clearcoat != null ? (
-								<meshPhysicalMaterial
-									color={overlay.colorHex}
-									emissive={
-										highlightHere
-											? '#6bcda8'
-											: insoleSideInspection
-												? overlay.colorHex
-												: '#000000'
-									}
+							{useBlendedSurface ? (
+								<meshStandardMaterial
+									{...riseEmissiveProps}
+									vertexColors
+									color="#ffffff"
+									emissive={highlightHere ? '#6bcda8' : '#000000'}
 									emissiveIntensity={
-										highlightHere
-											? highlightSelected
-												? 0.32
-												: 0.14
-											: insoleSideInspection
-												? 0.55
-												: 0
+										highlightHere ? (highlightSelected ? 0.32 : 0.14) : 0
+									}
+									roughness={VIEWER_MATERIALS.insoleBase.roughness}
+									metalness={VIEWER_MATERIALS.insoleBase.metalness}
+									flatShading={false}
+									side={THREE.DoubleSide}
+									shadowSide={THREE.DoubleSide}
+									clippingPlanes={undefined}
+									depthTest
+									depthWrite
+									polygonOffset
+									polygonOffsetFactor={-3}
+									polygonOffsetUnits={-3}
+								/>
+							) : VIEWER_MATERIALS.elementOverlay.clearcoat != null ? (
+								<meshPhysicalMaterial
+									{...riseEmissiveProps}
+									color={overlay.colorHex}
+									emissive={highlightHere ? '#6bcda8' : '#000000'}
+									emissiveIntensity={
+										highlightHere ? (highlightSelected ? 0.32 : 0.14) : 0
 									}
 									roughness={VIEWER_MATERIALS.elementOverlay.roughness}
 									metalness={VIEWER_MATERIALS.elementOverlay.metalness}
@@ -5123,22 +5115,11 @@ function STLMesh({
 								/>
 							) : (
 								<meshStandardMaterial
+									{...riseEmissiveProps}
 									color={overlay.colorHex}
-									emissive={
-										highlightHere
-											? '#6bcda8'
-											: insoleSideInspection
-												? overlay.colorHex
-												: '#000000'
-									}
+									emissive={highlightHere ? '#6bcda8' : '#000000'}
 									emissiveIntensity={
-										highlightHere
-											? highlightSelected
-												? 0.32
-												: 0.14
-											: insoleSideInspection
-												? 0.55
-												: 0
+										highlightHere ? (highlightSelected ? 0.32 : 0.14) : 0
 									}
 									roughness={VIEWER_MATERIALS.elementOverlay.roughness}
 									metalness={VIEWER_MATERIALS.elementOverlay.metalness}
@@ -6084,30 +6065,37 @@ const EnhancedSTLViewerInner = forwardRef<
 		const leftRegMatEl = leftOverlayRegistration.matrix.elements;
 		const leftRegSig = `${leftRegMatEl[12]}-${leftRegMatEl[13]}-${leftRegMatEl[14]}`;
 
-		const leftScanOverlayAnchorTuple = useMemo((): THREE.Vector3Tuple => {
-			const lateral = SCAN_OVERLAY_LATERAL_WORLD.left;
-			const v = computeOverlayTopSurfaceAlignOffset(
+		const leftScanRestPose = useMemo(
+			() =>
+				computeOverlayRestingPose(
+					leftGeometry,
+					leftOverlayGeometry,
+					leftOverlayRegistration,
+					// insoleUpWorld is not consumed by the resting-pose solve; passing a
+					// constant keeps the per-frame up-axis sampler from re-triggering this
+					// heavy compute while the insole matrix settles on initial load.
+					REST_POSE_UP_PLACEHOLDER,
+					{
+						mmToWorld: MM_TO_WORLD,
+						embedScanHeightFraction: DEFAULT_EMBED_SCAN_HEIGHT_FRACTION,
+						sinkBiasMm: DEFAULT_SINK_BIAS_MM,
+						maxDeltaWorld: MM_TO_WORLD * 70,
+					},
+				),
+			[
 				leftGeometry,
+				leftGeomAlignSig,
 				leftOverlayGeometry,
+				leftOverlayAlignSig,
 				leftOverlayRegistration,
-				new THREE.Vector3(...leftInsoleAxisWorld),
-				{
-					mmToWorld: MM_TO_WORLD,
-					embedScanHeightFraction: DEFAULT_EMBED_SCAN_HEIGHT_FRACTION,
-					sinkBiasMm: DEFAULT_SINK_BIAS_MM,
-					maxDeltaWorld: MM_TO_WORLD * 70,
-				},
-			);
-			return [lateral, v.y, v.z];
-		}, [
-			leftGeometry,
-			leftGeomAlignSig,
-			leftOverlayGeometry,
-			leftOverlayAlignSig,
-			leftOverlayRegistration,
-			leftRegSig,
-			leftInsoleAxisWorld,
-		]);
+				leftRegSig,
+			],
+		);
+
+		const leftScanOverlayAnchorTuple = useMemo(
+			(): THREE.Vector3Tuple => [SCAN_OVERLAY_LATERAL_WORLD.left, leftScanRestPose.offsetY, 0],
+			[leftScanRestPose],
+		);
 
 		const rightGeomAlignSig = `${rightGeometry?.uuid ?? ''}|${rightGeometry?.getAttribute('position')?.count ?? 0}`;
 		const rightOverlayAlignSig =
@@ -6115,60 +6103,117 @@ const EnhancedSTLViewerInner = forwardRef<
 		const rightRegMatEl = rightOverlayRegistration.matrix.elements;
 		const rightRegSig = `${rightRegMatEl[12]}-${rightRegMatEl[13]}-${rightRegMatEl[14]}`;
 
-		const rightScanOverlayAnchorTuple = useMemo((): THREE.Vector3Tuple => {
-			const lateral = SCAN_OVERLAY_LATERAL_WORLD.right;
-			const v = computeOverlayTopSurfaceAlignOffset(
+		const rightScanRestPose = useMemo(
+			() =>
+				computeOverlayRestingPose(
+					rightGeometry,
+					rightOverlayGeometry,
+					rightOverlayRegistration,
+					// See leftScanRestPose: insoleUpWorld is unused by the solve.
+					REST_POSE_UP_PLACEHOLDER,
+					{
+						mmToWorld: MM_TO_WORLD,
+						embedScanHeightFraction: DEFAULT_EMBED_SCAN_HEIGHT_FRACTION,
+						sinkBiasMm: DEFAULT_SINK_BIAS_MM,
+						maxDeltaWorld: MM_TO_WORLD * 70,
+					},
+				),
+			[
 				rightGeometry,
+				rightGeomAlignSig,
 				rightOverlayGeometry,
+				rightOverlayAlignSig,
 				rightOverlayRegistration,
-				new THREE.Vector3(...rightInsoleAxisWorld),
-				{
-					mmToWorld: MM_TO_WORLD,
-					embedScanHeightFraction: DEFAULT_EMBED_SCAN_HEIGHT_FRACTION,
-					sinkBiasMm: DEFAULT_SINK_BIAS_MM,
-					maxDeltaWorld: MM_TO_WORLD * 70,
-				},
-			);
-			return [lateral, v.y, v.z];
-		}, [
-			rightGeometry,
-			rightGeomAlignSig,
-			rightOverlayGeometry,
-			rightOverlayAlignSig,
-			rightOverlayRegistration,
-			rightRegSig,
-			rightInsoleAxisWorld,
-		]);
+				rightRegSig,
+			],
+		);
+
+		const rightScanOverlayAnchorTuple = useMemo(
+			(): THREE.Vector3Tuple => [SCAN_OVERLAY_LATERAL_WORLD.right, rightScanRestPose.offsetY, 0],
+			[rightScanRestPose],
+		);
 		const leftScanMatrix = useMemo(() => {
 			const upAxis = new THREE.Vector3(...leftInsoleAxisWorld).normalize();
 			if (upAxis.lengthSq() < 1e-12) upAxis.set(0, 1, 0);
+			const anchor = new THREE.Vector3(...leftScanOverlayAnchorTuple);
+			const pitch = {
+				axisWorld: leftScanRestPose.lateralAxisWorld,
+				angleRad: leftScanRestPose.pitchRad,
+				pivotWorld: leftScanRestPose.pivotWorld.clone().add(anchor),
+			};
+			const toeAntiPen =
+				Math.abs(leftScanRestPose.toeAntiPenPitchRad) > 1e-6
+					? {
+							axisWorld: leftScanRestPose.lateralAxisWorld,
+							angleRad: leftScanRestPose.toeAntiPenPitchRad,
+							pivotWorld: leftScanRestPose.heelPivotWorld.clone().add(anchor),
+						}
+					: null;
+			const heelSeat =
+				Math.abs(leftScanRestPose.heelSeatPitchRad) > 1e-6
+					? {
+							axisWorld: leftScanRestPose.lateralAxisWorld,
+							angleRad: leftScanRestPose.heelSeatPitchRad,
+							pivotWorld: leftScanRestPose.toePivotWorld.clone().add(anchor),
+						}
+					: null;
 			return composeOverlayManualYawMatrix(
 				leftScanOverlayAnchorTuple,
 				leftOverlayRegistration.matrix,
 				leftComposeScanAlignment,
 				upAxis,
+				pitch,
+				toeAntiPen,
+				heelSeat,
 			);
 		}, [
 			leftComposeScanAlignment,
 			leftInsoleAxisWorld,
 			leftOverlayRegistration.matrix,
 			leftScanOverlayAnchorTuple,
+			leftScanRestPose,
 		]);
 
 		const rightScanMatrix = useMemo(() => {
 			const upAxis = new THREE.Vector3(...rightInsoleAxisWorld).normalize();
 			if (upAxis.lengthSq() < 1e-12) upAxis.set(0, 1, 0);
+			const anchor = new THREE.Vector3(...rightScanOverlayAnchorTuple);
+			const pitch = {
+				axisWorld: rightScanRestPose.lateralAxisWorld,
+				angleRad: rightScanRestPose.pitchRad,
+				pivotWorld: rightScanRestPose.pivotWorld.clone().add(anchor),
+			};
+			const toeAntiPen =
+				Math.abs(rightScanRestPose.toeAntiPenPitchRad) > 1e-6
+					? {
+							axisWorld: rightScanRestPose.lateralAxisWorld,
+							angleRad: rightScanRestPose.toeAntiPenPitchRad,
+							pivotWorld: rightScanRestPose.heelPivotWorld.clone().add(anchor),
+						}
+					: null;
+			const heelSeat =
+				Math.abs(rightScanRestPose.heelSeatPitchRad) > 1e-6
+					? {
+							axisWorld: rightScanRestPose.lateralAxisWorld,
+							angleRad: rightScanRestPose.heelSeatPitchRad,
+							pivotWorld: rightScanRestPose.toePivotWorld.clone().add(anchor),
+						}
+					: null;
 			return composeOverlayManualYawMatrix(
 				rightScanOverlayAnchorTuple,
 				rightOverlayRegistration.matrix,
 				rightComposeScanAlignment,
 				upAxis,
+				pitch,
+				toeAntiPen,
+				heelSeat,
 			);
 		}, [
 			rightComposeScanAlignment,
 			rightInsoleAxisWorld,
 			rightOverlayRegistration.matrix,
 			rightScanOverlayAnchorTuple,
+			rightScanRestPose,
 		]);
 
 		const showRegistrationDebug =

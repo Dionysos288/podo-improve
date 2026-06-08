@@ -40,32 +40,86 @@ export function worldHeightAxisFromProcessedGeometry(
 	return local.transformDirection(mesh.matrixWorld);
 }
 
+/** Optional resting pitch applied in the anchored world frame. */
+export type OverlayRestingPitch = {
+	axisWorld: THREE.Vector3;
+	angleRad: number;
+	/** Pivot in the anchored world frame (pre-anchor pivot + anchor translation). */
+	pivotWorld: THREE.Vector3;
+};
+
+function rotationAboutPivot(
+	axis: THREE.Vector3,
+	angleRad: number,
+	pivot: THREE.Vector3,
+): THREE.Matrix4 {
+	const rot = new THREE.Matrix4().makeRotationAxis(axis, angleRad);
+	const toPivot = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
+	const fromPivot = new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z);
+	return fromPivot.multiply(rot).multiply(toPivot);
+}
+
 export function composeOverlayManualYawMatrix(
 	anchorTranslation: THREE.Vector3Tuple,
 	overlayRegistration: THREE.Matrix4,
 	alignment: ScanManualAlignment | null,
 	upWorld: THREE.Vector3,
+	pitch?: OverlayRestingPitch | null,
+	toeAntiPenPitch?: OverlayRestingPitch | null,
+	heelSeatPitch?: OverlayRestingPitch | null,
 ): THREE.Matrix4 {
 	const composed = overlayRegistration.clone();
-	if (!alignment) return composed;
+	const hasPitch = !!pitch && Math.abs(pitch.angleRad) > 1e-6 && pitch.axisWorld.lengthSq() > 1e-12;
+	const hasToeAntiPen =
+		!!toeAntiPenPitch &&
+		Math.abs(toeAntiPenPitch.angleRad) > 1e-6 &&
+		toeAntiPenPitch.axisWorld.lengthSq() > 1e-12;
+	const hasHeelSeat =
+		!!heelSeatPitch &&
+		Math.abs(heelSeatPitch.angleRad) > 1e-6 &&
+		heelSeatPitch.axisWorld.lengthSq() > 1e-12;
+	if (!alignment && !hasPitch && !hasToeAntiPen && !hasHeelSeat) return composed;
 
-	const up = upWorld.clone();
-	if (up.lengthSq() < 1e-12) {
-		up.set(0, 1, 0);
-	} else {
-		up.normalize();
+	// World rotation applied to the anchored, registered scan. Apply yaw first,
+	// then centre pitch, heel-pivot toe lift, toe-pivot heel seat.
+	let rw = new THREE.Matrix4().identity();
+	if (alignment) {
+		const up = upWorld.clone();
+		if (up.lengthSq() < 1e-12) {
+			up.set(0, 1, 0);
+		} else {
+			up.normalize();
+		}
+		const yawPivot = new THREE.Vector3(
+			alignment.pivot[0],
+			alignment.pivot[1],
+			alignment.pivot[2],
+		);
+		rw = rotationAboutPivot(up, alignment.yawRad, yawPivot);
 	}
-
-	const rot = new THREE.Matrix4().makeRotationAxis(up, alignment.yawRad);
-	const pivot = new THREE.Vector3(
-		alignment.pivot[0],
-		alignment.pivot[1],
-		alignment.pivot[2],
-	);
-	const toPivot = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
-	const fromPivot = new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z);
-	const rw = new THREE.Matrix4().multiplyMatrices(fromPivot, rot);
-	rw.multiply(toPivot);
+	if (hasPitch && pitch) {
+		const axis = pitch.axisWorld.clone().normalize();
+		const pitchMat = rotationAboutPivot(axis, pitch.angleRad, pitch.pivotWorld.clone());
+		rw = pitchMat.multiply(rw);
+	}
+	if (hasToeAntiPen && toeAntiPenPitch) {
+		const axis = toeAntiPenPitch.axisWorld.clone().normalize();
+		const toeMat = rotationAboutPivot(
+			axis,
+			toeAntiPenPitch.angleRad,
+			toeAntiPenPitch.pivotWorld.clone(),
+		);
+		rw = toeMat.multiply(rw);
+	}
+	if (hasHeelSeat && heelSeatPitch) {
+		const axis = heelSeatPitch.axisWorld.clone().normalize();
+		const heelMat = rotationAboutPivot(
+			axis,
+			heelSeatPitch.angleRad,
+			heelSeatPitch.pivotWorld.clone(),
+		);
+		rw = heelMat.multiply(rw);
+	}
 
 	const anchorMat = new THREE.Matrix4().makeTranslation(
 		anchorTranslation[0],
