@@ -5,6 +5,7 @@ import { buildConformedElementSheet } from '@/src/features/design/elements/confo
 import { getInsoleSurfaceSampler } from '@/src/features/design/elements/conformElementToInsole';
 import {
 	getElementStlHeightField,
+	rctbLengthProfileTaper,
 	type ElementStlHeightField,
 } from '@/src/features/design/elements/elementStlHeightField';
 
@@ -88,6 +89,7 @@ function buildSheet(
 		targetWidthMm?: number;
 		targetLengthMm?: number;
 		smoothingPasses?: number;
+		spanFillWidth?: boolean;
 	},
 ): THREE.BufferGeometry {
 	const sampler = getInsoleSurfaceSampler(insole);
@@ -112,6 +114,7 @@ function buildSheet(
 		smoothingPasses: opts.smoothingPasses,
 		elementColorHex: '#d7dadd',
 		insoleColorHex: '#d7dadd',
+		spanFillWidth: opts.spanFillWidth,
 	});
 }
 
@@ -358,6 +361,126 @@ describe('buildConformedElementSheet', () => {
 		// Peak is restored to ~ the raw tallest vertex after the smoothing blur.
 		expect(maxH).toBeGreaterThan(7);
 		stl.dispose();
+	});
+
+	it('rctbLengthProfileTaper is a smooth dome with zero slope at heel and toe', () => {
+		expect(rctbLengthProfileTaper(0)).toBe(0);
+		expect(rctbLengthProfileTaper(0.25)).toBeCloseTo(Math.sin(0.25 * Math.PI));
+		expect(rctbLengthProfileTaper(0.5)).toBeCloseTo(1);
+		expect(rctbLengthProfileTaper(0.75)).toBeCloseTo(Math.sin(0.75 * Math.PI));
+		expect(rctbLengthProfileTaper(1)).toBe(0);
+	});
+
+	it('spanFillWidth peak rise tracks the requested height setting', () => {
+		const insole = createFlatInsole();
+		const field = makeFlatTopField(24, 80, 48, 6);
+		const low = buildSheet(insole, field, {
+			heightMm: 2,
+			targetWidthMm: 80,
+			spanFillWidth: true,
+			smoothingPasses: 0,
+		});
+		const high = buildSheet(insole, field, {
+			heightMm: 4,
+			targetWidthMm: 80,
+			spanFillWidth: true,
+			smoothingPasses: 0,
+		});
+		const lowY = referencedRange(low, 'y');
+		const highY = referencedRange(high, 'y');
+		const lowPeak = lowY.max - INSOLE_TOP_Y;
+		const highPeak = highY.max - INSOLE_TOP_Y;
+		expect(lowPeak).toBeGreaterThan(1.2);
+		expect(highPeak / lowPeak).toBeCloseTo(2, 0);
+		low.dispose();
+		high.dispose();
+		insole.dispose();
+	});
+
+	it('spanFillWidth applies height along heel-to-toe and tapers to zero at the ends', () => {
+		const insole = new THREE.BoxGeometry(120, 8, 100, 24, 2, 24);
+		insole.computeVertexNormals();
+		const g = 24;
+		const sourceWidthMm = 100;
+		const sourceLengthMm = 48;
+		const heightGridMm = new Float32Array(g * g);
+		const occupied = new Uint8Array(g * g);
+		const lo = Math.floor(g * 0.2);
+		const hi = Math.ceil(g * 0.8);
+		for (let gy = 0; gy < g; gy++) {
+			for (let gx = 0; gx < g; gx++) {
+				if (gx < lo || gx >= hi || gy < lo || gy >= hi) continue;
+				occupied[gy * g + gx] = 1;
+				const t = gx / (g - 1);
+				// Mimic solid-bar side walls: high at edges, low in the middle.
+				heightGridMm[gy * g + gx] = 2 + 8 * Math.abs(t - 0.5) * 1.8;
+			}
+		}
+		const field: ElementStlHeightField = {
+			gridSize: g,
+			heightGridMm,
+			occupied,
+			sourceWidthMm,
+			sourceLengthMm,
+			sourceHeightMm: 10,
+			stlMinX: -sourceWidthMm / 2,
+			stlMinY: -sourceLengthMm / 2,
+			stlCenterX: 0,
+			stlCenterY: 0,
+			stlBaseZ: 0,
+			cellW: sourceWidthMm / g,
+			cellL: sourceLengthMm / g,
+		};
+		const sheet = buildSheet(insole, field, {
+			heightMm: 4,
+			targetWidthMm: 100,
+			spanFillWidth: true,
+			smoothingPasses: 0,
+		});
+		const pos = sheet.getAttribute('position') as THREE.BufferAttribute;
+		const rise = sheet.getAttribute('rise') as THREE.BufferAttribute;
+		let centerRise = 0;
+		let edgeRise = 0;
+		let edgeCount = 0;
+		for (let i = 0; i < pos.count; i++) {
+			const x = pos.getX(i);
+			const r = rise.getX(i);
+			if (Math.abs(x) > 18) {
+				edgeRise += r;
+				edgeCount++;
+			} else if (Math.abs(x) < 6) {
+				centerRise = Math.max(centerRise, r);
+			}
+		}
+		expect(centerRise).toBeGreaterThan(0.2);
+		expect(edgeRise / Math.max(edgeCount, 1)).toBeLessThan(centerRise * 0.35);
+		sheet.dispose();
+		insole.dispose();
+	});
+
+	it('spanFillWidth stretches a narrow footprint to the full target width', () => {
+		const insole = new THREE.BoxGeometry(120, 8, 100, 24, 2, 24);
+		insole.computeVertexNormals();
+		const field = makeFlatTopField(24, 100, 48, 10);
+		const narrow = buildSheet(insole, field, {
+			heightMm: 4,
+			targetWidthMm: 100,
+			spanFillWidth: false,
+			smoothingPasses: 0,
+		});
+		const full = buildSheet(insole, field, {
+			heightMm: 4,
+			targetWidthMm: 100,
+			spanFillWidth: true,
+			smoothingPasses: 0,
+		});
+		const narrowZ = referencedRange(narrow, 'z');
+		const fullZ = referencedRange(full, 'z');
+		expect(fullZ.span).toBeGreaterThan(narrowZ.span);
+		expect(fullZ.span).toBeGreaterThan(80);
+		narrow.dispose();
+		full.dispose();
+		insole.dispose();
 	});
 
 	it('never mutates the insole geometry', () => {

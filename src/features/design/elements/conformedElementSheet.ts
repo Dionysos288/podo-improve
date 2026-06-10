@@ -18,8 +18,17 @@
  */
 import * as THREE from 'three';
 import {
+	buildFootprintRowCenterProfile,
+	getCenterlineProfilePeakMm,
+	getFootprintXExtent,
+	getFootprintRowXExtent,
+	getRowFloorProfilePeakMm,
+	rctbLengthProfileTaper,
 	sampleElementHeightMm,
+	sampleRowCenterRawX,
+	sampleRowFloorHeightMm,
 	type ElementStlHeightField,
+	type FootprintXExtent,
 } from './elementStlHeightField';
 import {
 	seatColumnOnSurface,
@@ -52,6 +61,14 @@ export interface ConformedSheetParams {
 	smoothingPasses?: number;
 	elementColorHex: string;
 	insoleColorHex: string;
+	/** Stretch the authored footprint horizontally to span the full target width. */
+	spanFillWidth?: boolean;
+	/** Sin heel-to-toe envelope; set false to keep the STL length profile. */
+	lengthProfileTaper?: boolean;
+	/** `rowFloor` uses the per-row minimum height (cup floor) for uniform thickness. */
+	heightProfile?: 'centerline' | 'rowFloor';
+	/** Per-slice width shift so heel-wall pads follow a curved cup rim. */
+	adjustWidthWorld?: (lengthWorld: number, widthWorld: number) => number;
 }
 
 function smoothstep(edge0: number, edge1: number, x: number): number {
@@ -264,6 +281,39 @@ function smoothRiseGrid(
 	}
 }
 
+/** Wide lateral blur — softens the STL's sharp inner cliff without a hard cap line. */
+function smoothRiseGridLateral(
+	rise: Float32Array,
+	active: Uint8Array,
+	g: number,
+	passes: number,
+): void {
+	const scratch = new Float32Array(rise.length);
+	const kernel = [0.06, 0.1, 0.14, 0.2, 0.2, 0.14, 0.1, 0.06];
+	const radius = 4;
+	for (let pass = 0; pass < passes; pass++) {
+		scratch.set(rise);
+		for (let gy = 0; gy < g; gy++) {
+			for (let gx = 0; gx < g; gx++) {
+				const i = gy * g + gx;
+				if (!active[i]) continue;
+				let sum = 0;
+				let wSum = 0;
+				for (let d = -radius; d <= radius; d++) {
+					const nx = gx + d;
+					if (nx < 0 || nx >= g) continue;
+					const ni = gy * g + nx;
+					if (!active[ni]) continue;
+					const w = kernel[d + radius]!;
+					sum += scratch[ni]! * w;
+					wSum += w;
+				}
+				if (wSum > 0) rise[i] = sum / wSum;
+			}
+		}
+	}
+}
+
 const _anchor = new THREE.Vector3();
 const _out = new THREE.Vector3();
 
@@ -284,6 +334,36 @@ export function buildConformedElementSheet(
 	const cos = Math.cos(p.rotationRad);
 	const sin = Math.sin(p.rotationRad);
 	const mirrored = p.scaleWidth < 0;
+	const spanFillWidth = p.spanFillWidth ?? false;
+	const lengthProfileTaper = p.lengthProfileTaper ?? true;
+	const targetWidthWorld = Math.abs(p.scaleWidth) * field.sourceWidthMm;
+	const footprintX = getFootprintXExtent(field);
+	const useRowFloor = p.heightProfile === 'rowFloor';
+	const profilePeakMm = useRowFloor
+		? getRowFloorProfilePeakMm(field)
+		: getCenterlineProfilePeakMm(field, footprintX);
+	const rowCenterProfile = spanFillWidth
+		? buildFootprintRowCenterProfile(field)
+		: null;
+	const nativeRowCenterProfile = spanFillWidth
+		? null
+		: buildFootprintRowCenterProfile(field);
+
+	const lengthFrac = (gy: number) =>
+		renderGrid > 1 ? gy / (renderGrid - 1) : 0.5;
+	const rawXAtGridCell = (gx: number) => stlMinX + (gx + 0.5) * renderCellW;
+	const localWidthAtGrid = (gy: number, gx: number): number => {
+		const rawX = rawXAtGridCell(gx);
+		if (!spanFillWidth) {
+			return (rawX - stlCenterX) * p.scaleWidth;
+		}
+		const rawY = stlMinY + (gy + 0.5) * renderCellL;
+		const row = getFootprintRowXExtent(field, rawY);
+		const t = (rawX - row.minRawX) / Math.max(row.spanMm, 1e-6);
+		return mirrored
+			? (0.5 - t) * targetWidthWorld
+			: (t - 0.5) * targetWidthWorld;
+	};
 
 	const cleanMask = cleanupFootprintMask(occupied, g);
 	const softOcc = upsampleOccupancyFloat(cleanMask, g, renderGrid);
@@ -293,12 +373,20 @@ export function buildConformedElementSheet(
 		coreMask[i] = softOcc[i]! >= 0.5 ? 1 : 0;
 		render[i] = softOcc[i]! >= 0.04 ? 1 : 0;
 	}
+
 	const dist = footprintInteriorDistance(coreMask, renderGrid);
 
 	const elementColor = new THREE.Color(p.elementColorHex);
 	const insoleColor = new THREE.Color(p.insoleColorHex);
 	const tmpColor = new THREE.Color();
 	const maxRise = Math.max(1e-5, p.maxRiseWorld);
+	// Always rise along the insole up-axis (thickness), never along the cup-wall
+	// normal — otherwise medial-wall cells extrude the sidewall when height grows.
+	const seatParams = {
+		mode: 'auto' as const,
+		offsetAlong: 'up' as const,
+		upAxis: sampler.upAxis,
+	};
 
 	// Build a continuous rise field on the render grid, blur it, then seat columns.
 	// Blurring before seating removes the stair-step spikes at the insole seam.
@@ -307,17 +395,70 @@ export function buildConformedElementSheet(
 		for (let gx = 0; gx < renderGrid; gx++) {
 			const i = gy * renderGrid + gx;
 			if (!render[i]) continue;
-			const rawX = stlMinX + (gx + 0.5) * renderCellW;
+			const rawX = rawXAtGridCell(gx);
 			const rawY = stlMinY + (gy + 0.5) * renderCellL;
 			const occ = softOcc[i]!;
 			const edge = smootherEdgeFade(0, edgeFadeRenderCells, dist[i]);
 			const occFeather = smoothstep(0.08, 0.55, occ);
-			riseGrid[i] =
-				sampleElementHeightMm(field, rawX, rawY) * p.scaleHeight * edge * occFeather;
+			const lengthTaper =
+				spanFillWidth && lengthProfileTaper
+					? rctbLengthProfileTaper(lengthFrac(gy))
+					: 1;
+			let sampleMm = useRowFloor
+				? sampleRowFloorHeightMm(field, rawY)
+				: sampleElementHeightMm(
+						field,
+						rowCenterProfile !== null
+							? sampleRowCenterRawX(field, rowCenterProfile, rawY)
+							: rawX,
+						rawY,
+					);
+			// Soft-limit STL sidewall spikes (no hard min — that leaves a visible ridge).
+			if (nativeRowCenterProfile && !useRowFloor) {
+				const centerMm = sampleElementHeightMm(
+					field,
+					sampleRowCenterRawX(field, nativeRowCenterProfile, rawY),
+					rawY,
+				);
+				if (centerMm > 1e-4 && sampleMm > centerMm) {
+					const excess = sampleMm - centerMm;
+					sampleMm = centerMm + excess * 0.2;
+				}
+			}
+			const baseRise = (sampleMm / profilePeakMm) * p.maxRiseWorld;
+			riseGrid[i] = baseRise * edge * occFeather * lengthTaper;
 		}
 	}
 	fillRiseGridHoles(riseGrid, render, renderGrid);
-	smoothRiseGrid(riseGrid, render, renderGrid, 5);
+	const riseBlurPasses = spanFillWidth ? 6 : 7;
+	smoothRiseGrid(riseGrid, render, renderGrid, riseBlurPasses);
+	if (!spanFillWidth) {
+		smoothRiseGridLateral(riseGrid, render, renderGrid, 6);
+		smoothRiseGrid(riseGrid, render, renderGrid, 3);
+	}
+
+	// Cup fill: rim ceiling = highest insole top over the footprint. The seated
+	// floor is clamped to it so the element never pokes above the insole wall.
+	const heightAxisKey = p.heightAxis;
+	const upComp = sampler.upAxis[heightAxisKey];
+	const upDir = upComp >= 0 ? 1 : -1;
+	let cupRimCeil = -Infinity;
+	if (useRowFloor) {
+		for (let gy = 0; gy < renderGrid; gy++) {
+			for (let gx = 0; gx < renderGrid; gx++) {
+				if (!render[gy * renderGrid + gx]) continue;
+				const rawY = stlMinY + (gy + 0.5) * renderCellL;
+				const localWidth = localWidthAtGrid(gy, gx);
+				const localLength = (rawY - stlCenterY) * p.scaleLength;
+				const rx = localWidth * cos - localLength * sin;
+				const ry = localWidth * sin + localLength * cos;
+				const lengthWorld = p.centreLengthWorld + ry;
+				const widthWorld = p.centreWidthWorld + rx;
+				const signed = p.seedHeight(lengthWorld, widthWorld) * upDir;
+				if (signed > cupRimCeil) cupRimCeil = signed;
+			}
+		}
+	}
 
 	const vmap = new Int32Array(renderGrid * renderGrid).fill(-1);
 	const posArr: number[] = [];
@@ -332,25 +473,45 @@ export function buildConformedElementSheet(
 			const i = gy * renderGrid + gx;
 			if (!render[i]) continue;
 
-			const rawX = stlMinX + (gx + 0.5) * renderCellW;
 			const rawY = stlMinY + (gy + 0.5) * renderCellL;
-			const rise = riseGrid[i];
+			let rise = riseGrid[i];
 
-			const localWidth = (rawX - stlCenterX) * p.scaleWidth;
+			const localWidth = localWidthAtGrid(gy, gx);
 			const localLength = (rawY - stlCenterY) * p.scaleLength;
 			const rx = localWidth * cos - localLength * sin;
 			const ry = localWidth * sin + localLength * cos;
-			const lengthWorld = p.centreLengthWorld + ry;
-			const widthWorld = p.centreWidthWorld + rx;
+			let lengthWorld = p.centreLengthWorld + ry;
+			let widthWorld = p.centreWidthWorld + rx;
+			if (p.adjustWidthWorld) {
+				widthWorld = p.adjustWidthWorld(lengthWorld, widthWorld);
+			}
 
 			_anchor.set(0, 0, 0);
 			_anchor[p.lengthAxis] = lengthWorld;
 			_anchor[p.widthAxis] = widthWorld;
 			_anchor[p.heightAxis] = p.seedHeight(lengthWorld, widthWorld);
 
-			const normal = seatColumnOnSurface(sampler, _anchor, rise, { mode: 'auto' }, _out);
+			const normal = seatColumnOnSurface(sampler, _anchor, rise, seatParams, _out);
+			// Cup fill: fade the rise to zero up the steep insole walls so only the
+			// bowl floor thickens — the rim/wall height is preserved.
+			if (useRowFloor && normal) {
+				const upDot = Math.abs(normal.dot(sampler.upAxis));
+				const wallFade = smoothstep(0.2, 0.75, upDot);
+				if (wallFade < 1) {
+					const delta = rise * (wallFade - 1);
+					_out.addScaledVector(sampler.upAxis, delta);
+					rise *= wallFade;
+				}
+			}
 			if (!normal) {
 				_out.copy(_anchor).addScaledVector(sampler.upAxis, rise);
+			}
+			// Clamp the seated floor to the insole rim so it never pokes above the wall.
+			if (useRowFloor && cupRimCeil > -Infinity) {
+				const signedH = _out[heightAxisKey] * upDir;
+				if (signedH > cupRimCeil) {
+					_out[heightAxisKey] = cupRimCeil * upDir;
+				}
 			}
 			const vi = posArr.length / 3;
 			vmap[i] = vi;
@@ -401,26 +562,28 @@ export function buildConformedElementSheet(
 		const gx = cellGx[vi]!;
 		const gy = cellGy[vi]!;
 		const rise = riseWorldArr[vi]!;
-		const rawX = stlMinX + (gx + 0.5) * renderCellW;
 		const rawY = stlMinY + (gy + 0.5) * renderCellL;
-		const localWidth = (rawX - stlCenterX) * p.scaleWidth;
+		const localWidth = localWidthAtGrid(gy, gx);
 		const localLength = (rawY - stlCenterY) * p.scaleLength;
 		const rx = localWidth * cos - localLength * sin;
 		const ry = localWidth * sin + localLength * cos;
-		const lengthWorld = p.centreLengthWorld + ry;
-		const widthWorld = p.centreWidthWorld + rx;
+		let lengthWorld = p.centreLengthWorld + ry;
+		let widthWorld = p.centreWidthWorld + rx;
+		if (p.adjustWidthWorld) {
+			widthWorld = p.adjustWidthWorld(lengthWorld, widthWorld);
+		}
 		_anchor.set(0, 0, 0);
 		_anchor[p.lengthAxis] = lengthWorld;
 		_anchor[p.widthAxis] = widthWorld;
 		_anchor[p.heightAxis] = p.seedHeight(lengthWorld, widthWorld);
-		const hit = seatColumnOnSurface(sampler, _anchor, rise, { mode: 'auto' }, _out);
+		const hit = seatColumnOnSurface(sampler, _anchor, rise, seatParams, _out);
 		if (!hit) _out.copy(_anchor).addScaledVector(sampler.upAxis, rise);
 		const o = vi * 3;
 		positions[o] = _out.x;
 		positions[o + 1] = _out.y;
 		positions[o + 2] = _out.z;
 	};
-	const smoothingPasses = p.smoothingPasses ?? 3;
+	const smoothingPasses = spanFillWidth ? 0 : (p.smoothingPasses ?? 6);
 	for (let pass = 0; pass < smoothingPasses; pass++) {
 		scratch.set(positions);
 		for (let gy = 0; gy < renderGrid; gy++) {

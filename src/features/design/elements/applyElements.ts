@@ -23,8 +23,20 @@ import {
 import { getDefaultPlacementForSide } from './placement';
 import {
 	getElementStlHeightField,
+	getCenterlineProfilePeakMm,
+	getRowFloorProfilePeakMm,
+	sampleRowFloorHeightMm,
+	buildFootprintRowCenterProfile,
+	getFootprintXExtent,
+	sampleRowCenterRawX,
+	lateralSpanTaper,
+	localLengthToSpanT,
+	localWidthToRawX,
+	localWidthToSpanT,
+	spanFillRawXFromLocalWidth,
 	sampleElementHeightMm,
 	type ElementStlHeightField,
+	type FootprintXExtent,
 } from './elementStlHeightField';
 import {
 	getInsoleSurfaceSampler,
@@ -344,6 +356,8 @@ type ResolvedElementLayout = {
 	 * insole rim at that vertex's U slice instead of overshooting and clamping.
 	 */
 	conformWidthToInsole?: boolean;
+	rctbLengthTaper?: boolean;
+	heightProfile?: 'centerline' | 'rowFloor';
 	/** Mirror the STL across the width axis (flip flat edge to opposite side) */
 	mirrorWidth?: boolean;
 };
@@ -361,6 +375,8 @@ type PlacementContext = {
 	mmToWorld: number;
 	/** Insole width band [minV,maxV] at a normalised U (heel=0 → toe=1). */
 	sampleInsoleExtent: (uNorm: number) => { minV: number; maxV: number };
+	/** Heel wall extent (includes steep cup walls, not just the top footprint). */
+	sampleInsoleHeelWallExtent?: (uNorm: number) => { minV: number; maxV: number };
 	/** Insole length band [minU,maxU] at a normalised V. */
 	sampleInsoleUExtent: (vNorm: number) => { minU: number; maxU: number };
 };
@@ -500,6 +516,7 @@ type CachedInsoleOverlayAnalysis = {
 	heelAtMin: boolean;
 	sampleHeight: (u: number, v: number) => number;
 	sampleInsoleExtent: (uNorm: number) => { minV: number; maxV: number };
+	sampleInsoleHeelWallExtent: (uNorm: number) => { minV: number; maxV: number };
 	sampleInsoleUExtent: (vNorm: number) => { minU: number; maxU: number };
 	getNormalComponent: (index: number) => number;
 	upSign: number;
@@ -629,6 +646,76 @@ function buildCachedInsoleOverlayAnalysis(
 		}
 	}
 
+	// Heel wall extent: include steep cup-wall vertices so heel pads snap to the
+	// actual sidewall, not the narrower top-surface footprint at the heel.
+	const HEEL_WALL_U = 0.36;
+	const heelWallOccupied = new Uint8Array(BGRID * BGRID);
+	for (let i = 0; i < vertexCount; i++) {
+		const lv = getAxisValue(positions, i, lengthAxis);
+		const wv = getAxisValue(positions, i, widthAxis);
+		const hv = getAxisValue(positions, i, heightAxis);
+		const heightNorm = (hv - heightMin) / Math.max(heightSpan, 1e-6);
+		if (heightNorm < 0.12) continue;
+		const rawU = (lv - lengthMin) / Math.max(lengthSpan, 1e-6);
+		const u = heelAtMin ? rawU : 1 - rawU;
+		const upN = getNormalComponent(i) * upSign;
+		if (u > HEEL_WALL_U) {
+			if (upN < 0.1) continue;
+		} else if (upN < -0.08) {
+			continue;
+		}
+		const v = (wv - widthMin) / Math.max(widthSpan, 1e-6);
+		const bu = Math.max(0, Math.min(BGRID - 1, Math.floor(u * BGRID)));
+		const bv = Math.max(0, Math.min(BGRID - 1, Math.floor(v * BGRID)));
+		heelWallOccupied[bu * BGRID + bv] = 1;
+	}
+	const insoleHeelWallMinVPerU = Float32Array.from(insoleMinVPerU);
+	const insoleHeelWallMaxVPerU = Float32Array.from(insoleMaxVPerU);
+	for (let bu = 0; bu < BGRID; bu++) {
+		const uNorm = (bu + 0.5) / BGRID;
+		if (uNorm > HEEL_WALL_U) continue;
+		let hasWall = false;
+		for (let bv = 0; bv < BGRID; bv++) {
+			if (!heelWallOccupied[bu * BGRID + bv]) continue;
+			hasWall = true;
+			const vNorm = (bv + 0.5) / BGRID;
+			if (vNorm < insoleHeelWallMinVPerU[bu]!) insoleHeelWallMinVPerU[bu] = vNorm;
+			if (vNorm > insoleHeelWallMaxVPerU[bu]!) insoleHeelWallMaxVPerU[bu] = vNorm;
+		}
+		if (hasWall) {
+			insoleHeelWallMinVPerU[bu] = Math.min(
+				insoleHeelWallMinVPerU[bu]!,
+				insoleMinVPerU[bu]!,
+			);
+			insoleHeelWallMaxVPerU[bu] = Math.max(
+				insoleHeelWallMaxVPerU[bu]!,
+				insoleMaxVPerU[bu]!,
+			);
+		}
+	}
+	for (let pass = 0; pass < 6; pass++) {
+		const tmpMin = new Float32Array(insoleHeelWallMinVPerU);
+		const tmpMax = new Float32Array(insoleHeelWallMaxVPerU);
+		for (let bu = 1; bu < BGRID - 1; bu++) {
+			if (tmpMin[bu]! > tmpMax[bu]!) continue;
+			let wSum = 2;
+			let minSum = tmpMin[bu]! * 2;
+			let maxSum = tmpMax[bu]! * 2;
+			if (tmpMin[bu - 1]! <= tmpMax[bu - 1]!) {
+				minSum += tmpMin[bu - 1]!;
+				maxSum += tmpMax[bu - 1]!;
+				wSum += 1;
+			}
+			if (tmpMin[bu + 1]! <= tmpMax[bu + 1]!) {
+				minSum += tmpMin[bu + 1]!;
+				maxSum += tmpMax[bu + 1]!;
+				wSum += 1;
+			}
+			insoleHeelWallMinVPerU[bu] = minSum / wSum;
+			insoleHeelWallMaxVPerU[bu] = maxSum / wSum;
+		}
+	}
+
 	const insoleMinUPerV = new Float32Array(BGRID).fill(1.0);
 	const insoleMaxUPerV = new Float32Array(BGRID).fill(0.0);
 	for (let bv = 0; bv < BGRID; bv++) {
@@ -698,6 +785,23 @@ function buildCachedInsoleOverlayAnalysis(
 		};
 	};
 
+	const sampleInsoleHeelWallExtent = (
+		uNorm: number,
+	): { minV: number; maxV: number } => {
+		const gu = Math.max(0, Math.min(BGRID - 1.001, uNorm * BGRID));
+		const gui = Math.floor(gu);
+		const frac = gu - gui;
+		const gui1 = Math.min(BGRID - 1, gui + 1);
+		return {
+			minV:
+				insoleHeelWallMinVPerU[gui]! * (1 - frac) +
+				insoleHeelWallMinVPerU[gui1]! * frac,
+			maxV:
+				insoleHeelWallMaxVPerU[gui]! * (1 - frac) +
+				insoleHeelWallMaxVPerU[gui1]! * frac,
+		};
+	};
+
 	return {
 		positionVersion: getPositionVersion(positions),
 		normalVersion: getPositionVersion(normals),
@@ -709,6 +813,7 @@ function buildCachedInsoleOverlayAnalysis(
 		heelAtMin,
 		sampleHeight,
 		sampleInsoleExtent,
+		sampleInsoleHeelWallExtent,
 		sampleInsoleUExtent,
 		getNormalComponent,
 		upSign,
@@ -880,7 +985,7 @@ function trimAdditiveOverlayGeometry({
 //   - native: keep the mesh's authored footprint (stlSizeMm); place at default.
 
 type ElementWidthMode = 'span' | 'toe' | 'native';
-type ElementEdgeSnap = 'none' | 'medial';
+type ElementEdgeSnap = 'none' | 'medial' | 'lateral';
 
 type ElementPlacementSpec = {
 	/** Base orientation in degrees (0 or 180); side-adjusted like defaults. */
@@ -922,8 +1027,40 @@ type ElementPlacementSpec = {
 	rimRotationOffsetRad?: number;
 	/** Remap source mesh width to the insole rim at each vertex's U slice. */
 	conformWidthToInsole?: boolean;
+	/**
+	 * Sin heel-to-toe height envelope for full-width RCTB pads. Disable for
+	 * asymmetric shapes (e.g. RCTB Pronatie) that must keep the STL length profile.
+	 */
+	rctbLengthTaper?: boolean;
+	/**
+	 * `rowFloor` samples the lowest STL height per row (cup floor) so height adds
+	 * uniform thickness instead of growing rim walls.
+	 */
+	heightProfile?: 'centerline' | 'rowFloor';
+	/** Use the widest insole cross-section from anchorU over the element length. */
+	spanWidthMaxOverLength?: boolean;
 	/** Mirror the mesh across the width axis (flat edge to opposite side). */
 	mirrorWidth?: boolean;
+	/**
+	 * STL center → medial wall edge as a fraction of source width (default 0.5).
+	 * Asymmetric pads (e.g. SPSA) need a lower native fraction when mirrorWidth
+	 * is false because the flat wall edge sits on max-X, not min-X.
+	 */
+	medialHalfWidthFrac?: number | { mirrored: number; native: number };
+	/** Extra shift toward the medial rim after snap (mm); closes small wall gaps. */
+	medialWallPushMm?: number;
+	/**
+	 * `heelForward` samples the rim from anchorU toward the toes (heel-wall pads).
+	 * `lengthSpan` samples across the full native pad length (arch rails).
+	 * Default samples the heelward end of the pad (mid-foot stabilisers).
+	 */
+	rimSnapBand?: 'heelEnd' | 'heelForward' | 'lengthSpan';
+	/** Slide each length slice to the heel-wall rim (follows curved cups). */
+	heelWallConform?: 'medial' | 'lateral';
+	/** Extra mm shift toward the snapped wall after placement. */
+	rimOutsetMm?: number;
+	/** Perimeter melt for conformed overlays (default 10). */
+	overlayEdgeFadeCells?: number;
 };
 
 const ELEMENT_PLACEMENT: Record<string, ElementPlacementSpec> = {
@@ -976,20 +1113,41 @@ const ELEMENT_PLACEMENT: Record<string, ElementPlacementSpec> = {
 	// footprint and carve a rounded pocket into the insole — no span/toe snapping,
 	// so they behave like before the placement refactor.
 	// Midfoot RCTB bars spanning the full width, heel/toe-flipped.
-	'rctb-1': { baseRotationDeg: 180, widthMode: 'span', edgeSnap: 'none', anchorU: 0.45, conformWidthToInsole: true },
-	'rctb-2': { baseRotationDeg: 180, widthMode: 'span', edgeSnap: 'none', anchorU: 0.45, conformWidthToInsole: true },
-	'rctb-3': { baseRotationDeg: 180, widthMode: 'span', edgeSnap: 'none', anchorU: 0.45, conformWidthToInsole: true },
+	'rctb-1': {
+		baseRotationDeg: 180,
+		widthMode: 'span',
+		edgeSnap: 'none',
+		anchorU: 0.45,
+		widthFactor: 1.2,
+		conformWidthToInsole: true,
+	},
+	'rctb-2': {
+		baseRotationDeg: 180,
+		widthMode: 'span',
+		edgeSnap: 'none',
+		anchorU: 0.45,
+		widthFactor: 1.2,
+		conformWidthToInsole: true,
+	},
+	'rctb-3': {
+		baseRotationDeg: 180,
+		widthMode: 'span',
+		edgeSnap: 'none',
+		anchorU: 0.45,
+		widthFactor: 1.2,
+		conformWidthToInsole: true,
+	},
 	'rctb-pronatie': {
 		baseRotationDeg: 180,
 		widthMode: 'span',
 		edgeSnap: 'none',
 		anchorU: 0.45,
+		widthFactor: 1.2,
 		conformWidthToInsole: true,
+		rctbLengthTaper: false,
 	},
-	// Heel cup: seat on the heel back and fill the heel width with a UNIFORM scale
-	// (span, no per-vertex conform) so the authored cup shape is preserved — the
-	// rim clamp + height fade handle any overflow, and the colour-fade overlay
-	// melts the perimeter into the insole so it reads as one surface.
+	// Heel cup: span-fill to heel rim width; row-floor height so added mm is
+	// uniform thickness on the cup floor, not taller sidewalls.
 	'sc-bol': {
 		baseRotationDeg: 180,
 		widthMode: 'span',
@@ -997,19 +1155,73 @@ const ELEMENT_PLACEMENT: Record<string, ElementPlacementSpec> = {
 		anchorU: 0.08,
 		widthFactor: 1.12,
 		lengthScale: 1.1,
+		conformWidthToInsole: true,
+		rctbLengthTaper: false,
+		heightProfile: 'rowFloor',
+		spanWidthMaxOverLength: true,
 	},
 	// Native-footprint stabilisers placed at their authored default position.
-	'spsa-vlak': { baseRotationDeg: 0, widthMode: 'native', edgeSnap: 'none' },
+	'spsa-vlak': {
+		baseRotationDeg: 180,
+		widthMode: 'native',
+		edgeSnap: 'medial',
+		anchorU: 0.22,
+		medialHalfWidthFrac: { mirrored: 0.5, native: 0.234 },
+		medialWallPushMm: 5,
+	},
+	// Lateral mirror of SPSA: mirrorWidth (Z) + same heel-toe flip as SPSA (180° X).
 	'ppsa': {
+		baseRotationDeg: 180,
+		widthMode: 'native',
+		edgeSnap: 'lateral',
+		anchorU: 0.22,
+		mirrorWidth: true,
+		medialHalfWidthFrac: { mirrored: 0.45, native: 0.22 },
+		medialWallPushMm: 8,
+	},
+	// Heel interior stabiliser: lateral wall hug from the heel anchor toward midfoot.
+	'ppsi': {
+		baseRotationDeg: 180,
+		widthMode: 'native',
+		edgeSnap: 'lateral',
+		anchorU: 0.08,
+		rimSnapBand: 'heelForward',
+		heelWallConform: 'lateral',
+		rimOutsetMm: 6,
+		medialHalfWidthFrac: { mirrored: 0.54, native: 0.54 },
+		medialWallPushMm: 0,
+		overlayEdgeFadeCells: 3,
+	},
+	// Heel interior stabiliser: medial wall hug from the heel anchor toward midfoot.
+	'spsi': {
+		baseRotationDeg: 180,
+		widthMode: 'native',
+		edgeSnap: 'medial',
+		anchorU: 0.08,
+		rimSnapBand: 'heelForward',
+		heelWallConform: 'medial',
+		rimOutsetMm: 8,
+		// Flat wall on max-X; left foot uses mirrored width flip (see getEffectiveMirrorWidth).
+		medialHalfWidthFrac: { mirrored: 0.44, native: 0.57 },
+		medialWallPushMm: 0,
+		overlayEdgeFadeCells: 3,
+	},
+	// Arch rail: medial wall hug along the full pad length.
+	'hai-vlak-2': {
 		baseRotationDeg: 0,
 		widthMode: 'native',
-		edgeSnap: 'none',
-		mirrorWidth: true,
+		edgeSnap: 'medial',
+		anchorU: 0.45,
+		rimSnapBand: 'lengthSpan',
+		heelWallConform: 'medial',
+		alignRotationToRim: true,
+		rimRotationOffsetRad: 0,
+		// Flat wall on max-X; left foot uses mirrored width flip.
+		medialHalfWidthFrac: { mirrored: 0.74, native: 0.28 },
+		rimOutsetMm: 13,
+		medialWallPushMm: 5,
+		overlayEdgeFadeCells: 4,
 	},
-	'ppsi': { baseRotationDeg: 180, widthMode: 'native', edgeSnap: 'none' },
-	'spsi': { baseRotationDeg: 180, widthMode: 'native', edgeSnap: 'none' },
-	// Arch pad: native footprint snapped to the medial edge.
-	'hai-vlak-2': { baseRotationDeg: 0, widthMode: 'native', edgeSnap: 'medial' },
 	// Midfoot pelotte, native footprint, heel/toe-flipped.
 	'peloitte-2': { baseRotationDeg: 180, widthMode: 'native', edgeSnap: 'none' },
 };
@@ -1075,6 +1287,212 @@ function sampleRimTangentRad(
 	return Math.atan2(dv * widthSpan, du * lengthSpan);
 }
 
+function resolveMedialHalfWidthFrac(
+	spec: ElementPlacementSpec,
+	effectiveMirrorWidth: boolean,
+): number {
+	const frac = spec.medialHalfWidthFrac;
+	if (frac === undefined) return 0.5;
+	if (typeof frac === 'number') return frac;
+	return effectiveMirrorWidth ? frac.mirrored : frac.native;
+}
+
+type InsoleExtentSampler = (
+	uNorm: number,
+) => { minV: number; maxV: number };
+
+/** Most medial rim V along a U interval (tightest wall hug for curved heels). */
+function sampleExtremalMedialRimV(
+	context: PlacementContext,
+	uStart: number,
+	uEnd: number,
+	medialAtMin: boolean,
+	extentAtU: InsoleExtentSampler = context.sampleInsoleExtent,
+): number {
+	const lo = Math.max(0, Math.min(uStart, uEnd));
+	const hi = Math.min(1, Math.max(uStart, uEnd));
+	const steps = 8;
+	let medialV = medialAtMin ? 1 : 0;
+	for (let i = 0; i <= steps; i++) {
+		const u = lo + ((hi - lo) * i) / steps;
+		const { minV, maxV } = extentAtU(u);
+		if (medialAtMin) medialV = Math.min(medialV, minV);
+		else medialV = Math.max(medialV, maxV);
+	}
+	return medialV;
+}
+
+/** Outermost lateral rim V along a U interval. */
+function sampleExtremalLateralRimV(
+	context: PlacementContext,
+	uStart: number,
+	uEnd: number,
+	medialAtMin: boolean,
+	extentAtU: InsoleExtentSampler = context.sampleInsoleExtent,
+): number {
+	const lo = Math.max(0, Math.min(uStart, uEnd));
+	const hi = Math.min(1, Math.max(uStart, uEnd));
+	const steps = 8;
+	let lateralV = medialAtMin ? 0 : 1;
+	for (let i = 0; i <= steps; i++) {
+		const u = lo + ((hi - lo) * i) / steps;
+		const { minV, maxV } = extentAtU(u);
+		if (medialAtMin) lateralV = Math.max(lateralV, maxV);
+		else lateralV = Math.min(lateralV, minV);
+	}
+	return lateralV;
+}
+
+/** Native pad snapped flush to the medial or lateral insole rim. */
+function resolveNativeRimSnapV(
+	context: PlacementContext,
+	spec: ElementPlacementSpec,
+	item: ReturnType<typeof getElementByKey>,
+	el: PlacedElement,
+	positionU: number,
+	rim: 'medial' | 'lateral',
+): number {
+	const medialAtMin = el.side === 'right';
+	const rimAtMin = rim === 'medial' ? medialAtMin : !medialAtMin;
+	const effectiveMirrorWidth = getEffectiveMirrorWidth(el.side, spec.mirrorWidth);
+	const wallFrac = resolveMedialHalfWidthFrac(spec, effectiveMirrorWidth);
+	const nativeLengthMm = item?.stlSizeMm?.[1] ?? 50;
+	const { uStart, uEnd } = resolveRimSnapUBand(
+		context,
+		spec,
+		nativeLengthMm,
+		positionU,
+		medialAtMin,
+	);
+	const extentAtU =
+		spec.rimSnapBand === 'heelForward' && context.sampleInsoleHeelWallExtent
+			? context.sampleInsoleHeelWallExtent
+			: context.sampleInsoleExtent;
+	const rimV =
+		rim === 'medial'
+			? sampleExtremalMedialRimV(
+					context,
+					uStart,
+					uEnd,
+					medialAtMin,
+					extentAtU,
+				)
+			: sampleExtremalLateralRimV(
+					context,
+					uStart,
+					uEnd,
+					medialAtMin,
+					extentAtU,
+				);
+	const nativeWidthMm = item?.stlSizeMm?.[0] ?? 50;
+	const wallHalfWidthNorm =
+		(nativeWidthMm * wallFrac * context.mmToWorld) /
+		Math.max(context.widthSpan, 1e-6);
+	const wallPushNorm =
+		(spec.medialWallPushMm ?? 0) *
+		context.mmToWorld /
+		Math.max(context.widthSpan, 1e-6);
+	let snappedV = rimAtMin
+		? rimV + wallHalfWidthNorm
+		: rimV - wallHalfWidthNorm;
+	if (wallPushNorm !== 0) {
+		// Medial: push toward the medial wall; lateral: inset toward foot center.
+		const towardRim = rimAtMin ? -wallPushNorm : wallPushNorm;
+		snappedV += rim === 'medial' ? towardRim : -towardRim;
+	}
+	const outsetNorm =
+		(spec.rimOutsetMm ?? 0) *
+		context.mmToWorld /
+		Math.max(context.widthSpan, 1e-6);
+	if (outsetNorm !== 0) {
+		snappedV += rimAtMin ? -outsetNorm : outsetNorm;
+	}
+	return clamp01(snappedV);
+}
+
+/** Lateral shift so each U slice hugs a curved heel wall. */
+function heelWallWidthWorldDelta(
+	lengthWorld: number,
+	lengthMin: number,
+	lengthSpan: number,
+	widthSpan: number,
+	heelAtMin: boolean,
+	centrePositionU: number,
+	rim: 'medial' | 'lateral',
+	side: 'left' | 'right',
+	extentAtU: InsoleExtentSampler,
+): number {
+	const rawUCell = (lengthWorld - lengthMin) / Math.max(lengthSpan, 1e-6);
+	const uCell = heelAtMin ? rawUCell : 1 - rawUCell;
+	const medialAtMin = side === 'right';
+	const rimAtMin = rim === 'medial' ? medialAtMin : !medialAtMin;
+	const extCell = extentAtU(uCell);
+	const extCentre = extentAtU(centrePositionU);
+	const rimCell = rimAtMin ? extCell.minV : extCell.maxV;
+	const rimCentre = rimAtMin ? extCentre.minV : extCentre.maxV;
+	return (rimCell - rimCentre) * widthSpan;
+}
+
+/** Per-U lateral shift so heel pads follow a curved cup wall. */
+function buildHeelWallWidthAdjust(
+	spec: ElementPlacementSpec | undefined,
+	context: PlacementContext,
+	el: PlacedElement,
+	centrePositionU: number,
+): ((lengthWorld: number) => number) | undefined {
+	if (!spec?.heelWallConform) return undefined;
+	const extentAtU =
+		spec.rimSnapBand === 'heelForward' && context.sampleInsoleHeelWallExtent
+			? context.sampleInsoleHeelWallExtent
+			: context.sampleInsoleExtent;
+	return (lengthWorld: number) =>
+		heelWallWidthWorldDelta(
+			lengthWorld,
+			context.lengthMin,
+			context.lengthSpan,
+			context.widthSpan,
+			context.heelAtMin,
+			centrePositionU,
+			spec.heelWallConform!,
+			el.side,
+			extentAtU,
+		);
+}
+
+/** U interval for rim sampling on native wall-snapped pads. */
+function resolveRimSnapUBand(
+	context: PlacementContext,
+	spec: ElementPlacementSpec,
+	lengthMm: number,
+	positionU: number,
+	heelAtMin: boolean,
+): { uStart: number; uEnd: number } {
+	const lengthNorm =
+		(lengthMm * context.mmToWorld) / Math.max(context.lengthSpan, 1e-6);
+	if (spec.rimSnapBand === 'heelForward') {
+		return heelAtMin
+			? { uStart: positionU, uEnd: clamp01(positionU + lengthNorm) }
+			: { uStart: clamp01(positionU - lengthNorm), uEnd: positionU };
+	}
+	if (spec.rimSnapBand === 'lengthSpan') {
+		const halfLengthNorm = lengthNorm / 2;
+		return {
+			uStart: clamp01(positionU - halfLengthNorm),
+			uEnd: clamp01(positionU + halfLengthNorm),
+		};
+	}
+	const halfLengthNorm = lengthNorm / 2;
+	if (spec.baseRotationDeg !== 180 || spec.anchorU === undefined) {
+		return { uStart: positionU, uEnd: positionU };
+	}
+	const snapU = heelAtMin
+		? Math.max(0.02, positionU - halfLengthNorm)
+		: Math.min(0.98, positionU + halfLengthNorm);
+	return heelAtMin
+		? { uStart: snapU, uEnd: positionU }
+		: { uStart: positionU, uEnd: snapU };
+}
+
 function resolveElementLayout(
 	item: ReturnType<typeof getElementByKey>,
 	el: PlacedElement,
@@ -1110,24 +1528,22 @@ function resolveElementLayout(
 			: clamp01(el.positionU);
 
 	if (spec.widthMode === 'native') {
-		const positionV =
-			spec.edgeSnap === 'medial'
-				? (() => {
-						const profile = profileInsoleAtU(context, positionU);
-						const nativeWidthMm =
-							(item?.stlSizeMm?.[0] ?? profile.widthMm) * 1;
-						const halfWidthNorm =
-							(nativeWidthMm * context.mmToWorld) /
-							Math.max(context.widthSpan, 1e-6) /
-							2;
-						return medialAtMin
-							? clamp01(profile.minV + halfWidthNorm)
-							: clamp01(profile.maxV - halfWidthNorm);
-					})()
-				: clamp01(el.positionV);
+		const rimSnap =
+			spec.edgeSnap === 'medial' || spec.edgeSnap === 'lateral'
+				? spec.edgeSnap
+				: null;
+		const positionV = rimSnap
+			? resolveNativeRimSnapV(context, spec, item, el, positionU, rimSnap)
+			: clamp01(el.positionV);
+		if (spec.alignRotationToRim) {
+			const rimTan = sampleRimTangentRad(context, positionU, medialAtMin);
+			const rimOffset = spec.rimRotationOffsetRad ?? 0;
+			const sideRimOffset = medialAtMin ? rimOffset : -rimOffset;
+			rotationRad = rimTan + sideRimOffset + deltaRotation;
+		}
 		return {
 			positionU: spec.anchorU !== undefined ? positionU : clamp01(el.positionU),
-			positionV: clamp01(positionV + (spec.edgeSnap === 'medial' ? 0 : deltaV)),
+			positionV: clamp01(positionV + (rimSnap ? 0 : deltaV)),
 			rotationRad,
 			conformWidthToInsole: spec.conformWidthToInsole,
 			mirrorWidth: spec.mirrorWidth,
@@ -1180,14 +1596,41 @@ function resolveElementLayout(
 	}
 
 	// span mode — width from the insole rim at this U (not an averaged profile band)
-	const rimAtU = context.sampleInsoleExtent(positionU);
-	let lo = rimAtU.minV;
-	let hi = rimAtU.maxV;
 	const medialInset = spec.medialInsetFrac ?? 0;
-	if (medialInset > 0) {
-		const inset = (hi - lo) * medialInset;
-		if (medialAtMin) lo += inset;
-		else hi -= inset;
+	const lengthNorm =
+		(targetLengthMm * context.mmToWorld) /
+		Math.max(context.lengthSpan, 1e-6);
+	const halfLengthNorm = lengthNorm * 0.5;
+	const uBandStart = clamp01(positionU - halfLengthNorm);
+	const uBandEnd = clamp01(positionU + halfLengthNorm);
+	let lo = 1;
+	let hi = 0;
+	if (spec.spanWidthMaxOverLength) {
+		const steps = 12;
+		for (let s = 0; s <= steps; s++) {
+			const u = uBandStart + ((uBandEnd - uBandStart) * s) / steps;
+			const rim = context.sampleInsoleExtent(u);
+			let bandLo = rim.minV;
+			let bandHi = rim.maxV;
+			if (medialInset > 0) {
+				const inset = (bandHi - bandLo) * medialInset;
+				if (medialAtMin) bandLo += inset;
+				else bandHi -= inset;
+			}
+			if (bandHi - bandLo > hi - lo) {
+				lo = bandLo;
+				hi = bandHi;
+			}
+		}
+	} else {
+		const rimAtU = context.sampleInsoleExtent(positionU);
+		lo = rimAtU.minV;
+		hi = rimAtU.maxV;
+		if (medialInset > 0) {
+			const inset = (hi - lo) * medialInset;
+			if (medialAtMin) lo += inset;
+			else hi -= inset;
+		}
 	}
 	const spanWidthMm = Math.max(
 		20,
@@ -1205,6 +1648,8 @@ function resolveElementLayout(
 		targetWidthMm: spanWidthMm,
 		targetLengthMm,
 		conformWidthToInsole: spec.conformWidthToInsole,
+		rctbLengthTaper: spec.rctbLengthTaper ?? true,
+		heightProfile: spec.heightProfile,
 		mirrorWidth: spec.mirrorWidth,
 	};
 }
@@ -1248,6 +1693,18 @@ interface PreparedStlDisplacement {
 	stlCenterX: number;
 	stlCenterY: number;
 	rejectRadius: number;
+	spanFillWidth: boolean;
+	footprintX: FootprintXExtent;
+	targetWidthWorld: number;
+	targetLengthWorld: number;
+	profilePeakMm: number;
+	targetHeightMm: number;
+	rctbLengthTaper: boolean;
+	heightProfile?: 'centerline' | 'rowFloor';
+	cupFill: boolean;
+	rowCenterProfile: Float32Array | null;
+	/** Lateral shift added to centreWidthWorld at each length slice (curved heel wall). */
+	heelWallWidthAdjust?: (lengthWorld: number) => number;
 }
 
 /* ── main entry point ────────────────────────── */
@@ -1334,6 +1791,7 @@ export function applyElements(
 			heelAtMin,
 			mmToWorld,
 			sampleInsoleExtent: geometryAnalysis.sampleInsoleExtent,
+			sampleInsoleHeelWallExtent: geometryAnalysis.sampleInsoleHeelWallExtent,
 			sampleInsoleUExtent: geometryAnalysis.sampleInsoleUExtent,
 		});
 		const resolvedElement = {
@@ -1421,11 +1879,34 @@ export function applyElements(
 				let scaleWidth = (targetWidthMm * mmToWorld) / field.sourceWidthMm;
 				if (getEffectiveMirrorWidth(el.side, resolved.mirrorWidth))
 					scaleWidth = -scaleWidth;
+				const spanFillWidth = Boolean(resolved.conformWidthToInsole);
+				const footprintX = getFootprintXExtent(field);
+				const targetWidthWorld = targetWidthMm * mmToWorld;
+				const targetLengthWorld = targetLengthMm * mmToWorld;
 				const centreRawU = heelAtMin
 					? resolved.positionU
 					: 1 - resolved.positionU;
-				const halfW = (targetWidthMm * mmToWorld) / 2;
+				const halfW = targetWidthWorld / 2;
 				const halfL = (targetLengthMm * mmToWorld) / 2;
+				const placementSpec = item?.key
+					? ELEMENT_PLACEMENT[item.key]
+					: undefined;
+				const placementCtx: PlacementContext = {
+					positions,
+					vertexCount,
+					lengthAxis,
+					widthAxis,
+					lengthMin,
+					widthMin,
+					lengthSpan,
+					widthSpan,
+					heelAtMin,
+					mmToWorld,
+					sampleInsoleExtent: geometryAnalysis.sampleInsoleExtent,
+					sampleInsoleHeelWallExtent:
+						geometryAnalysis.sampleInsoleHeelWallExtent,
+					sampleInsoleUExtent: geometryAnalysis.sampleInsoleUExtent,
+				};
 				stl = {
 					field,
 					scaleWidth,
@@ -1438,7 +1919,71 @@ export function applyElements(
 					stlCenterX: field.stlCenterX,
 					stlCenterY: field.stlCenterY,
 					rejectRadius: Math.hypot(halfW, halfL) * 1.06,
+					spanFillWidth,
+					footprintX,
+					targetWidthWorld,
+					targetLengthWorld,
+					profilePeakMm:
+						resolved.heightProfile === 'rowFloor'
+							? getRowFloorProfilePeakMm(field)
+							: getCenterlineProfilePeakMm(field, footprintX),
+					targetHeightMm,
+					rctbLengthTaper: resolved.rctbLengthTaper ?? true,
+					heightProfile: resolved.heightProfile,
+					cupFill: resolved.heightProfile === 'rowFloor',
+					rowCenterProfile: buildFootprintRowCenterProfile(field),
+					heelWallWidthAdjust: buildHeelWallWidthAdjust(
+						placementSpec,
+						placementCtx,
+						el,
+						resolved.positionU,
+					),
 				};
+			}
+		}
+
+		// Cup-fill elements: build a heel-to-toe rim-height ceiling (max insole top
+		// height across the footprint at each U slice) so the floor fill can be
+		// clamped to never rise above the surrounding insole wall.
+		let cupRimCeiling: Float32Array | null = null;
+		if (stl?.cupFill) {
+			const BINS = 64;
+			cupRimCeiling = new Float32Array(BINS).fill(-Infinity);
+			for (let vi = 0; vi < vertexCount; vi++) {
+				const lv = getAxisValue(positions, vi, lengthAxis);
+				const wv = getAxisValue(positions, vi, widthAxis);
+				const rawUu = (lv - lengthMin) / lengthSpan;
+				const uu = heelAtMin ? rawUu : 1 - rawUu;
+				const vv = (wv - widthMin) / widthSpan;
+				if (uu < minU || uu > maxU || vv < minV || vv > maxV) continue;
+				const hv = getAxisValue(positions, vi, heightAxis);
+				const t = (uu - minU) / Math.max(maxU - minU, 1e-6);
+				const b = Math.min(BINS - 1, Math.max(0, Math.floor(t * BINS)));
+				if (hv > cupRimCeiling[b]!) cupRimCeiling[b] = hv;
+			}
+			// Fill empty bins from nearest neighbour, then box-blur the ridge line.
+			let lastValid = -1;
+			for (let b = 0; b < BINS; b++) {
+				if (cupRimCeiling[b]! > -Infinity) lastValid = b;
+				else if (lastValid >= 0) cupRimCeiling[b] = cupRimCeiling[lastValid]!;
+			}
+			for (let b = BINS - 1; b >= 0; b--) {
+				if (cupRimCeiling[b]! > -Infinity) lastValid = b;
+				else if (lastValid >= 0) cupRimCeiling[b] = cupRimCeiling[lastValid]!;
+			}
+			const scratch = Float32Array.from(cupRimCeiling);
+			for (let b = 0; b < BINS; b++) {
+				let sum = scratch[b]!;
+				let n = 1;
+				if (b > 0) {
+					sum += scratch[b - 1]!;
+					n++;
+				}
+				if (b < BINS - 1) {
+					sum += scratch[b + 1]!;
+					n++;
+				}
+				cupRimCeiling[b] = sum / n;
 			}
 		}
 
@@ -1453,6 +1998,9 @@ export function applyElements(
 			baseSurfaceHeight,
 			blendNorm,
 			stl,
+			cupRimCeiling,
+			cupRimU0: minU,
+			cupRimU1: maxU,
 			bboxMinU: minU - blendNorm,
 			bboxMaxU: maxU + blendNorm,
 			bboxMinV: minV - blendNorm,
@@ -1477,28 +2025,55 @@ export function applyElements(
 		// Check if any element at this UV is an inset (diepelement) — these need
 		// to affect ALL surface vertices regardless of height, because target areas
 		// (e.g. big toe edge) curve down steeply and have low heightNorm.
+		// Cup-fill elements (e.g. SC Bol) likewise span the bowl's low floor, so
+		// they bypass the height gate and use a normal gate instead — that keeps
+		// the steep insole walls untouched while thickening the floor.
 		let hasInset = false;
+		let hasCup = false;
+		let cupCeilingWorld = Infinity;
 		for (const p of prepared) {
 			if (
-				p.heightWorld < 0 &&
 				u >= p.bboxMinU &&
 				u <= p.bboxMaxU &&
 				v >= p.bboxMinV &&
 				v <= p.bboxMaxV
 			) {
-				hasInset = true;
-				break;
+				if (p.heightWorld < 0) {
+					hasInset = true;
+					break;
+				}
+				if (p.stl?.cupFill) {
+					hasCup = true;
+					if (p.cupRimCeiling) {
+						const span = Math.max(p.cupRimU1 - p.cupRimU0, 1e-6);
+						const t = Math.min(1, Math.max(0, (u - p.cupRimU0) / span));
+						const fb = t * (p.cupRimCeiling.length - 1);
+						const b0 = Math.floor(fb);
+						const b1 = Math.min(p.cupRimCeiling.length - 1, b0 + 1);
+						const ceil =
+							p.cupRimCeiling[b0]! * (1 - (fb - b0)) +
+							p.cupRimCeiling[b1]! * (fb - b0);
+						if (ceil < cupCeilingWorld) cupCeilingWorld = ceil;
+					}
+				}
 			}
 		}
 
-		if (!hasInset) {
+		if (!hasInset && !hasCup) {
 			if (heightNorm < 0.6) continue;
 		} else {
-			// Depth elements recess only the TOP surface; never displace the
-			// underside or side walls so flattenInsoleBottom keeps the sole flat.
+			// Depth + cup elements act on the TOP-FACING surface only; never displace
+			// the underside or steep side walls (floor thickness, not taller walls).
 			if (getHeightNormal(i) < TOP_FACING_MIN) continue;
 		}
-		const topWeight = hasInset ? 1.0 : smoothstep(0.6, 0.75, heightNorm);
+		// Cup fill: weight by the up-normal so the floor gets full thickness and the
+		// raise fades smoothly to zero up the steep walls — the rim stays put and the
+		// floor/wall transition has no jagged step.
+		const topWeight = hasInset
+			? 1.0
+			: hasCup
+				? smoothstep(TOP_FACING_MIN, 0.75, getHeightNormal(i))
+				: smoothstep(0.6, 0.75, heightNorm);
 
 		// Accumulate displacement from all elements
 		let totalDisplacement = 0;
@@ -1515,14 +2090,84 @@ export function applyElements(
 					Math.abs(widthVal - stl.centreWidthWorld) > stl.rejectRadius
 				)
 					continue;
-				const dx = widthVal - stl.centreWidthWorld;
+				let centreWidthWorld = stl.centreWidthWorld;
+				if (stl.heelWallWidthAdjust) {
+					centreWidthWorld += stl.heelWallWidthAdjust(lengthVal);
+				}
+				const dx = widthVal - centreWidthWorld;
 				const dy = lengthVal - stl.centreLengthWorld;
 				const localWidth = dx * stl.cos + dy * stl.sin;
 				const localLength = -dx * stl.sin + dy * stl.cos;
-				const rawX = localWidth / stl.scaleWidth + stl.stlCenterX;
 				const rawY = localLength / stl.scaleLength + stl.stlCenterY;
-				const padMm = sampleElementHeightMm(stl.field, rawX, rawY);
-				if (padMm > 1e-4) totalDisplacement += padMm * stl.scaleHeight;
+				const lateralRawX = stl.spanFillWidth
+					? spanFillRawXFromLocalWidth(
+							stl.field,
+							rawY,
+							localWidth,
+							stl.scaleWidth,
+							stl.targetWidthWorld,
+						)
+					: localWidthToRawX(
+							localWidth,
+							stl.scaleWidth,
+							stl.stlCenterX,
+							false,
+							stl.footprintX,
+							stl.targetWidthWorld,
+						);
+				const rawX =
+					stl.spanFillWidth &&
+					stl.rowCenterProfile &&
+					stl.heightProfile !== 'rowFloor'
+						? sampleRowCenterRawX(stl.field, stl.rowCenterProfile, rawY)
+						: lateralRawX;
+				let padMm =
+					stl.heightProfile === 'rowFloor'
+						? sampleRowFloorHeightMm(stl.field, rawY)
+						: sampleElementHeightMm(stl.field, rawX, rawY);
+				if (
+					!stl.spanFillWidth &&
+					stl.rowCenterProfile &&
+					stl.heightProfile !== 'rowFloor'
+				) {
+					const centerMm = sampleElementHeightMm(
+						stl.field,
+						sampleRowCenterRawX(stl.field, stl.rowCenterProfile, rawY),
+						rawY,
+					);
+					if (centerMm > 1e-4 && padMm > centerMm) {
+						padMm = centerMm + (padMm - centerMm) * 0.2;
+					}
+					const blurDx = stl.field.cellW * 0.85;
+					const leftMm = sampleElementHeightMm(
+						stl.field,
+						lateralRawX - blurDx,
+						rawY,
+					);
+					const rightMm = sampleElementHeightMm(
+						stl.field,
+						lateralRawX + blurDx,
+						rawY,
+					);
+					padMm = (leftMm + padMm * 2 + rightMm) / 4;
+				}
+				if (padMm > 1e-4) {
+					const taper =
+						stl.spanFillWidth && stl.rctbLengthTaper
+							? lateralSpanTaper(
+									localLengthToSpanT(
+										localLength,
+										stl.targetLengthWorld,
+									),
+								)
+							: 1;
+					padMm =
+						(padMm / stl.profilePeakMm) *
+						stl.targetHeightMm *
+						taper *
+						mmToWorld;
+				}
+				if (padMm > 1e-4) totalDisplacement += padMm;
 				continue;
 			}
 
@@ -1570,12 +2215,14 @@ export function applyElements(
 
 		if (Math.abs(totalDisplacement) > 0.0001) {
 			const currentHeight = getAxisValue(positions, i, heightAxis);
-			setAxisValue(
-				positions,
-				i,
-				heightAxis,
-				currentHeight + totalDisplacement * topWeight,
-			);
+			let newHeight = currentHeight + totalDisplacement * topWeight;
+			// Cup fill cannot rise above the surrounding insole rim — cut it off so
+			// the element never pokes over the insole wall.
+			if (hasCup && cupCeilingWorld < Infinity) {
+				const ceil = cupCeilingWorld - 0.25 * mmToWorld;
+				if (newHeight > ceil) newHeight = Math.max(currentHeight, ceil);
+			}
+			setAxisValue(positions, i, heightAxis, newHeight);
 		}
 	}
 
@@ -1641,6 +2288,7 @@ export function buildElementOverlayGeometries(
 		heelAtMin,
 		sampleHeight,
 		sampleInsoleExtent,
+		sampleInsoleHeelWallExtent,
 		sampleInsoleUExtent,
 	} = overlayAnalysis;
 	const { lengthAxis, widthAxis, heightAxis, lengthSpan, widthSpan } = axes;
@@ -2106,6 +2754,7 @@ export function buildElementOverlayGeometries(
 		heelAtMin,
 		mmToWorld,
 		sampleInsoleExtent,
+		sampleInsoleHeelWallExtent,
 		sampleInsoleUExtent,
 	};
 
@@ -2163,6 +2812,16 @@ export function buildElementOverlayGeometries(
 				: 1 - resolved.positionU;
 			const centreLengthWorld = lengthMin + centreRawU * lengthSpan;
 			const centreWidthWorld = widthMin + resolved.positionV * widthSpan;
+			const placementSpec = item.key ? ELEMENT_PLACEMENT[item.key] : undefined;
+			const heelWallAdjust = buildHeelWallWidthAdjust(
+				placementSpec,
+				placementContext,
+				el,
+				resolved.positionU,
+			);
+			const edgeFadeCells =
+				placementSpec?.overlayEdgeFadeCells ??
+				(resolved.conformWidthToInsole ? 11 : 10);
 
 			// Build the read-only insole surface sampler on first use (cached).
 			if (!surfaceSampler) {
@@ -2183,9 +2842,9 @@ export function buildElementOverlayGeometries(
 				scaleWidth,
 				scaleLength,
 				scaleHeight,
-					lengthAxis,
-					widthAxis,
-					heightAxis,
+				lengthAxis,
+				widthAxis,
+				heightAxis,
 				seedHeight: (lengthWorld, widthWorld) => {
 					const rawUSeed =
 						(lengthWorld - lengthMin) / Math.max(lengthSpan, 1e-6);
@@ -2194,9 +2853,16 @@ export function buildElementOverlayGeometries(
 					return sampleHeight(uSeed, vSeed);
 				},
 				maxRiseWorld: targetHeightMm * mmToWorld,
-				edgeFadeCells: 7,
+				edgeFadeCells,
 				elementColorHex: overlayColorHex,
 				insoleColorHex: overlayColorHex,
+				spanFillWidth: Boolean(resolved.conformWidthToInsole),
+				lengthProfileTaper: resolved.rctbLengthTaper ?? true,
+				heightProfile: resolved.heightProfile,
+				adjustWidthWorld: heelWallAdjust
+					? (lengthWorld, widthWorld) =>
+							widthWorld + heelWallAdjust(lengthWorld)
+					: undefined,
 			});
 
 			result.push({
@@ -2372,6 +3038,7 @@ export function applyElementColors(
 			heelAtMin,
 			mmToWorld: options?.mmToWorld ?? 1,
 			sampleInsoleExtent: geometryAnalysis.sampleInsoleExtent,
+			sampleInsoleHeelWallExtent: geometryAnalysis.sampleInsoleHeelWallExtent,
 			sampleInsoleUExtent: geometryAnalysis.sampleInsoleUExtent,
 		});
 		const resolvedElement = {

@@ -39,6 +39,9 @@ export interface SeatParams {
 	mode?: ConformMode;
 	/** Reject hits farther than this from the query (skip the vertex). */
 	maxSnapDistance?: number;
+	/** Rise direction: surface normal (default) or a fixed axis (e.g. insole up). */
+	offsetAlong?: 'normal' | 'up';
+	upAxis?: THREE.Vector3;
 }
 
 export interface ConformElementOptions extends SeatParams {
@@ -260,7 +263,11 @@ export function seatColumnOnSurface(
 	if (params.maxSnapDistance !== undefined && hit.distance > params.maxSnapDistance) {
 		return null;
 	}
-	outPos.copy(hit.point).addScaledVector(hit.normal, heightAboveBase);
+	const riseAxis =
+		params.offsetAlong === 'up' && params.upAxis
+			? params.upAxis
+			: hit.normal;
+	outPos.copy(hit.point).addScaledVector(riseAxis, heightAboveBase);
 	return hit.normal;
 }
 

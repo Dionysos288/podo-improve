@@ -241,3 +241,265 @@ export function sampleElementHeightMm(
 		h11 * fx * fy;
 	return h > 0 ? h : 0;
 }
+
+export interface FootprintXExtent {
+	minRawX: number;
+	maxRawX: number;
+	spanMm: number;
+}
+
+/** Horizontal extent of occupied STL cells (may be narrower than the bbox). */
+export function getFootprintXExtent(
+	field: ElementStlHeightField,
+): FootprintXExtent {
+	const g = field.gridSize;
+	let minGx = g;
+	let maxGx = -1;
+	for (let gy = 0; gy < g; gy++) {
+		for (let gx = 0; gx < g; gx++) {
+			if (!field.occupied[gy * g + gx]) continue;
+			if (gx < minGx) minGx = gx;
+			if (gx > maxGx) maxGx = gx;
+		}
+	}
+	if (maxGx < minGx) {
+		return {
+			minRawX: field.stlMinX,
+			maxRawX: field.stlMinX + field.sourceWidthMm,
+			spanMm: field.sourceWidthMm,
+		};
+	}
+	const minRawX = field.stlMinX + minGx * field.cellW;
+	const maxRawX = field.stlMinX + (maxGx + 1) * field.cellW;
+	return { minRawX, maxRawX, spanMm: maxRawX - minRawX };
+}
+
+/**
+ * RCTB height envelope along the heel-to-toe axis (not medial–lateral).
+ * Smooth dome: 0 at both ends, peak at centre, no sharp ridge at 50%.
+ */
+export function rctbLengthProfileTaper(t: number): number {
+	if (t <= 0 || t >= 1) return 0;
+	return Math.sin(t * Math.PI);
+}
+
+/** @deprecated Use rctbLengthProfileTaper */
+export const lateralSpanTaper = rctbLengthProfileTaper;
+
+/** Peak centerline sample (mm) used to normalize therapeutic height to the user value. */
+export function getCenterlineProfilePeakMm(
+	field: ElementStlHeightField,
+	_footprint: FootprintXExtent,
+): number {
+	const profile = buildFootprintRowCenterProfile(field);
+	let peak = 0;
+	const g = field.gridSize;
+	for (let gy = 0; gy < g; gy++) {
+		const rawY = field.stlMinY + (gy + 0.5) * field.cellL;
+		const centerX = sampleRowCenterRawX(field, profile, rawY);
+		const h = sampleElementHeightMm(field, centerX, rawY);
+		if (h > peak) peak = h;
+	}
+	return Math.max(peak, 1e-3);
+}
+
+function rowMinimumHeightMm(field: ElementStlHeightField, gy: number): number {
+	const g = field.gridSize;
+	if (gy < 0 || gy >= g) return 0;
+	let minH = Infinity;
+	for (let gx = 0; gx < g; gx++) {
+		const i = gy * g + gx;
+		if (!field.occupied[i]) continue;
+		const h = field.heightGridMm[i]!;
+		if (h > 1e-6 && h < minH) minH = h;
+	}
+	return minH === Infinity ? 0 : minH;
+}
+
+/**
+ * Lowest occupied height on the footprint row at rawY — the cup floor for heel
+ * bowls so added height is uniform thickness, not taller rim walls.
+ */
+export function sampleRowFloorHeightMm(
+	field: ElementStlHeightField,
+	rawY: number,
+): number {
+	const { gridSize, cellL, stlMinY } = field;
+	const gy = (rawY - stlMinY) / cellL;
+	if (gy < 0 || gy > gridSize - 1) return 0;
+	const gyi = Math.min(gridSize - 2, Math.max(0, Math.floor(gy)));
+	const fy = gy - gyi;
+	const h =
+		rowMinimumHeightMm(field, gyi) * (1 - fy) +
+		rowMinimumHeightMm(field, gyi + 1) * fy;
+	return h > 0 ? h : 0;
+}
+
+/** Peak row-floor sample (mm) for normalizing cup elements to the user height. */
+export function getRowFloorProfilePeakMm(field: ElementStlHeightField): number {
+	let peak = 0;
+	const g = field.gridSize;
+	for (let gy = 0; gy < g; gy++) {
+		const h = rowMinimumHeightMm(field, gy);
+		if (h > peak) peak = h;
+	}
+	return Math.max(peak, 1e-3);
+}
+
+/** Center X of the occupied footprint (therapeutic bump centerline). */
+export function getFootprintCenterRawX(footprint: FootprintXExtent): number {
+	return footprint.minRawX + footprint.spanMm * 0.5;
+}
+
+/**
+ * Center X of the occupied cells on the row at rawY. Bars whose footprint is
+ * offset on some length slices (e.g. RCTB Pronatie's narrow bottom tip) keep a
+ * valid height sample per row instead of reading 0 off the global centerline.
+ */
+export function getFootprintRowCenterRawX(
+	field: ElementStlHeightField,
+	rawY: number,
+): number {
+	const row = getFootprintRowXExtent(field, rawY);
+	return (row.minRawX + row.maxRawX) * 0.5;
+}
+
+/**
+ * Smoothed per-row footprint centerline (rawX per source row). Gaps filled from
+ * the nearest occupied row, then box-blurred so the height sample sweeps the bump
+ * continuously down the length — no banding from per-row grid quantization.
+ */
+export function buildFootprintRowCenterProfile(
+	field: ElementStlHeightField,
+): Float32Array {
+	const g = field.gridSize;
+	const centers = new Float32Array(g);
+	const valid = new Uint8Array(g);
+	for (let gy = 0; gy < g; gy++) {
+		let minGx = g;
+		let maxGx = -1;
+		for (let gx = 0; gx < g; gx++) {
+			if (!field.occupied[gy * g + gx]) continue;
+			if (gx < minGx) minGx = gx;
+			if (gx > maxGx) maxGx = gx;
+		}
+		if (maxGx >= minGx) {
+			centers[gy] =
+				field.stlMinX + ((minGx + maxGx + 1) / 2) * field.cellW;
+			valid[gy] = 1;
+		}
+	}
+	let last = -1;
+	for (let gy = 0; gy < g; gy++) {
+		if (valid[gy]) last = gy;
+		else if (last >= 0) centers[gy] = centers[last]!;
+	}
+	for (let gy = g - 1; gy >= 0; gy--) {
+		if (valid[gy]) last = gy;
+		else if (last >= 0 && !valid[gy]) centers[gy] = centers[last]!;
+	}
+	const scratch = new Float32Array(centers);
+	for (let pass = 0; pass < 4; pass++) {
+		scratch.set(centers);
+		for (let gy = 0; gy < g; gy++) {
+			let sum = scratch[gy]!;
+			let n = 1;
+			if (gy > 0) {
+				sum += scratch[gy - 1]!;
+				n++;
+			}
+			if (gy < g - 1) {
+				sum += scratch[gy + 1]!;
+				n++;
+			}
+			centers[gy] = sum / n;
+		}
+	}
+	return centers;
+}
+
+/** Linear-interpolated centerline rawX at rawY from a smoothed row-center profile. */
+export function sampleRowCenterRawX(
+	field: ElementStlHeightField,
+	profile: Float32Array,
+	rawY: number,
+): number {
+	const g = field.gridSize;
+	const f = (rawY - field.stlMinY) / field.cellL - 0.5;
+	const lo = Math.floor(f);
+	const t = f - lo;
+	const i0 = Math.min(g - 1, Math.max(0, lo));
+	const i1 = Math.min(g - 1, Math.max(0, lo + 1));
+	return profile[i0]! * (1 - t) + profile[i1]! * t;
+}
+
+/** Occupied X extent on a single footprint row (preserves asymmetric bulges per Y). */
+export function getFootprintRowXExtent(
+	field: ElementStlHeightField,
+	rawY: number,
+): FootprintXExtent {
+	const g = field.gridSize;
+	const gy = Math.min(
+		g - 1,
+		Math.max(0, Math.floor((rawY - field.stlMinY) / field.cellL)),
+	);
+	let minGx = g;
+	let maxGx = -1;
+	for (let gx = 0; gx < g; gx++) {
+		if (!field.occupied[gy * g + gx]) continue;
+		if (gx < minGx) minGx = gx;
+		if (gx > maxGx) maxGx = gx;
+	}
+	if (maxGx < minGx) return getFootprintXExtent(field);
+	const minRawX = field.stlMinX + minGx * field.cellW;
+	const maxRawX = field.stlMinX + (maxGx + 1) * field.cellW;
+	return { minRawX, maxRawX, spanMm: maxRawX - minRawX };
+}
+
+/** Map a span-filled world width coordinate back to STL X on the row at rawY. */
+export function spanFillRawXFromLocalWidth(
+	field: ElementStlHeightField,
+	rawY: number,
+	localWidth: number,
+	scaleWidth: number,
+	targetWidthWorld: number,
+): number {
+	const row = getFootprintRowXExtent(field, rawY);
+	const t = localWidthToSpanT(localWidth, scaleWidth, targetWidthWorld);
+	return row.minRawX + t * row.spanMm;
+}
+
+/** Normalized heel-to-toe position [0, 1] on a span-filled pad from local length. */
+export function localLengthToSpanT(
+	localLength: number,
+	targetLengthWorld: number,
+): number {
+	return Math.max(0, Math.min(1, localLength / targetLengthWorld + 0.5));
+}
+
+/** Normalized medial–lateral position [0, 1] on a span-filled pad from local width. */
+export function localWidthToSpanT(
+	localWidth: number,
+	scaleWidth: number,
+	targetWidthWorld: number,
+): number {
+	const mirrored = scaleWidth < 0;
+	const signed = mirrored ? -localWidth : localWidth;
+	return Math.max(0, Math.min(1, signed / targetWidthWorld + 0.5));
+}
+
+/** Inverse width map for export displacement when span-filling to insole width. */
+export function localWidthToRawX(
+	localWidth: number,
+	scaleWidth: number,
+	stlCenterX: number,
+	spanFillWidth: boolean,
+	footprint: FootprintXExtent,
+	targetWidthWorld: number,
+): number {
+	if (!spanFillWidth) return localWidth / scaleWidth + stlCenterX;
+	const mirrored = scaleWidth < 0;
+	const signedLocal = mirrored ? -localWidth : localWidth;
+	const t = Math.max(0, Math.min(1, signedLocal / targetWidthWorld + 0.5));
+	return footprint.minRawX + t * footprint.spanMm;
+}

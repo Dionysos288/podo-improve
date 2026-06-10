@@ -105,6 +105,13 @@ function createMockElementStlGeometry(): THREE.BufferGeometry {
 	return geom;
 }
 
+/** Narrow bar (24 mm) used to mimic RCTB pads that do not fill their STL bbox. */
+function createNarrowBarStlGeometry(): THREE.BufferGeometry {
+	const geom = new THREE.BoxGeometry(24, 30, 4, 6, 6, 2);
+	geom.computeVertexNormals();
+	return geom;
+}
+
 describe('buildElementOverlayGeometries', () => {
 	it('returns procedural overlays when STL map is empty', () => {
 		const insole = createTestInsoleGeometry();
@@ -403,7 +410,7 @@ describe('buildElementOverlayGeometries', () => {
 		expect(stlUrl).toBeTruthy();
 
 		const stlMap = new Map<string, THREE.BufferGeometry>();
-		stlMap.set(stlUrl!, createMockElementStlGeometry());
+		stlMap.set(stlUrl!, createNarrowBarStlGeometry());
 		const overlays = buildElementOverlayGeometries(insole, [element], {
 			mmToWorld: 1,
 			stlGeometries: stlMap,
@@ -413,12 +420,14 @@ describe('buildElementOverlayGeometries', () => {
 		const overlay = overlays[0]!;
 		const insoleZ = getAxisRange(insole, 'z');
 		const insoleY = getAxisRange(insole, 'y');
+		const overlayZ = getAxisRange(overlay.geometry, 'z');
 		const overlayY = getAxisRange(overlay.geometry, 'y');
 		const pos = overlay.geometry.getAttribute('position') as THREE.BufferAttribute;
 		for (let i = 0; i < pos.count; i++) {
 			expect(pos.getZ(i)).toBeGreaterThanOrEqual(insoleZ.min - 0.02);
 			expect(pos.getZ(i)).toBeLessThanOrEqual(insoleZ.max + 0.02);
 		}
+		expect(overlayZ.span).toBeGreaterThan(insoleZ.span * 0.82);
 		expect(overlayY.min).toBeGreaterThan(insoleY.max - 0.1);
 
 		insole.dispose();
