@@ -3362,7 +3362,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 		setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(2) });
 		await new Promise((r) => setTimeout(r, 150));
 
-		const geometry = viewerRef.current?.getExportPairGeometryMm(15);
+		const geometry = viewerRef.current?.getExportPairGeometryMm(15, 'side-by-side');
 		if (!geometry) {
 			setExportProgress({ title: 'Exporteer STL (paar)', phases: mkPhases(2).map((p, i) => i === 2 ? { ...p, status: 'error' } : p), error: 'Geen steunzoolpaar beschikbaar om te exporteren.' });
 			return;
@@ -3411,7 +3411,7 @@ export function DesignPageClient({ project, orgSlug, initialDesign, orgPrinters 
 
 		setExportProgress({ title: 'G-code export', phases: mkPhases(1) });
 
-		const pairGeometry = viewerRef.current?.getExportPairGeometryMm(15);
+		const pairGeometry = viewerRef.current?.getExportPairGeometryMm(15, 'print-bed');
 		if (!pairGeometry) {
 			fail(1, 'Geen steunzoolpaar beschikbaar voor G-code generatie.');
 			return;

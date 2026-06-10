@@ -1723,7 +1723,8 @@ export function applyElements(
 		/**
 		 * Pre-loaded element STL geometries keyed by URL. When provided, additive
 		 * STL-backed elements raise the insole top surface from the STL's own height
-		 * field so the exported single-piece insole matches the on-screen overlay.
+		 * field. The visible/export overlay path uses buildElementOverlayGeometries
+		 * for exact conformed pad meshes.
 		 */
 		stlGeometries?: Map<string, THREE.BufferGeometry>;
 	},
@@ -2030,6 +2031,7 @@ export function applyElements(
 		// the steep insole walls untouched while thickening the floor.
 		let hasInset = false;
 		let hasCup = false;
+		let hasStl = false;
 		let cupCeilingWorld = Infinity;
 		for (const p of prepared) {
 			if (
@@ -2041,6 +2043,13 @@ export function applyElements(
 				if (p.heightWorld < 0) {
 					hasInset = true;
 					break;
+				}
+				// STL-backed additive pads (heel/arch wall hugs, forefoot bars) sit
+				// at any height on the insole, not just the top 40%. Treat them like
+				// cup elements: bypass the global height gate and use a top-facing
+				// normal gate so the whole footprint raises (matches the overlay).
+				if (p.stl && !p.stl.cupFill) {
+					hasStl = true;
 				}
 				if (p.stl?.cupFill) {
 					hasCup = true;
@@ -2059,19 +2068,20 @@ export function applyElements(
 			}
 		}
 
-		if (!hasInset && !hasCup) {
+		if (!hasInset && !hasCup && !hasStl) {
 			if (heightNorm < 0.6) continue;
 		} else {
-			// Depth + cup elements act on the TOP-FACING surface only; never displace
-			// the underside or steep side walls (floor thickness, not taller walls).
+			// Depth, cup and STL pad elements act on the TOP-FACING surface only;
+			// never displace the underside or steep side walls (floor thickness, not
+			// taller walls).
 			if (getHeightNormal(i) < TOP_FACING_MIN) continue;
 		}
-		// Cup fill: weight by the up-normal so the floor gets full thickness and the
-		// raise fades smoothly to zero up the steep walls — the rim stays put and the
-		// floor/wall transition has no jagged step.
+		// Cup fill / STL pads: weight by the up-normal so the footprint gets full
+		// thickness and the raise fades smoothly to zero up the steep walls — the
+		// rim stays put and the floor/wall transition has no jagged step.
 		const topWeight = hasInset
 			? 1.0
-			: hasCup
+			: hasCup || hasStl
 				? smoothstep(TOP_FACING_MIN, 0.75, getHeightNormal(i))
 				: smoothstep(0.6, 0.75, heightNorm);
 
@@ -2764,8 +2774,7 @@ export function buildElementOverlayGeometries(
 		const floorMode = normalizeElementFloorMode(el.floorMode);
 		const stackOrder = el.stackOrder ?? 0;
 		// Visual overlays prefer the decimated low-poly STL for performance and
-		// fall back to the full-res mesh. (Export displacement is polygon-based and
-		// does not use these meshes, so low-poly here costs no print fidelity.)
+		// fall back to the full-res mesh.
 		const overlayStlUrl = stlGeometries
 			? getElementViewerStlUrls(item).find((url) => stlGeometries.has(url))
 			: undefined;
@@ -2829,10 +2838,10 @@ export function buildElementOverlayGeometries(
 			}
 
 			// Render the element as a smooth raised pad built from its top-surface
-			// height field and conformed onto the insole (the same representation as
-			// the exported single-piece insole). This fills the footprint, melts
-			// flush at the boundary (zero gap), and rises to the requested peak
-			// height for every element regardless of the STL's native thickness.
+			// height field and conformed onto the insole. Export reuses these
+			// conformed overlay meshes so the STL matches the preview. This fills
+			// the footprint, melts flush at the boundary (zero gap), and rises to
+			// the requested peak height regardless of the STL's native thickness.
 			const sheet = buildConformedElementSheet({
 				field,
 				sampler: surfaceSampler,

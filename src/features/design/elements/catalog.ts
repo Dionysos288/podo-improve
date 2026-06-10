@@ -562,9 +562,9 @@ export function getElementStlLoadUrls(item: ElementLibraryItem): string[] {
 }
 
 /**
- * URLs to try when building the on-screen overlay pad, cheapest first. Overlays
- * are visual only (export displacement is polygon-based, not STL-based), so the
- * viewer prefers the decimated low-poly mesh and falls back to the full-res STL.
+ * URLs to try when building conformed element overlay pads, cheapest first.
+ * Export reuses these preview-style overlay meshes so the downloaded STL
+ * matches what the user sees.
  */
 export function getElementViewerStlUrls(item: ElementLibraryItem): string[] {
 	const preferredUrl = getElementPreferredStlUrl(item);

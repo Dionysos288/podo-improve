@@ -1,8 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { BufferGeometry } from 'three';
-import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { cn } from '@/src/shared/lib/cn';
 import {
 	ELEMENTEN_ITEMS,
@@ -12,6 +10,10 @@ import {
 	type ElementTab,
 	type ElementLibraryItem,
 } from '@/src/features/design/elements';
+import {
+	loadStlSilhouette,
+	type StlSilhouette,
+} from '@/src/features/design/elements/elementThumbnailSilhouette';
 
 type Props = {
 	open: boolean;
@@ -25,102 +27,6 @@ const TABS: { key: ElementTab; label: string }[] = [
 	{ key: 'diepelementen', label: 'Diepelementen' },
 ];
 
-/* ── STL silhouette thumbnail via 2D canvas ────── */
-
-type StlSilhouette = { points: [number, number][]; w: number; h: number };
-const silhouetteCache = new Map<string, StlSilhouette>();
-
-/** Load the STL and project its top-surface footprint for a clean 2D thumbnail. */
-function buildStlSilhouette(geom: BufferGeometry): StlSilhouette {
-	geom.computeBoundingBox();
-	const bb = geom.boundingBox!;
-	const pos = geom.getAttribute('position');
-	const count = pos.count;
-	const sx = bb.max.x - bb.min.x;
-	const sy = bb.max.y - bb.min.y;
-	const sz = bb.max.z - bb.min.z;
-	const w = Math.max(sx, 1e-6);
-	const h = Math.max(sy, 1e-6);
-	const topZ = bb.max.z - Math.max(sz * 0.08, 0.05);
-	const GRID = 64;
-	const occupied = new Uint8Array(GRID * GRID);
-	for (let i = 0; i < count; i++) {
-		const z = pos.getZ(i);
-		if (z < topZ) continue;
-		const x = pos.getX(i);
-		const y = pos.getY(i);
-		const gx = Math.min(
-			GRID - 1,
-			Math.max(0, Math.floor(((x - bb.min.x) / w) * GRID)),
-		);
-		const gy = Math.min(
-			GRID - 1,
-			Math.max(0, Math.floor(((y - bb.min.y) / h) * GRID)),
-		);
-		occupied[gy * GRID + gx] = 1;
-	}
-	const boundary: [number, number][] = [];
-	for (let gy = 0; gy < GRID; gy++) {
-		for (let gx = 0; gx < GRID; gx++) {
-			if (!occupied[gy * GRID + gx]) continue;
-			let isBorder = gx === 0 || gx === GRID - 1 || gy === 0 || gy === GRID - 1;
-			if (!isBorder) {
-				for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
-					if (!occupied[(gy + dy) * GRID + (gx + dx)]) {
-						isBorder = true;
-						break;
-					}
-				}
-			}
-			if (isBorder) boundary.push([(gx + 0.5) / GRID, (gy + 0.5) / GRID]);
-		}
-	}
-	if (boundary.length > 2) {
-		let cx = 0;
-		let cy = 0;
-		for (const [x, y] of boundary) {
-			cx += x;
-			cy += y;
-		}
-		cx /= boundary.length;
-		cy /= boundary.length;
-		boundary.sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
-	}
-	return { points: boundary, w, h };
-}
-
-function loadStlSilhouette(stlUrls: string[]): Promise<StlSilhouette | null> {
-	const cacheKey = stlUrls[0];
-	if (!cacheKey) return Promise.resolve(null);
-	if (silhouetteCache.has(cacheKey)) return Promise.resolve(silhouetteCache.get(cacheKey)!);
-
-	const loader = new STLLoader();
-	const tryLoad = (index: number): Promise<StlSilhouette | null> => {
-		const stlUrl = stlUrls[index];
-		if (!stlUrl) return Promise.resolve(null);
-		return new Promise((resolve) => {
-			loader.load(
-				stlUrl,
-				(geom) => {
-					const result = buildStlSilhouette(geom);
-					silhouetteCache.set(cacheKey, result);
-					resolve(result);
-				},
-				undefined,
-				() => {
-					if (index < stlUrls.length - 1) {
-						resolve(tryLoad(index + 1));
-						return;
-					}
-					resolve(null);
-				},
-			);
-		});
-	};
-
-	return tryLoad(0);
-}
-
 function ElementThumbnail({
 	item,
 	size = 64,
@@ -131,24 +37,22 @@ function ElementThumbnail({
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const fillColor = ELEMENT_COLORS[item.color] ?? '#999';
 	const stlLoadUrls = useMemo(() => getElementStlLoadUrls(item), [item]);
-	const silhouetteCacheKey = stlLoadUrls[0];
-	const [silhouette, setSilhouette] = useState<StlSilhouette | null>(
-		silhouetteCacheKey ? silhouetteCache.get(silhouetteCacheKey) ?? null : null
-	);
+	const swapYZ = Boolean(item.stlSwapYZ);
+	const [silhouette, setSilhouette] = useState<StlSilhouette | null>(null);
 
-	// Load the STL silhouette
 	useEffect(() => {
-		if (!silhouetteCacheKey) return;
-		if (silhouetteCache.has(silhouetteCacheKey)) {
-			setSilhouette(silhouetteCache.get(silhouetteCacheKey)!);
+		if (!stlLoadUrls[0]) {
+			setSilhouette(null);
 			return;
 		}
 		let cancelled = false;
-		loadStlSilhouette(stlLoadUrls).then((s) => {
-			if (!cancelled && s) setSilhouette(s);
+		loadStlSilhouette(stlLoadUrls, swapYZ).then((s) => {
+			if (!cancelled) setSilhouette(s);
 		});
-		return () => { cancelled = true; };
-	}, [silhouetteCacheKey, stlLoadUrls]);
+		return () => {
+			cancelled = true;
+		};
+	}, [stlLoadUrls, swapYZ]);
 
 	// Draw onto the 2D canvas
 	useEffect(() => {

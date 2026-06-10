@@ -32,6 +32,11 @@ import {
 } from '@/src/features/design/utils/bottomTextEngraving';
 import { applyAllCorrections } from '@/src/features/design/utils/insoleCorrections';
 import { flattenInsoleBottom } from '@/src/features/design/utils/flattenInsoleBottom';
+import {
+	applyPairExportLayout,
+	type LegacyPairExportLayout,
+	type PairExportLayout,
+} from '@/src/features/design/utils/pairExportLayout';
 import type { OntwerpCorrections } from '@/src/shared/components/design/OntwerpPanel';
 import type { CorrectionKey } from '@/src/shared/components/design/correctionsCatalog';
 import type { PlacedElement } from '@/src/features/design/elements/types';
@@ -112,8 +117,12 @@ interface STLMeshProps {
 	opacity?: number;
 	onGeometryReady?: (
 		geometry: THREE.BufferGeometry,
-		meta?: { mmToWorld: number }
+		meta?: {
+			mmToWorld: number;
+			elementStlGeometries?: Map<string, THREE.BufferGeometry>;
+		}
 	) => void;
+	onElementOverlaysReady?: (overlays: ElementOverlayData[]) => void;
 	onPickPoint?: (point: THREE.Vector3) => void;
 	pointPickMode?: boolean;
 	showZones?: boolean;
@@ -2274,6 +2283,7 @@ function STLMesh({
 	probeEnabled = false,
 	onProbe,
 	selected = false,
+	onElementOverlaysReady,
 	onSelect,
 	onZoneClick,
 	showBoxGrid = false,
@@ -3412,12 +3422,13 @@ function STLMesh({
 	}, [printPrepSplit, meshRole]);
 	const clearElementOverlays = useCallback(() => {
 		lastRenderedOverlaySignatureRef.current = '';
+		onElementOverlaysReady?.([]);
 		setElementOverlays((prev) => {
 			if (prev.length === 0) return prev;
 			prev.forEach((data) => data.geometry.dispose());
 			return [];
 		});
-	}, []);
+	}, [onElementOverlaysReady]);
 
 	// Pre-loaded STL geometries for elements that have stlUrl in their catalog entry
 	const elementStlGeometriesRef = useRef<Map<string, THREE.BufferGeometry>>(new Map());
@@ -3649,9 +3660,10 @@ function STLMesh({
 			signature: overlayBuildSignature,
 		});
 		recordOverlayRebuild(Number((performance.now() - startedAt).toFixed(1)));
+		onElementOverlaysReady?.(overlays);
 		setElementOverlays(prev => { prev.forEach(d => d.geometry.dispose()); return overlays; });
 		invalidateRef.current();
-	}, [clearElementOverlays, logViewerDebug]);
+	}, [clearElementOverlays, logViewerDebug, onElementOverlaysReady]);
 
 	rebuildElementOverlaysRef.current = rebuildElementOverlays;
 
@@ -4663,7 +4675,10 @@ function STLMesh({
 	// would reset camera position (parent camera effect depends on geometry).
 	useEffect(() => {
 		if (geometry && !gridEditMode) {
-			onGeometryReadyRef.current?.(geometry, { mmToWorld: mmToWorld || 1 });
+			onGeometryReadyRef.current?.(geometry, {
+				mmToWorld: mmToWorld || 1,
+				elementStlGeometries: elementStlGeometriesRef.current,
+			});
 		}
 	}, [geometry, mmToWorld, gridEditMode]);
 
@@ -5424,7 +5439,10 @@ export interface EnhancedSTLViewerRef {
 	getInsoleGeometry: () => THREE.BufferGeometry | null;
 	getFinalInsoleGeometry: (side: 'left' | 'right') => THREE.BufferGeometry | null;
 	getExportInsoleGeometryMm: (side: 'left' | 'right') => THREE.BufferGeometry | null;
-	getExportPairGeometryMm: (spacingMm?: number) => THREE.BufferGeometry | null;
+	getExportPairGeometryMm: (
+		spacingMm?: number,
+		layout?: PairExportLayout | LegacyPairExportLayout
+	) => THREE.BufferGeometry | null;
 	getInsoleDimensionsMm: (
 		side: 'left' | 'right'
 	) => { lengthMm: number; widthMm: number; heightMm: number } | null;
@@ -5699,13 +5717,25 @@ const EnhancedSTLViewerInner = forwardRef<
 		const [leftMmToWorld, setLeftMmToWorld] = useState<number>(1);
 		const [rightMmToWorld, setRightMmToWorld] = useState<number>(1);
 		const lastRightBBoxSignatureRef = useRef<string>('');
-		const handleLeftGeometryReady = useCallback((geom: THREE.BufferGeometry, meta?: { mmToWorld: number }) => {
+		const leftElementStlRef = useRef<Map<
+			string,
+			THREE.BufferGeometry
+		> | null>(null);
+		const rightElementStlRef = useRef<Map<
+			string,
+			THREE.BufferGeometry
+		> | null>(null);
+		const leftElementOverlaysRef = useRef<ElementOverlayData[]>([]);
+		const rightElementOverlaysRef = useRef<ElementOverlayData[]>([]);
+		const handleLeftGeometryReady = useCallback((geom: THREE.BufferGeometry, meta?: { mmToWorld: number; elementStlGeometries?: Map<string, THREE.BufferGeometry> }) => {
 			setLeftGeometry(geom);
 			setLeftMmToWorld(meta?.mmToWorld || 1);
+			leftElementStlRef.current = meta?.elementStlGeometries ?? null;
 		}, []);
-		const handleRightGeometryReady = useCallback((geom: THREE.BufferGeometry, meta?: { mmToWorld: number }) => {
+		const handleRightGeometryReady = useCallback((geom: THREE.BufferGeometry, meta?: { mmToWorld: number; elementStlGeometries?: Map<string, THREE.BufferGeometry> }) => {
 			setRightGeometry(geom);
 			setRightMmToWorld(meta?.mmToWorld || 1);
+			rightElementStlRef.current = meta?.elementStlGeometries ?? null;
 			if (!onRightBBox) return;
 			const posAttr = geom.getAttribute('position') as THREE.BufferAttribute | undefined;
 			if (!posAttr) return;
@@ -5722,6 +5752,18 @@ const EnhancedSTLViewerInner = forwardRef<
 			lastRightBBoxSignatureRef.current = signature;
 			onRightBBox(box);
 		}, [onRightBBox]);
+		const handleLeftElementOverlaysReady = useCallback(
+			(overlays: ElementOverlayData[]) => {
+				leftElementOverlaysRef.current = overlays;
+			},
+			[],
+		);
+		const handleRightElementOverlaysReady = useCallback(
+			(overlays: ElementOverlayData[]) => {
+				rightElementOverlaysRef.current = overlays;
+			},
+			[],
+		);
 
 		// Fire onReady only after the visible geometry + overlays have actually settled.
 		const onReadyFiredRef = useRef(false);
@@ -6280,6 +6322,76 @@ const EnhancedSTLViewerInner = forwardRef<
 			side === 'left' ? leftGeometry : rightGeometry;
 		const getSideMmToWorld = (side: 'left' | 'right') =>
 			side === 'left' ? leftMmToWorld : rightMmToWorld;
+		const getSideElementOverlays = (side: 'left' | 'right') =>
+			side === 'left'
+				? leftElementOverlaysRef.current
+				: rightElementOverlaysRef.current;
+
+		const cloneGeometryForStlMerge = (
+			geometry: THREE.BufferGeometry
+		): THREE.BufferGeometry => {
+			const clone = geometry.clone();
+			for (const name of Object.keys(clone.attributes)) {
+				if (name !== 'position') clone.deleteAttribute(name);
+			}
+			clone.clearGroups();
+			clone.computeVertexNormals();
+			clone.computeBoundingBox();
+			clone.computeBoundingSphere();
+			return clone;
+		};
+
+		const cloneGeometryForPairMerge = (
+			geometry: THREE.BufferGeometry
+		): THREE.BufferGeometry => {
+			const source = geometry.index ? geometry.toNonIndexed() : geometry.clone();
+			for (const name of Object.keys(source.attributes)) {
+				if (name !== 'position') source.deleteAttribute(name);
+			}
+			source.clearGroups();
+			source.computeVertexNormals();
+			source.computeBoundingBox();
+			source.computeBoundingSphere();
+			return source;
+		};
+
+		type ExportGeometryBuild = {
+			geometry: THREE.BufferGeometry;
+			hasElementOverlays: boolean;
+		};
+
+		// Export additive pads as the exact live conformed overlay meshes shown in
+		// the preview. This avoids rebuilding a separate approximation at export
+		// time and preserves per-side ownership, box edits, and trimline edits.
+		const buildExportGeometryWithElementOverlays = (
+			side: 'left' | 'right'
+		): ExportGeometryBuild | null => {
+			const base = getSideGeometry(side);
+			if (!base) return null;
+			const overlays = getSideElementOverlays(side).filter(
+				(overlay) => !overlay.isInset,
+			);
+			if (overlays.length === 0) {
+				return { geometry: base.clone(), hasElementOverlays: false };
+			}
+
+			const mergeParts: THREE.BufferGeometry[] = [
+				cloneGeometryForStlMerge(base),
+			];
+			for (const overlay of overlays) {
+				mergeParts.push(cloneGeometryForStlMerge(overlay.geometry));
+			}
+
+			const merged = BufferGeometryUtils.mergeGeometries(mergeParts, false);
+			for (const part of mergeParts) part.dispose();
+			if (!merged) {
+				return { geometry: base.clone(), hasElementOverlays: false };
+			}
+			merged.computeVertexNormals();
+			merged.computeBoundingBox();
+			merged.computeBoundingSphere();
+			return { geometry: merged, hasElementOverlays: true };
+		};
 
 		const getDimensionsMm = (
 			geometry: THREE.BufferGeometry,
@@ -6394,9 +6506,11 @@ const EnhancedSTLViewerInner = forwardRef<
 
 		const toExportGeometryMm = (
 			geometry: THREE.BufferGeometry,
-			mmToWorld: number
+			mmToWorld: number,
+			options?: { repairForSlicer?: boolean },
 		) => {
 			const g = geometry.clone();
+			const repairForSlicer = options?.repairForSlicer ?? true;
 			const worldToMm = 1 / Math.max(1e-6, mmToWorld || 1);
 			g.applyMatrix4(new THREE.Matrix4().makeScale(worldToMm, worldToMm, worldToMm));
 
@@ -6448,36 +6562,64 @@ const EnhancedSTLViewerInner = forwardRef<
 					));
 				}
 			}
-			return repairForSlicing(g);
+			if (repairForSlicer) {
+				return repairForSlicing(g);
+			}
+			const cleaned = removeDegenerateTriangles(g);
+			if (cleaned !== g) g.dispose();
+			cleaned.deleteAttribute('normal');
+			cleaned.computeVertexNormals();
+			cleaned.computeBoundingBox();
+			cleaned.computeBoundingSphere();
+			return cleaned;
 		};
 
-		const getPairExportGeometryMm = (spacingMm = 15) => {
+		const getPairExportGeometryMm = (
+			spacingMm = 15,
+			layout: PairExportLayout | LegacyPairExportLayout = 'side-by-side',
+		) => {
 			if (!leftGeometry || !rightGeometry) return null;
-			const left = toExportGeometryMm(leftGeometry, leftMmToWorld || 1);
-			const right = toExportGeometryMm(rightGeometry, rightMmToWorld || 1);
+			const leftBuild = buildExportGeometryWithElementOverlays('left');
+			const rightBuild = buildExportGeometryWithElementOverlays('right');
+			if (!leftBuild || !rightBuild) {
+				leftBuild?.geometry.dispose();
+				rightBuild?.geometry.dispose();
+				return null;
+			}
+			const left = toExportGeometryMm(leftBuild.geometry, leftMmToWorld || 1, {
+				repairForSlicer: !leftBuild.hasElementOverlays,
+			});
+			const right = toExportGeometryMm(rightBuild.geometry, rightMmToWorld || 1, {
+				repairForSlicer: !rightBuild.hasElementOverlays,
+			});
+			leftBuild.geometry.dispose();
+			rightBuild.geometry.dispose();
 
-			left.computeBoundingBox();
-			right.computeBoundingBox();
-			const leftBox = left.boundingBox;
-			const rightBox = right.boundingBox;
-			if (!leftBox || !rightBox) {
+			if (!applyPairExportLayout(left, right, spacingMm, layout)) {
 				left.dispose();
 				right.dispose();
 				return null;
 			}
 
-			// Place insoles side-by-side along Y (width axis).
-			// After toExportGeometryMm each insole is centred at Y=0.
-			const leftShift = -(leftBox.max.y + spacingMm * 0.5);
-			const rightShift = -(rightBox.min.y - spacingMm * 0.5);
-			left.applyMatrix4(new THREE.Matrix4().makeTranslation(0, leftShift, 0));
-			right.applyMatrix4(new THREE.Matrix4().makeTranslation(0, rightShift, 0));
-
-			const merged = BufferGeometryUtils.mergeGeometries([left, right], false);
+			const leftForMerge = cloneGeometryForPairMerge(left);
+			const rightForMerge = cloneGeometryForPairMerge(right);
+			const merged = BufferGeometryUtils.mergeGeometries(
+				[leftForMerge, rightForMerge],
+				false,
+			);
+			const hasElementOverlays =
+				leftBuild.hasElementOverlays || rightBuild.hasElementOverlays;
+			leftForMerge.dispose();
+			rightForMerge.dispose();
 			left.dispose();
 			right.dispose();
 			if (!merged) return null;
-			return repairForSlicing(merged);
+			if (!hasElementOverlays) return repairForSlicing(merged);
+			merged.deleteAttribute('normal');
+			merged.computeVertexNormals();
+			merged.computeBoundingBox();
+			merged.computeBoundingSphere();
+			return merged;
 		};
 
 		useImperativeHandle(ref, () => ({
@@ -6492,12 +6634,16 @@ const EnhancedSTLViewerInner = forwardRef<
 			getFinalInsoleGeometry: (side: 'left' | 'right') =>
 				getSideGeometry(side)?.clone() ?? null,
 			getExportInsoleGeometryMm: (side: 'left' | 'right') => {
-				const geom = getSideGeometry(side);
-				if (!geom) return null;
-				return toExportGeometryMm(geom, getSideMmToWorld(side));
+				const build = buildExportGeometryWithElementOverlays(side);
+				if (!build) return null;
+				const exported = toExportGeometryMm(build.geometry, getSideMmToWorld(side), {
+					repairForSlicer: !build.hasElementOverlays,
+				});
+				build.geometry.dispose();
+				return exported;
 			},
-			getExportPairGeometryMm: (spacingMm = 15) =>
-				getPairExportGeometryMm(spacingMm),
+			getExportPairGeometryMm: (spacingMm = 15, layout = 'side-by-side') =>
+				getPairExportGeometryMm(spacingMm, layout),
 			getInsoleDimensionsMm: (side: 'left' | 'right') => {
 				const geom = getSideGeometry(side);
 				if (!geom) return null;
@@ -6515,6 +6661,9 @@ const EnhancedSTLViewerInner = forwardRef<
 			rightGeometry,
 			leftMmToWorld,
 			rightMmToWorld,
+			leftPlacedElements,
+			rightPlacedElements,
+			selectedElementBoxEdit,
 			focusOnSide,
 		]);
 
@@ -6925,6 +7074,7 @@ const EnhancedSTLViewerInner = forwardRef<
 									position={[-30 + driekwartLeftOffset.x, driekwartLeftOffset.y, driekwartLeftOffset.z]}
 									interactive={!disableInteraction}
 									onGeometryReady={handleLeftGeometryReady}
+									onElementOverlaysReady={handleLeftElementOverlaysReady}
 									onPickPoint={(pt) => onPickPoint?.([pt.x, pt.y, pt.z])}
 									pointPickMode={pointPickMode}
 									showZones={showZones}
@@ -7001,6 +7151,7 @@ const EnhancedSTLViewerInner = forwardRef<
 									position={[30 + driekwartRightOffset.x, driekwartRightOffset.y, driekwartRightOffset.z]}
 									interactive={!disableInteraction}
 									onGeometryReady={handleRightGeometryReady}
+									onElementOverlaysReady={handleRightElementOverlaysReady}
 									onPickPoint={(pt) => onPickPoint?.([pt.x, pt.y, pt.z])}
 									pointPickMode={pointPickMode}
 									showZones={showZones}
